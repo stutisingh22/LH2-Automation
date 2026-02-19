@@ -140,6 +140,14 @@ def authenticate(username, password):
     return None
 
 
+def get_user(user_id):
+    with db() as s:
+        u = s.get(User, user_id)
+        if u and u.is_active:
+            return {"id": u.id, "username": u.username, "email": u.email, "role": u.role}
+    return None
+
+
 # ── Companies ─────────────────────────────────────────────────
 
 def upsert_company(domain, **kw):

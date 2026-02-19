@@ -12,11 +12,23 @@ Features:
 import re
 import streamlit as st
 from datetime import datetime
+import hashlib
+import os
+import json
+from pathlib import Path
 
 st.set_page_config(
     page_title="LH2 Command Center", page_icon="◆",
     layout="wide", initial_sidebar_state="expanded",
 )
+
+# Force sidebar to always be visible
+if 'sidebar_state' not in st.session_state:
+    st.session_state.sidebar_state = 'expanded'
+
+# Session file directory
+SESSION_DIR = Path(".sessions")
+SESSION_DIR.mkdir(exist_ok=True)
 
 from config import (
     CONTACT_STATUSES, CONTACT_STATUS_LABELS, CONTACT_STATUS_COLORS,
@@ -24,7 +36,7 @@ from config import (
     GOOGLE_SERVICE_ACCOUNT_JSON,
 )
 from db_ops import (
-    create_user, authenticate, get_all_users,
+    create_user, authenticate, get_user, get_all_users,
     get_company, get_all_companies, search_companies,
     upsert_company, upsert_contact,
     get_contacts, get_contact, update_contact_status,
@@ -117,9 +129,69 @@ def _build_ics(actions, title="LH2 Outreach Plan"):
 # AUTH
 # ══════════════════════════════════════════════════════════════
 
+def get_or_create_session_token():
+    """Get or create a persistent session token from query params"""
+    query_params = st.query_params
+    
+    if "session_token" in query_params:
+        return query_params["session_token"]
+    
+    if "session_token" not in st.session_state:
+        # Create new token
+        token = hashlib.sha256(f"{datetime.now().timestamp()}{os.urandom(16).hex()}".encode()).hexdigest()[:32]
+        st.session_state.session_token = token
+        st.query_params["session_token"] = token
+        return token
+    
+    return st.session_state.session_token
+
+def save_session_user(user_id):
+    """Save user session to file"""
+    token = get_or_create_session_token()
+    session_file = SESSION_DIR / f"{token}.json"
+    with open(session_file, 'w') as f:
+        json.dump({"user_id": user_id, "timestamp": datetime.now().isoformat()}, f)
+
+def load_session_user():
+    """Load user from session file"""
+    token = get_or_create_session_token()
+    session_file = SESSION_DIR / f"{token}.json"
+    if session_file.exists():
+        try:
+            with open(session_file, 'r') as f:
+                data = json.load(f)
+                return data.get("user_id")
+        except:
+            pass
+    return None
+
+def clear_session_user():
+    """Clear user session file and token"""
+    token = get_or_create_session_token()
+    session_file = SESSION_DIR / f"{token}.json"
+    if session_file.exists():
+        session_file.unlink()
+    # Clear query params
+    if "session_token" in st.query_params:
+        del st.query_params["session_token"]
+
 def render_auth():
     if "user" not in st.session_state:
         st.session_state.user = None
+    
+    if st.session_state.user:
+        return True
+    
+    # Try to restore from saved session
+    saved_user_id = load_session_user()
+    if saved_user_id:
+        usr = get_user(saved_user_id)
+        if usr:
+            st.session_state.user = usr
+            return True
+        else:
+            clear_session_user()
+    
     if st.session_state.user:
         return True
     _, col, _ = st.columns([1.1, 0.8, 1.1])
@@ -139,6 +211,7 @@ def render_auth():
                     usr = authenticate(u, p)
                     if usr:
                         st.session_state.user = usr
+                        save_session_user(usr["id"])
                         st.rerun()
                     else:
                         st.error("Invalid credentials")
@@ -267,7 +340,7 @@ with st.sidebar:
 
     st.markdown(
         "<div style='font-size:11px;font-weight:600;letter-spacing:1.2px;"
-        "text-transform:uppercase;color:var(--text-3);margin:12px 0 8px;'>Recent</div>",
+        "text-transform:uppercase;color:var(--text-3);margin:12px 0 10px;'>Recent</div>",
         unsafe_allow_html=True)
 
     sessions = get_user_sessions(user["id"])
@@ -277,15 +350,38 @@ with st.sidebar:
         domain = sx.get("company_domain", "?")
         contact = sx.get("contact_name", "?")
         updated = (sx.get("updated_at") or "")[:10]
-        mem = " 🧠" if sx.get("strategic_summary") else ""
-        bg = "background:var(--accent-bg);border:1px solid #c7d2fe;" if is_active else "border:1px solid transparent;"
+        has_memory = sx.get("strategic_summary")
+        
+        # Status badge based on message count
+        if mc2 == 0:
+            status_badge = "<span class='session-badge badge-new'>NEW</span>"
+        elif mc2 < 5:
+            status_badge = "<span class='session-badge badge-active'>ACTIVE</span>"
+        else:
+            status_badge = "<span class='session-badge badge-ongoing'>ONGOING</span>"
+        
+        if has_memory:
+            status_badge += " <span class='session-badge badge-memory'>🧠</span>"
+        
+        card_class = "sidebar-card active" if is_active else "sidebar-card"
+        
+        # Card with info
         st.markdown(
-            f"<div style='{bg}padding:8px 12px;border-radius:8px;margin-bottom:4px;'>"
-            f"<div class='sidebar-session-block' style='font-size:13px;font-weight:500;color:var(--text);'>{domain}{mem}</div>"
-            f"<div class='sidebar-session-meta' style='font-size:12px;color:var(--text-2);margin-top:3px;'>{contact} · {mc2} msgs · {updated}</div></div>",
+            f"<div class='{card_class}'>"
+            f"<div class='card-header'>"
+            f"<span class='card-domain'>{domain}</span>"
+            f"<div class='card-badges'>{status_badge}</div>"
+            f"</div>"
+            f"<div class='card-meta'>{contact} · {mc2} msgs</div>"
+            f"<div class='card-footer'>"
+            f"<span class='card-date'>{updated}</span>"
+            f"</div>"
+            f"</div>",
             unsafe_allow_html=True)
+        
+        # Full width arrow button
         if not is_active:
-            if st.button("Open", key=f"sb_{sx['id']}", use_container_width=True):
+            if st.button("→", key=f"sb_{sx['id']}", type="secondary", use_container_width=True):
                 st.session_state.sel_company = sx["company_id"]
                 st.session_state.sel_contact = sx["contact_id"]
                 st.session_state.session_id = sx["id"]
@@ -298,6 +394,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{user['username']} · {user['role']}</div>", unsafe_allow_html=True)
     if st.button("Sign Out", key="sb_logout", use_container_width=True):
+        clear_session_user()
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -314,38 +411,52 @@ if current_tab not in TAB_NAMES:
     current_tab = "DASHBOARD"
     st.session_state.current_tab = current_tab
 
-# Header (same as before)
-parts = ["◆ LH2 COMMAND CENTER"]
-if st.session_state.sel_company:
-    _c = get_company(st.session_state.sel_company)
-    if _c:
-        parts.append(f"<span style='color:var(--text-3);font-weight:400;'>→ {_c['domain']}</span>")
-if st.session_state.sel_contact:
-    _t = get_contact(st.session_state.sel_contact)
-    if _t:
-        parts.append(f"<span style='color:var(--text-3);font-weight:400;'>→ {_t['name']}</span>")
-st.markdown(
-    f"<div style='font-size:11px;font-weight:700;letter-spacing:3px;color:var(--accent);"
-    f"padding-bottom:6px;border-bottom:1px solid var(--border);margin-bottom:4px;'>{' '.join(parts)}</div>",
-    unsafe_allow_html=True)
+# Clean Admin Header with User Badge
+header_cols = st.columns([0.35, 0.3, 0.35])
+with header_cols[0]:
+    st.markdown(
+        "<div class='dashboard-header-left'>"
+        "<div class='logo-container'>"
+        "<span class='logo-diamond'>◆</span>"
+        "<span class='logo-text'>LH2</span>"
+        "<span class='logo-subtitle'>Command Center</span>"
+        "</div>"
+        "</div>",
+        unsafe_allow_html=True)
+with header_cols[1]:
+    if st.session_state.sel_company:
+        _c = get_company(st.session_state.sel_company)
+        if _c:
+            contact_info = ""
+            if st.session_state.sel_contact:
+                _t = get_contact(st.session_state.sel_contact)
+                if _t:
+                    contact_info = f"<span class='breadcrumb-sep'>›</span><span class='breadcrumb-item'>{_t['name']}</span>"
+            st.markdown(
+                f"<div class='breadcrumb-container'>"
+                f"<span class='breadcrumb-item'>{_c['domain']}</span>{contact_info}"
+                f"</div>",
+                unsafe_allow_html=True)
+with header_cols[2]:
+    st.markdown(
+        f"<div class='dashboard-header-right'>"
+        f"<div class='user-badge'>"
+        f"<span class='user-avatar'>{user['username'][0].upper()}</span>"
+        f"<span class='user-info'>"
+        f"<span class='user-name'>{user['username']}</span>"
+        f"<span class='user-role'>Admin</span>"
+        f"</span>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True)
 
-# Tab bar: single radio so selected and unselected stay same size
-st.markdown('<div class="nav-tab-bar-wrap">', unsafe_allow_html=True)
+# Professional Admin Navigation using st.tabs()
 tab_labels = [n.title() if n != "ADVISOR" else "Advisor" for n in TAB_NAMES]
-idx = TAB_NAMES.index(current_tab) if current_tab in TAB_NAMES else 0
-chosen = st.radio("Section", tab_labels, index=idx, horizontal=True, key="main_section_radio", label_visibility="collapsed")
-if chosen:
-    chosen_tab = TAB_NAMES[tab_labels.index(chosen)]
-    if chosen_tab != current_tab:
-        st.session_state.current_tab = chosen_tab
-        st.rerun()
-st.markdown("</div>", unsafe_allow_html=True)
-
-current_tab = st.session_state.current_tab
+tabs = st.tabs(tab_labels)
 
 # ════════════════════ DASHBOARD ════════════════════
 
-if current_tab == "DASHBOARD":
+with tabs[0]:  # DASHBOARD
     st.markdown(sh("OVERVIEW"), unsafe_allow_html=True)
     stats = get_pipeline_stats()
     mc = st.columns(4)
@@ -370,10 +481,26 @@ if current_tab == "DASHBOARD":
     todays = get_todays_scheduled()
     if overdue or todays:
         st.markdown(sh("ALERTS"), unsafe_allow_html=True)
+        
         for a in overdue[:5]:
-            st.markdown(alert(f"⚠️ Overdue: {a.get('contact_name','?')} at {a.get('company_domain','?')} — {a['description'][:100]}", "danger"), unsafe_allow_html=True)
+            desc = a.get('description', '')
+            contact = a.get('contact_name', '?')
+            domain = a.get('company_domain', '?')
+            preview = f"⚠️ Overdue: {contact} at {domain}"
+            
+            with st.expander(preview, expanded=False):
+                st.markdown(f"**Action:** {desc}")
+                st.caption(f"Contact: {contact} | Company: {domain}")
+        
         for a in todays[:5]:
-            st.markdown(alert(f"📅 Today: {a.get('contact_name','?')} — {a['description'][:100]}"), unsafe_allow_html=True)
+            desc = a.get('description', '')
+            contact = a.get('contact_name', '?')
+            preview = f"📅 Today: {contact}"
+            
+            with st.expander(preview, expanded=False):
+                st.markdown(f"**Action:** {desc}")
+                if a.get('company_domain'):
+                    st.caption(f"Contact: {contact} | Company: {a.get('company_domain')}")
 
     st.markdown(sh("RECENT ACTIVITY"), unsafe_allow_html=True)
     recent = get_recent_activity(10)
@@ -392,7 +519,7 @@ if current_tab == "DASHBOARD":
 
 # ════════════════════ COMPANIES ════════════════════
 
-elif current_tab == "COMPANIES":
+with tabs[1]:  # COMPANIES
     if st.session_state.get("clear_company_search"):
         st.session_state.pop("csearch", None)
         st.session_state.pop("clear_company_search", None)
@@ -500,7 +627,7 @@ elif current_tab == "COMPANIES":
 
 # ════════════════════ INTELLIGENCE ════════════════════
 
-elif current_tab == "INTELLIGENCE":
+with tabs[2]:  # INTELLIGENCE
     cid = st.session_state.sel_company
     ctid = st.session_state.sel_contact
     if not cid:
@@ -789,7 +916,7 @@ elif current_tab == "INTELLIGENCE":
 
 # ════════════════════ STRATEGIST ════════════════════
 
-elif current_tab == "STRATEGIST":
+with tabs[3]:  # STRATEGIST
     cid = st.session_state.sel_company
     ctid = st.session_state.sel_contact
     sid = st.session_state.session_id
@@ -977,7 +1104,7 @@ elif current_tab == "STRATEGIST":
 
 # ════════════════════ ACTIONS ════════════════════
 
-elif current_tab == "ACTIONS":
+with tabs[4]:  # ACTIONS
     sid = st.session_state.session_id
     cid = st.session_state.sel_company
     ctid = st.session_state.sel_contact
@@ -1127,7 +1254,7 @@ elif current_tab == "ACTIONS":
 
 # ════════════════════ TIMELINE ════════════════════
 
-elif current_tab == "TIMELINE":
+with tabs[5]:  # TIMELINE
     cid = st.session_state.sel_company
     if not cid:
         st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Select a company first.</div>", unsafe_allow_html=True)
@@ -1154,7 +1281,7 @@ elif current_tab == "TIMELINE":
 
 # ════════════════════ CALENDAR ════════════════════
 
-elif current_tab == "CALENDAR":
+with tabs[6]:  # CALENDAR
     st.markdown(sh("UPCOMING ACTIONS"), unsafe_allow_html=True)
     cid = st.session_state.sel_company
     ctid = st.session_state.sel_contact
@@ -1205,7 +1332,7 @@ elif current_tab == "CALENDAR":
 
 # ════════════════════ PIPELINE ════════════════════
 
-elif current_tab == "PIPELINE":
+with tabs[7]:  # PIPELINE
     st.markdown(sh("CONTACT PIPELINE"), unsafe_allow_html=True)
     all_comp = get_all_companies()
     pipeline = {s: [] for s in CONTACT_STATUSES}
@@ -1240,7 +1367,7 @@ elif current_tab == "PIPELINE":
 
 # ════════════════════ HISTORY ════════════════════
 
-elif current_tab == "HISTORY":
+with tabs[8]:  # HISTORY
     ginsights = get_global_insights(user["id"], limit=8)
     if ginsights:
         st.markdown(sh("GLOBAL PATTERNS"), unsafe_allow_html=True)
@@ -1303,7 +1430,7 @@ elif current_tab == "HISTORY":
     if not sessions:
         st.markdown("<div style='text-align:center;padding:40px;color:var(--text-3);'>No sessions.</div>", unsafe_allow_html=True)
 
-elif current_tab == "ADVISOR":
+with tabs[9]:  # ADVISOR
     st.markdown(sh("ADVISOR"), unsafe_allow_html=True)
     st.caption("Ask for company suggestions, outreach plans, or advice. I remember our conversation and your pipeline.")
     if "advisor_messages" not in st.session_state:

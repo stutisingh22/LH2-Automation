@@ -9,3 +9,4 @@ psycopg2-binary>=2.9.9
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
 PyPDF2>=3.0.0
+extra-streamlit-components>=0.1.60
