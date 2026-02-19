@@ -10,6 +10,7 @@ Features:
 """
 
 import re
+import time
 import streamlit as st
 from datetime import datetime
 import hashlib
@@ -31,7 +32,7 @@ SESSION_DIR = Path(".sessions")
 SESSION_DIR.mkdir(exist_ok=True)
 
 from config import (
-    CONTACT_STATUSES, CONTACT_STATUS_LABELS, CONTACT_STATUS_COLORS,
+    CONTACT_STATUSES, CONTACT_STATUS_LABELS, CONTACT_STATUS_LABELS_STRIP, CONTACT_STATUS_COLORS,
     ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS,
     GOOGLE_SERVICE_ACCOUNT_JSON,
 )
@@ -50,6 +51,7 @@ from db_ops import (
     get_memory_events, get_global_insights,
     get_session_summary, get_pipeline_stats,
     merge_company_extra_data,
+    save_advisor_conversation, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from drive_sync import list_drive_files
@@ -212,6 +214,7 @@ def render_auth():
                     if usr:
                         st.session_state.user = usr
                         save_session_user(usr["id"])
+                        st.session_state._login_redirect = True
                         st.rerun()
                     else:
                         st.error("Invalid credentials")
@@ -232,6 +235,14 @@ def render_auth():
 if not render_auth():
     st.stop()
 
+# One-run loading screen after login to avoid login + main app overlap
+if st.session_state.pop("_login_redirect", None):
+    st.markdown(
+        "<div style='text-align:center;padding:38vh 0;font-size:15px;color:var(--text-2);'>Loading...</div>",
+        unsafe_allow_html=True,
+    )
+    time.sleep(0.35)
+    st.rerun()
 
 # ══════════════════════════════════════════════════════════════
 # SESSION STATE
@@ -424,27 +435,16 @@ with header_cols[0]:
         "</div>",
         unsafe_allow_html=True)
 with header_cols[1]:
-    if st.session_state.sel_company:
-        _c = get_company(st.session_state.sel_company)
-        if _c:
-            contact_info = ""
-            if st.session_state.sel_contact:
-                _t = get_contact(st.session_state.sel_contact)
-                if _t:
-                    contact_info = f"<span class='breadcrumb-sep'>›</span><span class='breadcrumb-item'>{_t['name']}</span>"
-            st.markdown(
-                f"<div class='breadcrumb-container'>"
-                f"<span class='breadcrumb-item'>{_c['domain']}</span>{contact_info}"
-                f"</div>",
-                unsafe_allow_html=True)
+    # Breadcrumb (company > contact) intentionally not shown — selection stays in list only
+    pass
 with header_cols[2]:
     st.markdown(
         f"<div class='dashboard-header-right'>"
         f"<div class='user-badge'>"
         f"<span class='user-avatar'>{user['username'][0].upper()}</span>"
         f"<span class='user-info'>"
-        f"<span class='user-name'>{user['username']}</span>"
-        f"<span class='user-role'>Admin</span>"
+        f"<span class='user-name' style='font-size:9px!important;'>{user['username'].title()}</span>"
+        f"<span class='user-role' style='font-size:7px!important;'>Admin</span>"
         f"</span>"
         f"</div>"
         f"</div>",
@@ -474,7 +474,7 @@ with tabs[0]:  # DASHBOARD
         with col:
             st.markdown(
                 f"<div style='text-align:center;'><div style='font-size:20px;font-weight:700;'>{stats.get(s,0)}</div>"
-                f"<div style='margin-top:4px;'>{bdg(CONTACT_STATUS_LABELS.get(s,s), CONTACT_STATUS_COLORS.get(s,'gray'))}</div></div>",
+                f"<div style='margin-top:4px;'>{bdg(CONTACT_STATUS_LABELS_STRIP.get(s,s), CONTACT_STATUS_COLORS.get(s,'gray'))}</div></div>",
                 unsafe_allow_html=True)
 
     overdue = get_overdue_followups(3)
@@ -523,6 +523,9 @@ with tabs[1]:  # COMPANIES
     if st.session_state.get("clear_company_search"):
         st.session_state.pop("csearch", None)
         st.session_state.pop("clear_company_search", None)
+    # Pre-fill search after LinkedIn lookup (must set before csearch widget is created)
+    if "linkedin_search_domain" in st.session_state:
+        st.session_state["csearch"] = st.session_state.pop("linkedin_search_domain")
     cc1, cc2, cc3 = st.columns([2, 1, 1])
     with cc1:
         sq = st.text_input("Search", placeholder="Search domain or name...", label_visibility="collapsed", key="csearch")
@@ -561,8 +564,10 @@ with tabs[1]:  # COMPANIES
                                 email=lead.get("email"), linkedin=lead.get("linkedin"),
                                 city=lead.get("city"), state=lead.get("state"), country=lead.get("country"),
                                 notion_page_id=lead.get("page_id"))
-                        st.session_state.sel_company = cid
-                        st.success(f"Found: {lead['domain']}")
+                        # Do NOT set sel_company/sel_contact — show in list so user can select like domain search
+                        st.session_state["linkedin_search_domain"] = lead["domain"]
+                        spoc_label = f" — {lead['name']}" if lead.get("name") else ""
+                        st.success(f"Found: {lead['domain']}{spoc_label}. Select it from the list below.")
                         st.rerun()
                     else:
                         st.error("No match in Notion")
@@ -1345,13 +1350,11 @@ with tabs[7]:  # PIPELINE
     mcols = st.columns(len(CONTACT_STATUSES))
     for col, s in zip(mcols, CONTACT_STATUSES):
         with col:
-            st.markdown(mcard(len(pipeline[s]), CONTACT_STATUS_LABELS.get(s, s)), unsafe_allow_html=True)
+            st.markdown(mcard(len(pipeline[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)), unsafe_allow_html=True)
 
     bcols = st.columns(len(CONTACT_STATUSES))
     for i, s in enumerate(CONTACT_STATUSES):
         with bcols[i]:
-            sc = CONTACT_STATUS_COLORS.get(s, "gray")
-            st.markdown(f"<div style='text-align:center;margin:8px 0;'>{bdg(CONTACT_STATUS_LABELS.get(s,s),sc)}</div>", unsafe_allow_html=True)
             for item in pipeline[s]:
                 ctd, cd = item["contact"], item["company"]
                 score = compute_lead_score(cd, ctd)
@@ -1431,13 +1434,67 @@ with tabs[8]:  # HISTORY
         st.markdown("<div style='text-align:center;padding:40px;color:var(--text-3);'>No sessions.</div>", unsafe_allow_html=True)
 
 with tabs[9]:  # ADVISOR
-    st.markdown(sh("ADVISOR"), unsafe_allow_html=True)
-    st.caption("Ask for company suggestions, outreach plans, or advice. I remember our conversation and your pipeline.")
+    # Header with history button
+    h1, h2 = st.columns([3, 1])
+    with h1:
+        st.markdown(sh("ADVISOR"), unsafe_allow_html=True)
+        st.caption("Ask for company suggestions, outreach plans, or advice. I remember our conversation and your pipeline.")
+    with h2:
+        past_convs = get_advisor_conversations(user["id"], limit=20)
+        if past_convs:
+            def format_conv_option(conv_id):
+                if conv_id is None:
+                    return "💬 Current Chat"
+                conv = next((c for c in past_convs if c["id"] == conv_id), None)
+                if not conv:
+                    return ""
+                
+                from datetime import datetime
+                updated = datetime.fromisoformat(conv["updated_at"])
+                now = datetime.utcnow()
+                diff = now - updated
+                
+                if diff.days == 0:
+                    if diff.seconds < 3600:
+                        time_str = f"{diff.seconds // 60}m ago"
+                    else:
+                        time_str = f"{diff.seconds // 3600}h ago"
+                elif diff.days == 1:
+                    time_str = "Yesterday"
+                elif diff.days < 7:
+                    time_str = f"{diff.days}d ago"
+                else:
+                    time_str = updated.strftime("%b %d")
+                
+                return f"{conv['title']} • {time_str} • {conv['msg_count']} msgs"
+            
+            def on_history_select():
+                selected = st.session_state.advisor_history_select
+                if selected:
+                    loaded = load_advisor_conversation(selected)
+                    if loaded:
+                        st.session_state.advisor_messages = loaded["messages"]
+                        st.session_state.advisor_loaded_conv_id = selected
+            
+            current_selection = st.session_state.get("advisor_loaded_conv_id")
+            
+            selected_conv = st.selectbox(
+                "History",
+                options=[None] + [c["id"] for c in past_convs],
+                format_func=format_conv_option,
+                key="advisor_history_select",
+                on_change=on_history_select,
+                index=0
+            )
+    
+    # Chat interface
     if "advisor_messages" not in st.session_state:
         st.session_state.advisor_messages = []
+    
     for msg in st.session_state.advisor_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+    
     prompt = st.chat_input("Ask for companies to reach out to, plans, or advice...")
     if prompt:
         st.session_state.advisor_messages.append({"role": "user", "content": prompt})
@@ -1450,4 +1507,7 @@ with tabs[9]:  # ADVISOR
                 )
             st.markdown(reply)
         st.session_state.advisor_messages.append({"role": "assistant", "content": reply})
+        
+        # Auto-save conversation after each exchange
+        save_advisor_conversation(user["id"], st.session_state.advisor_messages)
         st.rerun()

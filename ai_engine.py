@@ -499,6 +499,33 @@ def advisor_chat(uid, user_message, history):
         return f"Sorry, I couldn’t process that: {e}"
 
 
+
+def summarize_advisor_title(messages):
+    """Generate a concise 3-5 word title for an advisor conversation."""
+    if not messages:
+        return "New Conversation"
+    
+    first_exchange = []
+    for m in messages[:4]:
+        first_exchange.append(f"{m['role']}: {m['content'][:200]}")
+    
+    context = "\n".join(first_exchange)
+    
+    try:
+        r = _ai().messages.create(
+            model=AI_MODEL,
+            max_tokens=20,
+            system="Generate a concise 3-5 word title summarizing the main topic of this conversation. Return ONLY the title, no quotes or explanation.",
+            messages=[{"role": "user", "content": context}],
+        )
+        title = (r.content[0].text or "").strip().strip('"').strip("'")
+        return title if title else messages[0]["content"][:50]
+    except Exception as e:
+        log.error("summarize_advisor_title failed: %s", e)
+        first_user_msg = next((m["content"] for m in messages if m["role"] == "user"), "Advisor Chat")
+        return first_user_msg[:50] + ("..." if len(first_user_msg) > 50 else "")
+
+
 _STOP_WORDS = {
     "what", "when", "where", "this", "that", "they", "their", "about",
     "should", "would", "could", "have", "with", "from", "been", "some",

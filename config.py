@@ -62,6 +62,17 @@ CONTACT_STATUS_LABELS = {
     "partnership_active": "Partnership Active",
     "closed_lost": "Closed Lost",
 }
+# Short labels for pipeline strip only (readable, single line, no wrap)
+CONTACT_STATUS_LABELS_STRIP = {
+    "not_contacted": "Not Contacted",
+    "outreach_sent": "Outreach Sent",
+    "awaiting_reply": "Awaiting Reply",
+    "replied_positive": "Replied",
+    "replied_negative": "Not Replied",
+    "meeting_booked": "Meeting Booked",
+    "partnership_active": "Partnership",
+    "closed_lost": "Closed Lost",
+}
 CONTACT_STATUS_COLORS = {
     "not_contacted": "gray",
     "outreach_sent": "blue",

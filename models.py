@@ -141,3 +141,13 @@ class GlobalInsight(Base):
     confidence_score = Column(Float, default=0.5)
     source_count = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdvisorConversation(Base):
+    __tablename__ = "advisor_conversations"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(255))
+    messages = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

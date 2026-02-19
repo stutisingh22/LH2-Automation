@@ -20,7 +20,7 @@ from sqlalchemy.pool import QueuePool, StaticPool
 from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
     Base, User, Company, Contact, Session, Message,
-    Action, MemoryEvent, GlobalInsight,
+    Action, MemoryEvent, GlobalInsight, AdvisorConversation,
 )
 
 log = logging.getLogger(__name__)
@@ -710,3 +710,51 @@ def get_pipeline_stats():
             status: s.query(Contact).filter_by(status=status).count()
             for status in CONTACT_STATUSES
         }
+
+
+# ══════════════════════════════════════════════════════════════
+# ADVISOR CONVERSATIONS
+# ══════════════════════════════════════════════════════════════
+
+def save_advisor_conversation(user_id, messages, title=None):
+    """Save or update advisor conversation."""
+    with db() as s:
+        if not title:
+            from ai_engine import summarize_advisor_title
+            title = summarize_advisor_title(messages)
+        
+        conv = AdvisorConversation(
+            user_id=user_id,
+            title=title,
+            messages=messages
+        )
+        s.add(conv)
+        s.commit()
+        return conv.id
+
+
+def get_advisor_conversations(user_id, limit=20):
+    """Get all advisor conversations for user."""
+    with db() as s:
+        convs = s.query(AdvisorConversation).filter_by(user_id=user_id).order_by(AdvisorConversation.updated_at.desc()).limit(limit).all()
+        return [{"id": c.id, "title": c.title, "messages": c.messages, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat(), "msg_count": len(c.messages)} for c in convs]
+
+
+def load_advisor_conversation(conv_id):
+    """Load specific advisor conversation."""
+    with db() as s:
+        conv = s.get(AdvisorConversation, conv_id)
+        if conv:
+            return {"id": conv.id, "title": conv.title, "messages": conv.messages}
+        return None
+
+
+def delete_advisor_conversation(conv_id):
+    """Delete advisor conversation."""
+    with db() as s:
+        conv = s.get(AdvisorConversation, conv_id)
+        if conv:
+            s.delete(conv)
+            s.commit()
+            return True
+        return False
