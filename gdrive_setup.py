@@ -7,11 +7,8 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# 1. LOAD ENVIRONMENT VARIABLES
-# This tells the script to look specifically for 'keys.env' in your folder
 load_dotenv("keys.env")
 
-# These will now correctly pull from keys.env instead of returning 'None'
 CONTEXT_FOLDER_ID = os.getenv("CONTEXT_FOLDER_ID")
 SCOPES = [
     'https://www.googleapis.com/auth/drive.readonly',
@@ -64,10 +61,9 @@ def test_folder_connection(service):
         print(f"❌ Connection Failed: {e}")
 
 if __name__ == "__main__":
-    # Ensure token.pickle is fresh if you just added Gmail scopes
+
     print("Starting Google Drive Handshake...")
     drive_service = get_gdrive_service()
     print("Google Drive Connection Authenticated!")
     
-    # Run the test to find your files
     test_folder_connection(drive_service)

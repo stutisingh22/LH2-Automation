@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 
-# 1. THE PASSWORD (Tell your team: LH2_2026)
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
@@ -18,7 +17,6 @@ if not check_password():
 
 st.title("LH2 Holdings: AI Outreach Control")
 
-# 2. THE CHAT WINDOW
 st.subheader("Edit AI Strategy")
 user_prompt = st.text_area("What should Claude focus on?", 
                             value="Draft a strategic partnership email. Keep it brief.", 

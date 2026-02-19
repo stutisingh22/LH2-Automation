@@ -1,0 +1,361 @@
+"""
+drive_sync.py — Google Drive integration using OAuth
+
+Uses credentials.json + token.json (same as notion_research_bot.py).
+Falls back to service account if GOOGLE_SERVICE_ACCOUNT_JSON is set.
+
+FIX: Now supports OAuth flow matching your existing research bot setup.
+"""
+
+import io
+import json
+import os
+import logging
+from datetime import datetime
+
+from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAX_DRIVE_TOKENS
+
+log = logging.getLogger(__name__)
+
+_drive_svc = None
+_docs_svc = None
+_file_cache = {}
+
+# Path to OAuth files — look in the same directory as this file
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_CREDS_FILE = os.path.join(_APP_DIR, "credentials.json")
+_TOKEN_FILE = os.path.join(_APP_DIR, "token.json")
+
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+]
+
+
+def _get_oauth_creds():
+    """Get OAuth credentials from token.json, refreshing if needed."""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+
+        creds = None
+        if os.path.exists(_TOKEN_FILE):
+            creds = Credentials.from_authorized_user_file(_TOKEN_FILE, SCOPES)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                # Save refreshed token
+                with open(_TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+            elif os.path.exists(_CREDS_FILE):
+                from google_auth_oauthlib.flow import InstalledAppFlow
+                flow = InstalledAppFlow.from_client_secrets_file(_CREDS_FILE, SCOPES)
+                creds = flow.run_local_server(port=0)
+                with open(_TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+            else:
+                return None
+
+        return creds
+    except Exception as e:
+        log.error("OAuth credential error: %s", e)
+        return None
+
+
+def _get_service_account_creds():
+    """Get service account credentials from env var."""
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        return None
+    try:
+        from google.oauth2 import service_account
+        return service_account.Credentials.from_service_account_info(
+            json.loads(GOOGLE_SERVICE_ACCOUNT_JSON),
+            scopes=SCOPES,
+        )
+    except Exception as e:
+        log.error("Service account credential error: %s", e)
+        return None
+
+
+def _get_creds():
+    """Try OAuth first, then service account."""
+    # Prefer OAuth if token.json exists
+    if os.path.exists(_TOKEN_FILE) or os.path.exists(_CREDS_FILE):
+        creds = _get_oauth_creds()
+        if creds:
+            return creds
+
+    # Fallback to service account
+    return _get_service_account_creds()
+
+
+def _drive():
+    global _drive_svc
+    if _drive_svc:
+        return _drive_svc
+    creds = _get_creds()
+    if not creds:
+        return None
+    try:
+        from googleapiclient.discovery import build
+        _drive_svc = build("drive", "v3", credentials=creds)
+        log.info("Drive service initialized (OAuth)" if os.path.exists(_TOKEN_FILE) else "Drive service initialized (service account)")
+        return _drive_svc
+    except Exception as e:
+        log.error("Failed to init Drive service: %s", e)
+        return None
+
+
+def _docs():
+    global _docs_svc
+    if _docs_svc:
+        return _docs_svc
+    creds = _get_creds()
+    if not creds:
+        return None
+    try:
+        from googleapiclient.discovery import build
+        _docs_svc = build("docs", "v1", credentials=creds)
+        return _docs_svc
+    except Exception as e:
+        log.error("Failed to init Docs service: %s", e)
+        return None
+
+
+def list_drive_files(company_name=None):
+    svc = _drive()
+    if not svc:
+        return []
+    try:
+        parts = ["trashed = false"]
+        if GOOGLE_DRIVE_FOLDER_ID:
+            parts.append(f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents")
+        if company_name:
+            safe = company_name.replace("'", "\\'")
+            parts.append(f"name contains '{safe}'")
+        r = (
+            svc.files()
+            .list(
+                q=" and ".join(parts),
+                pageSize=50,
+                fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+                orderBy="modifiedTime desc",
+            )
+            .execute()
+        )
+        return r.get("files", [])
+    except Exception as e:
+        log.warning("Drive list_files failed: %s", e)
+        return []
+
+
+def fetch_doc_text(file_id, mime):
+    cached = _file_cache.get(file_id)
+    if cached and (datetime.utcnow() - cached["at"]).total_seconds() < 600:
+        return cached["text"]
+
+    text = None
+
+    if mime == "application/vnd.google-apps.document":
+        ds = _docs()
+        if ds:
+            try:
+                doc = ds.documents().get(documentId=file_id).execute()
+                parts = []
+                for el in doc.get("body", {}).get("content", []):
+                    if "paragraph" in el:
+                        for e in el["paragraph"].get("elements", []):
+                            if "textRun" in e:
+                                parts.append(e["textRun"].get("content", ""))
+                text = "".join(parts).strip()
+            except Exception as e:
+                log.warning("Failed to read Google Doc %s: %s", file_id, e)
+
+    elif mime == "application/pdf":
+        svc = _drive()
+        if svc:
+            try:
+                from googleapiclient.http import MediaIoBaseDownload
+                request = svc.files().get_media(fileId=file_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                fh.seek(0)
+
+                from pypdf import PdfReader
+                reader = PdfReader(fh)
+                text = "\n".join(pg.extract_text() or "" for pg in reader.pages).strip()
+            except ImportError:
+                try:
+                    from PyPDF2 import PdfReader
+                    fh.seek(0)
+                    reader = PdfReader(fh)
+                    text = "\n".join(pg.extract_text() or "" for pg in reader.pages).strip()
+                except Exception as e2:
+                    log.warning("Failed to read PDF %s (no PDF library): %s", file_id, e2)
+            except Exception as e:
+                log.warning("Failed to read PDF %s: %s", file_id, e)
+
+    if text:
+        _file_cache[file_id] = {"text": text, "at": datetime.utcnow()}
+    return text
+
+
+def build_drive_context(company_name, company_domain=None):
+    """Build text context from Drive files for AI strategist."""
+    files = list_drive_files(company_name=company_name)
+    if not files and company_domain:
+        files = list_drive_files(company_name=company_domain)
+    if not files:
+        return ""
+
+    parts = []
+    tokens = 0
+    for f in files[:10]:
+        text = fetch_doc_text(f["id"], f.get("mimeType", ""))
+        if not text:
+            continue
+        ft = len(text) // 4
+        if tokens + ft > MAX_DRIVE_TOKENS:
+            rem = MAX_DRIVE_TOKENS - tokens
+            if rem > 200:
+                text = text[: rem * 4] + "\n...(truncated)"
+                ft = rem
+            else:
+                break
+        parts.append(f"--- {f['name']} ---\n{text}")
+        tokens += ft
+
+    return "\n\n".join(parts)
+
+
+def sync_all_drive_pdfs(folder_id=None):
+    """
+    Sync all PDFs from Drive folder into a single context string.
+    Same as notion_research_bot.py's sync_drive_memory().
+    Used to feed the research agent.
+    """
+    svc = _drive()
+    if not svc:
+        return ""
+
+    fid = folder_id or GOOGLE_DRIVE_FOLDER_ID
+    if not fid:
+        return ""
+
+    try:
+        from googleapiclient.http import MediaIoBaseDownload
+
+        query = f"'{fid}' in parents and mimeType='application/pdf'"
+        results = svc.files().list(q=query, fields="files(id, name)").execute()
+        items = results.get("files", [])
+
+        full_text = ""
+        for item in items:
+            request = svc.files().get_media(fileId=item["id"])
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            fh.seek(0)
+
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(fh)
+            except ImportError:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(fh)
+
+            doc_text = ""
+            for page in reader.pages:
+                doc_text += (page.extract_text() or "") + "\n"
+
+            full_text += f"\n\n--- {item['name']} ---\n{doc_text}"
+
+        log.info("Drive sync: %d PDFs, %d chars", len(items), len(full_text))
+        return full_text
+
+    except Exception as e:
+        log.error("Drive sync failed: %s", e)
+        return ""
+
+
+# ── Global LH2 / Accelerate / offerings context (all folders) ──
+
+_LH2_KNOWLEDGE_CACHE = {}
+_LH2_KNOWLEDGE_CACHE_AT = None
+_LH2_CACHE_TTL_SEC = 3600  # 1 hour
+MAX_LH2_KNOWLEDGE_CHARS = 40000  # cap for global context
+
+
+def _list_all_files_recursive(folder_id, svc, max_files=80):
+    """List all files under folder_id (recursive). Returns list of {id, name, mimeType}."""
+    out = []
+    stack = [folder_id]
+    seen = set()
+
+    while stack and len(out) < max_files:
+        fid = stack.pop()
+        if fid in seen:
+            continue
+        seen.add(fid)
+        try:
+            r = svc.files().list(
+                q=f"'{fid}' in parents and trashed = false",
+                pageSize=50,
+                fields="files(id,name,mimeType)",
+            ).execute()
+            for f in r.get("files", []):
+                mime = f.get("mimeType", "")
+                if mime == "application/vnd.google-apps.folder":
+                    stack.append(f["id"])
+                elif "document" in mime or mime == "application/pdf":
+                    out.append({"id": f["id"], "name": f.get("name", "?"), "mimeType": mime})
+        except Exception as e:
+            log.warning("List folder %s failed: %s", fid, e)
+    return out
+
+
+def get_lh2_knowledge_context(force_refresh=False):
+    """
+    Build a single context string from the linked Drive (all folders) describing
+    LH2, Accelerate, and offerings. Used so the AI knows what we do when researching
+    people and suggesting targets. Cached for 1 hour.
+    """
+    global _LH2_KNOWLEDGE_CACHE, _LH2_KNOWLEDGE_CACHE_AT
+    now = datetime.utcnow()
+    if not force_refresh and _LH2_KNOWLEDGE_CACHE_AT and (now - _LH2_KNOWLEDGE_CACHE_AT).total_seconds() < _LH2_CACHE_TTL_SEC:
+        return _LH2_KNOWLEDGE_CACHE.get("text", "")
+
+    svc = _drive()
+    if not svc or not GOOGLE_DRIVE_FOLDER_ID:
+        return ""
+
+    try:
+        files = _list_all_files_recursive(GOOGLE_DRIVE_FOLDER_ID, svc, max_files=80)
+        parts = []
+        total_chars = 0
+        for f in files:
+            if total_chars >= MAX_LH2_KNOWLEDGE_CHARS:
+                break
+            text = fetch_doc_text(f["id"], f.get("mimeType", ""))
+            if not text or len(text) < 50:
+                continue
+            take = min(len(text), MAX_LH2_KNOWLEDGE_CHARS - total_chars - 200)
+            if take < 100:
+                continue
+            block = f"--- {f['name']} ---\n{text[:take]}" + ("\n...(truncated)" if len(text) > take else "")
+            parts.append(block)
+            total_chars += len(block)
+        out = "\n\n".join(parts) if parts else ""
+        _LH2_KNOWLEDGE_CACHE["text"] = out
+        _LH2_KNOWLEDGE_CACHE_AT = now
+        log.info("LH2 knowledge context: %d files, %d chars", len(parts), len(out))
+        return out
+    except Exception as e:
+        log.error("get_lh2_knowledge_context failed: %s", e)
+        return ""

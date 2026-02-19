@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from email.message import EmailMessage
 from googleapiclient.discovery import build
 
-# Load from your specific file
 load_dotenv("keys.env")
 
 def get_gmail_service():

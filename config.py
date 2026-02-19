@@ -1,0 +1,155 @@
+"""
+config.py — Configuration, env vars, and constants
+"""
+
+import os
+import re
+from dotenv import load_dotenv
+
+load_dotenv("keys.env")
+load_dotenv(".env")
+
+# ── Database ──────────────────────────────────────────────────
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# ── API Keys ──────────────────────────────────────────────────
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+
+# ── Notion DB ID (sanitized) ─────────────────────────────────
+def _clean_notion_id(raw: str) -> str:
+    """Accept full URLs, IDs with/without dashes, IDs with ?v= params."""
+    clean = raw.strip().strip('"').strip("'")
+    if not clean:
+        return ""
+    # Extract from full Notion URL
+    if "notion.so" in clean or "notion.site" in clean:
+        clean = clean.split("?")[0].rstrip("/").split("/")[-1]
+    elif "?" in clean:
+        clean = clean.split("?")[0]
+    clean = clean.replace("-", "")
+    # Validate: must be 32 hex chars
+    if len(clean) == 32 and all(c in "0123456789abcdef" for c in clean.lower()):
+        return f"{clean[:8]}-{clean[8:12]}-{clean[12:16]}-{clean[16:20]}-{clean[20:]}"
+    return clean  # Return as-is if we can't parse it
+
+NOTION_DATABASE_ID = _clean_notion_id(os.getenv("NOTION_DATABASE_ID", ""))
+
+# ── AI Settings ───────────────────────────────────────────────
+AI_MODEL = os.getenv("AI_MODEL", "claude-sonnet-4-5")
+AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "4000"))
+SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "20"))
+MAX_CONTEXT_MESSAGES = 20
+MAX_DRIVE_TOKENS = 6000
+
+# ── Contact Pipeline ─────────────────────────────────────────
+CONTACT_STATUSES = [
+    "not_contacted", "outreach_sent", "awaiting_reply",
+    "replied_positive", "replied_negative", "meeting_booked",
+    "partnership_active", "closed_lost",
+]
+CONTACT_STATUS_LABELS = {
+    "not_contacted": "Not Contacted",
+    "outreach_sent": "Outreach Sent",
+    "awaiting_reply": "Awaiting Reply",
+    "replied_positive": "Replied Positive",
+    "replied_negative": "Replied Negative",
+    "meeting_booked": "Meeting Booked",
+    "partnership_active": "Partnership Active",
+    "closed_lost": "Closed Lost",
+}
+CONTACT_STATUS_COLORS = {
+    "not_contacted": "gray",
+    "outreach_sent": "blue",
+    "awaiting_reply": "yellow",
+    "replied_positive": "green",
+    "replied_negative": "red",
+    "meeting_booked": "green",
+    "partnership_active": "green",
+    "closed_lost": "red",
+}
+
+# ── Actions ───────────────────────────────────────────────────
+ACTION_TYPES = ["Outreach", "Follow-up", "Meeting", "Note", "Research", "Other"]
+ACTION_CHANNELS = ["LinkedIn", "Email", "Phone", "In-Person", "Other"]
+ACTION_STATUSES = [
+    "planned", "sent", "completed", "no_response",
+    "replied_positive", "replied_negative", "meeting_booked",
+    "deal_closed", "deal_lost",
+]
+ACTION_STATUS_COLORS = {
+    "planned": "blue",
+    "sent": "yellow",
+    "completed": "green",
+    "no_response": "red",
+    "replied_positive": "green",
+    "replied_negative": "red",
+    "meeting_booked": "green",
+    "deal_closed": "green",
+    "deal_lost": "red",
+}
+
+# ── Roles & Permissions ──────────────────────────────────────
+USER_ROLES = ["admin", "strategist", "viewer"]
+ROLE_PERMISSIONS = {
+    "admin": {
+        "can_delete_sessions": True, "can_edit_company": True,
+        "can_log_outcomes": True, "can_manage_users": True,
+        "can_use_strategist": True,
+    },
+    "strategist": {
+        "can_delete_sessions": False, "can_edit_company": True,
+        "can_log_outcomes": True, "can_manage_users": False,
+        "can_use_strategist": True,
+    },
+    "viewer": {
+        "can_delete_sessions": False, "can_edit_company": False,
+        "can_log_outcomes": False, "can_manage_users": False,
+        "can_use_strategist": False,
+    },
+}
+
+# ── Timezones ─────────────────────────────────────────────────
+TIMEZONE_COUNTRIES = {
+    "uk": "Europe/London", "united kingdom": "Europe/London",
+    "britain": "Europe/London", "india": "Asia/Kolkata",
+    "australia": "Australia/Sydney", "canada": "America/Toronto",
+    "germany": "Europe/Berlin", "france": "Europe/Paris",
+    "japan": "Asia/Tokyo", "brazil": "America/Sao_Paulo",
+    "singapore": "Asia/Singapore", "uae": "Asia/Dubai",
+    "emirates": "Asia/Dubai", "israel": "Asia/Jerusalem",
+    "korea": "Asia/Seoul", "spain": "Europe/Madrid",
+    "italy": "Europe/Rome", "mexico": "America/Mexico_City",
+    "netherlands": "Europe/Amsterdam", "sweden": "Europe/Stockholm",
+    "norway": "Europe/Oslo", "denmark": "Europe/Copenhagen",
+    "portugal": "Europe/Lisbon", "poland": "Europe/Warsaw",
+    "turkey": "Europe/Istanbul", "south africa": "Africa/Johannesburg",
+    "china": "Asia/Shanghai", "hong kong": "Asia/Hong_Kong",
+    "taiwan": "Asia/Taipei", "thailand": "Asia/Bangkok",
+    "indonesia": "Asia/Jakarta", "philippines": "Asia/Manila",
+    "new zealand": "Pacific/Auckland",
+    "argentina": "America/Argentina/Buenos_Aires",
+    "chile": "America/Santiago", "colombia": "America/Bogota",
+}
+US_TZ = {
+    "US/Pacific": [
+        "ca", "california", "wa", "washington", "or", "oregon",
+        "nv", "nevada",
+    ],
+    "US/Mountain": [
+        "co", "colorado", "az", "arizona", "ut", "utah",
+        "mt", "montana", "nm", "new mexico", "wy", "wyoming",
+        "id", "idaho",
+    ],
+    "US/Central": [
+        "il", "illinois", "tx", "texas", "mn", "minnesota",
+        "wi", "wisconsin", "mo", "missouri", "ia", "iowa",
+        "tn", "tennessee", "la", "louisiana", "ok", "oklahoma",
+        "ar", "arkansas", "ks", "kansas", "ne", "nebraska",
+        "al", "alabama", "ms", "mississippi",
+    ],
+}

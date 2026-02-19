@@ -1,0 +1,143 @@
+"""
+models.py — SQLAlchemy ORM models
+"""
+
+from datetime import datetime
+from sqlalchemy import (
+    Column, Integer, String, Text, Float, Boolean, DateTime,
+    ForeignKey, JSON,
+)
+from sqlalchemy.orm import relationship, declarative_base
+
+Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(256), nullable=False)
+    email = Column(String(255))
+    role = Column(String(20), nullable=False, default="strategist")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Company(Base):
+    __tablename__ = "companies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    domain = Column(String(255), unique=True, nullable=False, index=True)
+    publisher_type = Column(String(100))
+    content_type = Column(String(100))
+    monthly_visits = Column(Integer)
+    notion_page_id = Column(String(64))
+    research_status = Column(String(50))
+    gmail_thread = Column(Text)
+    extra_data = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    contacts = relationship(
+        "Contact", back_populates="company", cascade="all, delete-orphan"
+    )
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    name = Column(String(255), nullable=False)
+    role = Column(String(150))
+    email = Column(String(255))
+    linkedin = Column(Text)
+    city = Column(String(100))
+    state = Column(String(100))
+    country = Column(String(100))
+    status = Column(String(50), default="not_contacted")
+    notion_page_id = Column(String(64))
+    extra_data = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    company = relationship("Company", back_populates="contacts")
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    contact_id = Column(
+        Integer, ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    owner_user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
+    )
+    strategic_summary = Column(Text)
+    summary_msg_count = Column(Integer, default=0)
+    lead_score = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Action(Base):
+    __tablename__ = "actions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action_type = Column(String(50), nullable=False)
+    channel = Column(String(50))
+    description = Column(Text)
+    content_sent = Column(Text)
+    response_content = Column(Text)
+    response_type = Column(String(50))
+    status = Column(String(50), default="planned")
+    outcome = Column(Text)
+    context_note = Column(Text)
+    sequence_id = Column(String(20))
+    sequence_step = Column(Integer)
+    scheduled_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MemoryEvent(Base):
+    __tablename__ = "memory_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        Integer, ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    event_type = Column(String(50), nullable=False)
+    summary = Column(Text, nullable=False)
+    importance_score = Column(Integer, default=5)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GlobalInsight(Base):
+    __tablename__ = "global_insights"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    insight = Column(Text, nullable=False)
+    confidence_score = Column(Float, default=0.5)
+    source_count = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
