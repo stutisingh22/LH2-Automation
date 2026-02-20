@@ -124,26 +124,29 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
         or "(No global insights yet.)"
     )
 
-    # Research context — from passed notes or extra_data
+    # Research context — prefer Command Center research_full when set; else Notion notes/overrides
     research_context = ""
-    overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
-    if research_notes:
-        for note in research_notes:
-            title = note.get("title", "").strip() or "Untitled"
-            ovr = overrides.get(title)
-            if isinstance(ovr, str) and ovr.strip():
-                research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
-            else:
-                research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
-    else:
-        extra = comp.get("extra_data") or {}
-        for note in extra.get("research_notes", []):
-            title = note.get("title", "").strip() or "Untitled"
-            ovr = overrides.get(title)
-            if isinstance(ovr, str) and ovr.strip():
-                research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
-            else:
-                research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
+    extra = comp.get("extra_data") or {}
+    if extra.get("research_full"):
+        research_context = "\n--- Research Document ---\n" + ((extra["research_full"] or "")[:18000])
+    if not research_context:
+        overrides = extra.get("research_overrides") or {}
+        if research_notes:
+            for note in research_notes:
+                title = note.get("title", "").strip() or "Untitled"
+                ovr = overrides.get(title)
+                if isinstance(ovr, str) and ovr.strip():
+                    research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
+                else:
+                    research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
+        if not research_context:
+            for note in extra.get("research_notes", []):
+                title = note.get("title", "").strip() or "Untitled"
+                ovr = overrides.get(title)
+                if isinstance(ovr, str) and ovr.strip():
+                    research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
+                else:
+                    research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
 
     drive_ctx = build_drive_context(comp.get("name", ""), comp.get("domain", ""))
     lh2_knowledge = get_lh2_knowledge_context()
@@ -846,4 +849,129 @@ Then provide a brief STRATEGY NOTE explaining your reasoning."""
         return r.content[0].text
     except Exception as e:
         log.error("Replan failed: %s", e)
+        return None
+
+
+def refine_email_draft(current_draft, instruction, draft_type="email"):
+    """
+    Revise an email or LinkedIn draft based on user instruction. Returns the revised draft text only.
+    draft_type: "email" or "linkedin". LinkedIn drafts are kept under 300 characters.
+    """
+    if not (current_draft or "").strip():
+        return None
+    is_linkedin = (draft_type or "").lower() == "linkedin"
+    system = """You are an expert outreach copy editor.
+
+Your task:
+- Rewrite the draft according to the user's instruction.
+- The output MUST be meaningfully different from the original.
+- If instruction says shorter, reduce length.
+- If more direct, remove fluff.
+- If stronger CTA, rewrite closing.
+- If change tone, rewrite tone.
+
+ABSOLUTE RULES:
+- Never repeat the draft unchanged.
+- Never explain what you changed.
+- Never add commentary.
+- Never wrap in quotes.
+- Output ONLY the final edited draft.
+"""
+    if is_linkedin:
+        system += (
+            " The draft is a LinkedIn connection request. It MUST remain under 300 characters. "
+            "If longer than 300 characters, aggressively shorten it."
+        )
+    else:
+        system += " If the draft contains a Subject: line, preserve a Subject line in the rewrite."
+    prompt = f"""Edit this draft according to the instruction.
+
+INSTRUCTION:
+{instruction.strip()}
+
+ORIGINAL DRAFT:
+{current_draft.strip()}
+
+Output ONLY the final edited draft:"""
+    try:
+        r = _ai().messages.create(
+            model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        initial_raw = (r.content[0].text or "").strip()
+        if not initial_raw:
+            log.warning("Refine draft returned empty response")
+            return None
+        raw = initial_raw
+        prefixes = (
+            "REVISED DRAFT:", "Revised draft:", "Here is the revised draft:",
+            "Here's the revised draft:", "Revised LinkedIn message:",
+            "Here is the revised connection request:", "Here's the revised message:",
+            "Revised message:", "Revised:", "Here is the revised:", "Here's the revised:",
+        )
+        raw_upper = raw.upper()
+        for prefix in prefixes:
+            if raw_upper.startswith(prefix.upper()):
+                raw = raw[len(prefix):].lstrip(" :\n\t")
+                break
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'", "`"):
+            raw = raw[1:-1].strip()
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw = "\n".join(lines)
+        out = raw.strip() or initial_raw
+        orig_norm = " ".join((current_draft or "").split())
+        out_norm = " ".join((out or "").split())
+        if orig_norm and out_norm and orig_norm == out_norm:
+            retry_prompt = f"""The previous edit was too similar to the original. You must rewrite it more aggressively. Change structure, tone, and phrasing clearly.
+
+INSTRUCTION:
+{instruction.strip()}
+
+ORIGINAL DRAFT:
+{current_draft.strip()}
+
+Output a clearly different version. Output ONLY the draft:"""
+            r2 = _ai().messages.create(
+                model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
+                system=system,
+                messages=[{"role": "user", "content": retry_prompt}],
+            )
+            raw2 = (r2.content[0].text or "").strip()
+            if raw2:
+                raw = raw2
+                raw_upper = raw.upper()
+                for prefix in prefixes:
+                    if raw_upper.startswith(prefix.upper()):
+                        raw = raw[len(prefix):].lstrip(" :\n\t")
+                        break
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'", "`"):
+                    raw = raw[1:-1].strip()
+                if raw.startswith("```"):
+                    lines = raw.split("\n")
+                    if lines[0].strip().startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    raw = "\n".join(lines)
+                out = raw.strip() or raw2
+            out_norm = " ".join((out or "").split())
+            if orig_norm and out_norm and orig_norm == out_norm:
+                log.warning("Refine draft unchanged after second attempt.")
+                return initial_raw
+        if is_linkedin and len(out) > 300:
+            out = out[:297].rstrip() + "..."
+        log.info(
+            "Draft refined successfully. Original length: %s, New length: %s",
+            len(current_draft or ""),
+            len(out or ""),
+        )
+        return out
+    except Exception as e:
+        log.error("Refine draft failed: %s", e)
         return None

@@ -20,7 +20,7 @@ from sqlalchemy.pool import QueuePool, StaticPool
 from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
     Base, User, Company, Contact, Session, Message,
-    Action, MemoryEvent, GlobalInsight, AdvisorConversation,
+    Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
 )
 
 log = logging.getLogger(__name__)
@@ -47,6 +47,18 @@ def init_db():
             poolclass=StaticPool,
         )
     Base.metadata.create_all(engine)
+    # Add draft_revisions / draft_original columns if missing (existing DBs)
+    from sqlalchemy import text
+    for col, typ in (("draft_revisions", "TEXT" if (not DATABASE_URL or "sqlite" in (DATABASE_URL or "").lower()) else "JSON"), ("draft_original", "TEXT")):
+        try:
+            with engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(text(f"ALTER TABLE actions ADD COLUMN {col} {typ}"))
+        except Exception as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass
+            else:
+                log.warning("Migration %s: %s", col, e)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -104,6 +116,12 @@ def _sess_dict(x):
 
 
 def _act_dict(a):
+    revs = getattr(a, "draft_revisions", None)
+    if revs is not None and not isinstance(revs, list):
+        revs = list(revs) if revs else []
+    if revs is None:
+        revs = []
+    orig = getattr(a, "draft_original", None)
     return {
         "id": a.id, "session_id": a.session_id, "user_id": a.user_id,
         "action_type": a.action_type, "channel": a.channel,
@@ -115,6 +133,8 @@ def _act_dict(a):
         "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
         "completed_at": a.completed_at.isoformat() if a.completed_at else None,
         "created_at": a.created_at.isoformat() if a.created_at else None,
+        "draft_revisions": revs,
+        "draft_original": (orig or "").strip() or None,
     }
 
 
@@ -270,6 +290,127 @@ def update_contact_status(contact_id, status):
         if c:
             c.status = status
             c.updated_at = datetime.utcnow()
+
+
+def update_contact(contact_id, **kw):
+    """Update contact fields; extra_data is shallow-merged."""
+    with db() as s:
+        c = s.get(Contact, contact_id)
+        if not c:
+            return
+        if "extra_data" in kw:
+            patch = kw.pop("extra_data")
+            base = c.extra_data or {}
+            if isinstance(patch, dict):
+                base = {**base, **patch}
+            c.extra_data = base
+        for k, v in kw.items():
+            if hasattr(c, k):
+                setattr(c, k, v)
+        c.updated_at = datetime.utcnow()
+
+
+# ── Enrichment results ───────────────────────────────────────
+
+def save_enrichment_pending(user_id, request_id, identifier):
+    """Save a pending enrichment request (real API with callback)."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = EnrichmentResult(
+            user_id=user_id, request_id=str(request_id), identifier=identifier,
+            status="pending",
+        )
+        s.add(r)
+        s.flush()
+        return r.id
+
+
+def save_enrichment_completed(record_id, result_json):
+    """Mark enrichment as completed with result (mock or callback)."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = s.get(EnrichmentResult, record_id)
+        if r:
+            r.result_json = result_json
+            r.status = "completed"
+
+
+def _ensure_enrichment_table(session):
+    """Create enrichment_results table if it does not exist (same engine as session)."""
+    try:
+        EnrichmentResult.__table__.create(session.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+
+
+def save_enrichment_result_direct(user_id, identifier, result_json, status="completed"):
+    """Save enrichment result directly (e.g. mock or when callback is not used). Returns record id."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = EnrichmentResult(
+            user_id=user_id, identifier=identifier,
+            result_json=result_json, status=status,
+        )
+        s.add(r)
+        s.flush()
+        return r.id
+
+
+def get_enrichment_result(record_id):
+    """Get enrichment result by record id."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = s.get(EnrichmentResult, record_id)
+        if not r:
+            return None
+        return {
+            "id": r.id, "user_id": r.user_id, "request_id": r.request_id,
+            "identifier": r.identifier, "result_json": r.result_json,
+            "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+
+
+def get_enrichment_by_request_id(request_id):
+    """Get enrichment record by SignalHire request_id (for callback updates)."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = s.query(EnrichmentResult).filter_by(request_id=str(request_id)).first()
+        if not r:
+            return None
+        return {
+            "id": r.id, "user_id": r.user_id, "request_id": r.request_id,
+            "identifier": r.identifier, "result_json": r.result_json,
+            "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+
+
+def update_enrichment_result(request_id, result_json, status="completed"):
+    """Update enrichment by request_id (called from callback handler)."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = s.query(EnrichmentResult).filter_by(request_id=str(request_id)).first()
+        if r:
+            r.result_json = result_json
+            r.status = status
+
+
+def get_latest_enrichment_for_user(user_id, status="completed"):
+    """Get most recent completed enrichment for user (for Add to company)."""
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = (
+            s.query(EnrichmentResult)
+            .filter_by(user_id=user_id, status=status)
+            .order_by(EnrichmentResult.created_at.desc())
+            .first()
+        )
+        if not r:
+            return None
+        return {
+            "id": r.id, "user_id": r.user_id, "request_id": r.request_id,
+            "identifier": r.identifier, "result_json": r.result_json or {},
+            "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
 
 
 # ── Sessions ──────────────────────────────────────────────────
@@ -447,7 +588,8 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
 
 
 def update_action(aid, status=None, outcome=None, response_content=None, response_type=None,
-                  description=None, scheduled_at=None, action_type=None, channel=None):
+                  description=None, scheduled_at=None, action_type=None, channel=None, content_sent=None,
+                  draft_revisions=None, draft_original=None):
     with db() as s:
         a = s.get(Action, aid)
         if not a:
@@ -476,6 +618,14 @@ def update_action(aid, status=None, outcome=None, response_content=None, respons
             a.action_type = action_type
         if channel is not None:
             a.channel = channel
+        if content_sent is not None:
+            a.content_sent = content_sent
+        if draft_revisions is not None:
+            if hasattr(a, "draft_revisions"):
+                a.draft_revisions = draft_revisions if isinstance(draft_revisions, list) else list(draft_revisions)
+        if draft_original is not None:
+            if hasattr(a, "draft_original"):
+                a.draft_original = draft_original
 
 
 def delete_action(aid):

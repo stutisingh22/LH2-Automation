@@ -19,6 +19,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+SIGNALHIRE_API_KEY = os.getenv("SIGNALHIRE_API_KEY", "")
+# Optional: base URL for your server that receives SignalHire callback (e.g. https://yourdomain.com)
+SIGNALHIRE_CALLBACK_BASE_URL = os.getenv("SIGNALHIRE_CALLBACK_BASE_URL", "").rstrip("/")
 
 # ── Notion DB ID (sanitized) ─────────────────────────────────
 def _clean_notion_id(raw: str) -> str:

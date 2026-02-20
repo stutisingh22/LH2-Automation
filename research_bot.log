@@ -28144,3 +28144,377 @@ Traceback (most recent call last):
     )
     
 notion_client.errors.APIResponseError: API token is invalid.
+2026-02-20 15:57:21 [INFO] ============================================================
+2026-02-20 15:57:21 [INFO] LH2 Research Bot — Parallel + Streaming Mode
+2026-02-20 15:57:21 [INFO] Database: 2fe4dd35068d808cb8f5d6580051b09e
+2026-02-20 15:57:21 [INFO] Max parallel: 5
+2026-02-20 15:57:21 [INFO] ============================================================
+2026-02-20 15:57:22 [INFO] Connected: 'Independent'
+2026-02-20 15:57:22 [WARNING]   >>> 'Research' property NOT FOUND!
+2026-02-20 15:57:22 [WARNING]   >>> 'Domain' property NOT FOUND!
+2026-02-20 15:57:22 [INFO] Polling every 30s...
+2026-02-20 15:57:48 [INFO] Drive sync complete — 12 PDFs loaded, 88,397 chars
+2026-02-20 15:57:49 [INFO] Poll #1: 1 task(s) found
+2026-02-20 15:57:50 [INFO]   Status -> 'In Progress'
+2026-02-20 15:57:50 [INFO]   Claimed: newsweek.com
+2026-02-20 15:57:50 [INFO]   Launching 1 task(s) in parallel...
+2026-02-20 15:57:50 [INFO]   >>> START: newsweek.com
+2026-02-20 15:57:50 [WARNING]   [newsweek.com] Context 88,397 chars — trimming to 60,000
+2026-02-20 15:57:50 [INFO]   [newsweek.com] Prompt: ~17,439 tokens est.
+2026-02-20 15:57:50 [INFO]   [newsweek.com] API call 1/2 — streaming...
+2026-02-20 15:58:20 [INFO]   [newsweek.com] ... 4,696 chars received (30s)
+2026-02-20 15:58:50 [INFO]   [newsweek.com] ... 9,914 chars received (60s)
+2026-02-20 15:59:20 [INFO]   [newsweek.com] ... 15,437 chars received (90s)
+2026-02-20 15:59:50 [INFO]   [newsweek.com] ... 20,446 chars received (120s)
+2026-02-20 16:00:20 [INFO]   [newsweek.com] ... 25,688 chars received (150s)
+2026-02-20 16:00:50 [INFO]   [newsweek.com] ... 31,299 chars received (180s)
+2026-02-20 16:01:20 [INFO]   [newsweek.com] ... 37,393 chars received (210s)
+2026-02-20 16:01:50 [INFO]   [newsweek.com] ... 43,583 chars received (240s)
+2026-02-20 16:02:20 [INFO]   [newsweek.com] ... 49,607 chars received (270s)
+2026-02-20 16:02:50 [INFO]   [newsweek.com] ... 55,321 chars received (300s)
+2026-02-20 16:02:54 [INFO]   [newsweek.com] Done — 304s, in:24,495 out:12,930 stop=end_turn
+2026-02-20 16:02:54 [INFO]   [newsweek.com] Sanity: PASS
+2026-02-20 16:02:54 [INFO]   [newsweek.com] Research: 304s, 55,910 chars
+2026-02-20 16:02:54 [INFO]   [newsweek.com] Splitting 55,910 chars into notes...
+2026-02-20 16:02:54 [INFO]   Section: 0-1: Eligibility & Operating Context — FOUND
+2026-02-20 16:02:54 [INFO]   Section: 2: Article Frequency & Execution — FOUND
+2026-02-20 16:02:54 [INFO]   Section: 3: Power Mapping & Stakeholders — FOUND
+2026-02-20 16:02:54 [INFO]   Section: 4-5: Stakeholder Interpretation & Fit — FOUND
+2026-02-20 16:02:54 [INFO]   Section: 6-Final: Outreach & Strategic Wedge — FOUND
+2026-02-20 16:02:54 [INFO]   [newsweek.com] Writing 5 notes...
+2026-02-20 16:02:56 [INFO]   [newsweek.com] Note 1/5: 0-1: Eligibility & Operating Context — 81 blocks, 15,708 chars
+2026-02-20 16:02:58 [INFO]   [newsweek.com] Note 2/5: 2: Article Frequency & Execution — 56 blocks, 8,577 chars
+2026-02-20 16:03:00 [INFO]   [newsweek.com] Note 3/5: 3: Power Mapping & Stakeholders — 24 blocks, 6,311 chars
+2026-02-20 16:03:03 [INFO]   [newsweek.com] Note 4/5: 4-5: Stakeholder Interpretation & Fit — 58 blocks, 14,926 chars
+2026-02-20 16:03:05 [INFO]   [newsweek.com] Note 5/5: 6-Final: Outreach & Strategic Wedge — 49 blocks, 10,389 chars
+2026-02-20 16:03:06 [INFO]   Status -> 'Completed'
+2026-02-20 16:03:06 [INFO]   <<< DONE: newsweek.com — 316s total
+2026-02-20 16:03:06 [INFO]   Batch done: 1 tasks in 316s
+2026-02-20 16:03:06 [INFO] Poll #2: idle
+2026-02-20 16:03:38 [INFO] Poll #3: idle
+2026-02-20 16:04:08 [INFO] Poll #4: idle
+2026-02-20 16:04:38 [INFO] Poll #5: idle
+2026-02-20 16:12:18 [INFO] Poll #20: idle
+2026-02-20 16:53:16 [INFO] Poll #40: idle
+2026-02-20 17:03:30 [INFO] Poll #60: idle
+2026-02-20 17:13:41 [INFO] Poll #80: idle
+2026-02-20 17:23:55 [INFO] Poll #100: idle
+2026-02-20 17:34:09 [INFO] Poll #120: idle
+2026-02-20 17:44:21 [INFO] Poll #140: idle
+2026-02-20 17:54:35 [INFO] Poll #160: idle
+2026-02-20 18:05:00 [INFO] Poll #180: idle
+2026-02-20 18:15:14 [INFO] Poll #200: idle
+2026-02-20 18:25:28 [INFO] Poll #220: idle
+2026-02-20 18:32:31 [ERROR] Loop error: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/connection.py", line 60, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socket.py", line 975, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 8] nodename nor servname provided, or not known
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 759, in connect
+    self.sock = sock = self._new_conn()
+                       ~~~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 211, in _new_conn
+    raise NameResolutionError(self.host, self, e) from e
+urllib3.exceptions.NameResolutionError: HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/retry.py", line 535, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 709, in <module>
+    tasks = query_database(
+        DATABASE_ID,
+        {"property": "Research", "select": {"equals": "Research Now"}}
+    )
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 61, in query_database
+    resp = http_requests.post(
+        f"https://api.notion.com/v1/databases/{database_id}/query",
+    ...<5 lines>...
+        json={"filter": filter_obj},
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2026-02-20 18:49:45 [ERROR] Loop error: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+        (self._dns_host, self.port),
+    ...<2 lines>...
+        socket_options=self.socket_options,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/connection.py", line 60, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/socket.py", line 975, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 8] nodename nor servname provided, or not known
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 759, in connect
+    self.sock = sock = self._new_conn()
+                       ~~~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 211, in _new_conn
+    raise NameResolutionError(self.host, self, e) from e
+urllib3.exceptions.NameResolutionError: HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/retry.py", line 535, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 709, in <module>
+    tasks = query_database(
+        DATABASE_ID,
+        {"property": "Research", "select": {"equals": "Research Now"}}
+    )
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 61, in query_database
+    resp = http_requests.post(
+        f"https://api.notion.com/v1/databases/{database_id}/query",
+    ...<5 lines>...
+        json={"filter": filter_obj},
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='api.notion.com', port=443): Max retries exceeded with url: /v1/databases/2fe4dd35068d808cb8f5d6580051b09e/query (Caused by NameResolutionError("HTTPSConnection(host='api.notion.com', port=443): Failed to resolve 'api.notion.com' ([Errno 8] nodename nor servname provided, or not known)"))
+2026-02-20 19:34:43 [ERROR] Loop error: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+        sock=sock,
+    ...<14 lines>...
+        assert_fingerprint=self.assert_fingerprint,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+        sock=sock,
+    ...<8 lines>...
+        tls_in_tls=tls_in_tls,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/ssl_.py", line 483, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/ssl_.py", line 527, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 455, in wrap_socket
+    return self.sslsocket_class._create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sock=sock,
+        ^^^^^^^^^^
+    ...<5 lines>...
+        session=session
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 1076, in _create
+    self.do_handshake()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 1372, in do_handshake
+    self._sslobj.do_handshake()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+ConnectionResetError: [Errno 54] Connection reset by peer
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/retry.py", line 490, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+        sock=sock,
+    ...<14 lines>...
+        assert_fingerprint=self.assert_fingerprint,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+        sock=sock,
+    ...<8 lines>...
+        tls_in_tls=tls_in_tls,
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/ssl_.py", line 483, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/urllib3/util/ssl_.py", line 527, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 455, in wrap_socket
+    return self.sslsocket_class._create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sock=sock,
+        ^^^^^^^^^^
+    ...<5 lines>...
+        session=session
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 1076, in _create
+    self.do_handshake()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.0_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/ssl.py", line 1372, in do_handshake
+    self._sslobj.do_handshake()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+urllib3.exceptions.ProtocolError: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 709, in <module>
+    tasks = query_database(
+        DATABASE_ID,
+        {"property": "Research", "select": {"equals": "Research Now"}}
+    )
+  File "/Users/rohit/LH2_Automation/notion_research_bot.py", line 61, in query_database
+    resp = http_requests.post(
+        f"https://api.notion.com/v1/databases/{database_id}/query",
+    ...<5 lines>...
+        json={"filter": filter_obj},
+    )
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/Users/rohit/LH2_Automation/.venv/lib/python3.13/site-packages/requests/adapters.py", line 659, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+2026-02-20 19:41:24 [INFO] Poll #240: idle

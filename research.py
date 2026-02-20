@@ -22,7 +22,7 @@ NOTION_TEXT_LIMIT = 1900
 NOTION_BATCH_LIMIT = 100
 
 # Research model — use the best available for deep analysis
-RESEARCH_MODEL = "claude-sonnet-4-5-20250514"
+RESEARCH_MODEL = "claude-sonnet-4-5"
 RESEARCH_MAX_TOKENS = 16000
 
 
@@ -442,6 +442,13 @@ def _split_research(text):
     return [(NOTE_SECTIONS[i][0], note_bodies[i]) for i in range(len(NOTE_SECTIONS))]
 
 
+def split_research_into_sections(text):
+    """Split full research text into 5 Notion-style sections. Returns list of (section_title, body)."""
+    if not (text or "").strip():
+        return [(NOTE_SECTIONS[i][0], "") for i in range(len(NOTE_SECTIONS))]
+    return _split_research(text)
+
+
 # ══════════════════════════════════════════════════════════════
 # RUN RESEARCH (streaming with progress)
 # ══════════════════════════════════════════════════════════════
@@ -501,6 +508,40 @@ def run_research(domain, context="", progress_callback=None):
                 time.sleep(15)
 
     return None
+
+
+def research_command_ai(domain, current_research_text, user_command):
+    """
+    Run an AI command on the research document: extend, add section, or revise.
+    Returns the full updated research text (to replace or append in the UI).
+    """
+    if not (user_command or "").strip() or not ANTHROPIC_API_KEY:
+        return None
+    current = (current_research_text or "").strip()
+    prompt = f"""You are editing institutional-grade strategic research for {domain}.
+
+CURRENT RESEARCH DOCUMENT:
+{current[:40000] if current else '(Document is empty. Generate new research in the same format and tone as the Notion research bot.)'}
+
+USER COMMAND:
+{user_command.strip()}
+
+Instructions:
+- If the user asks to add a section, extend, or research something new: add or extend the document in the same style (institutional, structured, tables where appropriate). Return the COMPLETE updated document including all existing content plus your addition.
+- If the user asks to revise or fix something: apply the change and return the COMPLETE document.
+- Use the same section structure and formatting (===, ---, pipe tables) as the existing research. No markdown bold, no emojis.
+- Output ONLY the full research document. No preamble or "Here is the updated document"."""
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        r = client.messages.create(
+            model=RESEARCH_MODEL,
+            max_tokens=RESEARCH_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (r.content[0].text or "").strip()
+    except Exception as e:
+        log.error("Research command AI failed: %s", e)
+        return None
 
 
 def get_research_brief(domain, research_text):

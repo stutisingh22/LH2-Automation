@@ -118,6 +118,8 @@ class Action(Base):
     scheduled_at = Column(DateTime)
     completed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
+    draft_revisions = Column(JSON)  # list of revision strings (persists across refresh)
+    draft_original = Column(Text)  # original draft before any revisions (for Version 1 after refresh)
 
 
 class MemoryEvent(Base):
@@ -151,3 +153,15 @@ class AdvisorConversation(Base):
     messages = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EnrichmentResult(Base):
+    """Stores SignalHire (or other) enrichment results for contact lookup."""
+    __tablename__ = "enrichment_results"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    request_id = Column(String(64), index=True)  # SignalHire requestId when using callback
+    identifier = Column(String(512), nullable=False)  # LinkedIn URL or email used for lookup
+    result_json = Column(JSON)  # Normalized {verified, enriched, contacts[], source, confidence}
+    status = Column(String(20), default="pending")  # pending | completed | failed
+    created_at = Column(DateTime, default=datetime.utcnow)

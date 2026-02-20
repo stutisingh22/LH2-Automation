@@ -40,7 +40,7 @@ from db_ops import (
     create_user, authenticate, get_user, get_all_users,
     get_company, get_all_companies, search_companies,
     upsert_company, upsert_contact,
-    get_contacts, get_contact, update_contact_status,
+    get_contacts, get_contact, update_contact_status, update_contact,
     get_or_create_session, get_session, get_sessions_for_company,
     get_user_sessions, delete_session,
     save_message, load_messages, get_message_count,
@@ -52,6 +52,7 @@ from db_ops import (
     get_session_summary, get_pipeline_stats,
     merge_company_extra_data,
     save_advisor_conversation, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
+    get_enrichment_result, get_latest_enrichment_for_user,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from drive_sync import list_drive_files
@@ -62,10 +63,17 @@ from ai_engine import (
     maybe_update_summary, extract_episodic_memories,
     generate_insight_from_outcome, parse_ai_actions, export_session_csv,
     intelligence_request, research_person_for_company, summarize_research_to_context,
-    advisor_chat,
+    advisor_chat, refine_email_draft,
 )
-from research import fetch_research_from_notion, run_research, write_research_to_notion
-from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm
+from research import fetch_research_from_notion, run_research, write_research_to_notion, research_command_ai, split_research_into_sections
+from contact_timeline import build_contact_timeline
+from signalhire_enrichment import (
+    get_credits as get_signalhire_credits,
+    request_enrichment,
+    has_verified_email,
+)
+from gmail_service import create_gmail_draft, parse_email_content
+from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name
 
 inject_css()
 
@@ -256,6 +264,7 @@ defaults = {
     "intel_lookup_lead": None, "intel_person_brief": None,
     "intel_suggestion": None, "intel_suggestion_raw": None,
     "current_tab": "DASHBOARD", "advisor_messages": [],
+    "timeline_contact_id": None, "timeline_company_id": None, "timeline_contact_name": None,
 }
 for k, d in defaults.items():
     if k not in st.session_state:
@@ -276,6 +285,17 @@ def select_contact(comp_id, ct_id):
     st.session_state.auto_brief_text = None
     st.session_state.pending_plan = None
     st.session_state.current_tab = "INTELLIGENCE"
+
+
+def _format_timeline_ts(iso_str):
+    """Format ISO timestamp for timeline display."""
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        return dt.strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        return str(iso_str)[:16] if iso_str else "—"
 
 
 def _render_calendar_event(ax):
@@ -318,11 +338,191 @@ def _render_calendar_event(ax):
                     st.rerun()
 
 
+def _render_save_to_gmail(to_email, subject, body, draft_id):
+    """Render 'Save to Gmail' section: account dropdown + Save to Gmail Drafts button."""
+    all_users = get_all_users()
+    if not all_users:
+        return
+    # Account key for token: prefer email, else username
+    options = []
+    for u in all_users:
+        key = (u.get("email") or "").strip() or (u.get("username") or str(u["id"]))
+        label = (u.get("email") or display_full_name(u.get("username")) or f"User {u['id']}")
+        options.append((key, label))
+    if not options:
+        return
+    st.markdown("<div class='sequence-step-divider' style='margin-top:0;'></div>", unsafe_allow_html=True)
+    st.markdown("**Save to Gmail**", unsafe_allow_html=True)
+    gcol1, gcol2 = st.columns([2, 1])
+    with gcol1:
+        gmail_sel = st.selectbox(
+            "Gmail account",
+            options=[o[0] for o in options],
+            format_func=lambda x: next((o[1] for o in options if o[0] == x), x),
+            index=0,
+            key=f"gmail_account_{draft_id}",
+            label_visibility="collapsed",
+        )
+    with gcol2:
+        disabled = not (subject or body)
+        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
+            out = create_gmail_draft(gmail_sel, to_email or "", subject or "", body or "")
+            if out.get("success"):
+                st.success("Draft saved to Gmail.")
+            else:
+                st.error(out.get("error") or "Authentication required.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _display_original_from_content_sent(content_sent):
+    """If content_sent was saved as combined (v1 + '---' + v2), return only first part for display."""
+    raw = (content_sent or "").strip()
+    if "\n\n---\n\n" in raw:
+        return raw.split("\n\n---\n\n", 1)[0].strip()
+    return raw
+
+
+def _render_ai_refinement(step, seq_id, channel="email"):
+    """Render AI draft refinement panel for one step (email or LinkedIn). Actions tab only. Isolated per-step state."""
+    step_id = step["id"]
+    content_sent_raw = (step.get("content_sent") or "").strip()
+    # Version 1 (Original): use persisted draft_original from DB after refresh, else current content_sent
+    original_from_db = (step.get("draft_original") or "").strip() or _display_original_from_content_sent(step.get("content_sent"))
+    rev_list_key = f"draft_revisions_list_{step_id}"
+    orig_stored_key = f"draft_original_{step_id}"
+    revisions_list = st.session_state.get(rev_list_key) or []
+    if not isinstance(revisions_list, list):
+        revisions_list = [revisions_list] if revisions_list else []
+    # After refresh: restore revision list from DB so drafts persist
+    if not revisions_list and step.get("draft_revisions"):
+        revs = step["draft_revisions"]
+        revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
+        st.session_state[rev_list_key] = revisions_list
+    # Keep a stable "Version 1 (Original)" so it doesn't change after "Use version 2"
+    if orig_stored_key not in st.session_state and (original_from_db or content_sent_raw):
+        st.session_state[orig_stored_key] = original_from_db or content_sent_raw
+    original = st.session_state.get(orig_stored_key) or original_from_db
+    current_text = revisions_list[-1] if revisions_list else original
+    is_linkedin = "linkedin" in (channel or "").lower()
+    draft_label = "LinkedIn draft" if is_linkedin else "email draft"
+    refine_placeholder = "e.g. Make it shorter and more direct (under 300 chars)…" if is_linkedin else "e.g. Rewrite to be shorter and more direct…"
+    latest_revision = revisions_list[-1] if revisions_list else None
+
+    st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-2);"
+        "margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #e2e8f0;'>AI Refinement</div>",
+        unsafe_allow_html=True)
+    # Version dropdown and selected text (computed early so preview + expander above can use it)
+    st.markdown(
+        "<div style='font-size:11px;color:var(--text-2);margin-bottom:4px;'>Select version to use</div>",
+        unsafe_allow_html=True)
+    version_options = ["Version 1 (Original)"]
+    for i in range(len(revisions_list)):
+        version_options.append(f"Version {i + 2} (AI Revised)")
+    default_index = min(1, len(version_options) - 1) if revisions_list else 0
+    version_sel = st.selectbox(
+        "Select version",
+        options=version_options,
+        index=default_index,
+        key=f"refine_version_sel_{step_id}",
+        label_visibility="collapsed",
+    )
+    if version_sel == "Version 1 (Original)":
+        selected_text = original
+    else:
+        try:
+            m = re.search(r"Version\s+(\d+)", version_sel)
+            v = int(m.group(1)) if m else 2
+            idx = v - 2
+            raw = revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original)
+            selected_text = (raw if isinstance(raw, str) else str(raw)) if raw else original
+        except Exception:
+            raw = revisions_list[-1] if revisions_list else original
+            selected_text = (raw if isinstance(raw, str) else str(raw)) if raw else original
+    preview_text = selected_text or current_text or original
+    current_version_num = len(revisions_list) + 1
+    st.markdown(
+        f"<div style='font-size:11px;color:var(--text-3);margin-bottom:4px;'>"
+        f"{'Version %d (AI Revised)' % current_version_num if revisions_list else 'Version 1 (Original)'}</div>",
+        unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='font-size:12px;background:#f8fafc;padding:10px 12px;border-radius:4px;border:1px solid #e2e8f0;"
+        f"white-space:pre-wrap;max-height:120px;overflow-y:auto;margin-bottom:10px;'>{(preview_text or '')[:400]}{'...' if len(preview_text or '') > 400 else ''}</div>",
+        unsafe_allow_html=True)
+    instruction = st.text_input(
+        "Instruction",
+        placeholder=refine_placeholder,
+        key=f"refine_instruction_{step_id}",
+        label_visibility="collapsed",
+    )
+    if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", use_container_width=True):
+        if (instruction or "").strip():
+            with st.spinner("Refining…"):
+                revised = refine_email_draft(current_text, instruction.strip(), draft_type="linkedin" if is_linkedin else "email")
+            if revised:
+                revisions_list = st.session_state.get(rev_list_key) or []
+                if not isinstance(revisions_list, list):
+                    revisions_list = [revisions_list] if revisions_list else []
+                is_first_revision = len(revisions_list) == 0
+                revisions_list.append(revised)
+                st.session_state[rev_list_key] = revisions_list
+                # Persist revisions; on first revision, save current content_sent as draft_original for Version 1 after refresh
+                update_action(
+                    step_id,
+                    draft_revisions=revisions_list,
+                    draft_original=content_sent_raw if is_first_revision else None,
+                )
+                st.rerun()
+            else:
+                st.error("Could not refine draft. Try again.")
+        else:
+            st.warning("Enter an instruction.")
+
+    if latest_revision:
+        st.markdown(
+            "<div style='font-size:11px;color:var(--text-2);margin:10px 0 6px 0;'>Latest revised draft</div>",
+            unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='font-size:12px;background:#f0fdf4;padding:10px 12px;border-radius:4px;border:1px solid #bbf7d0;"
+            f"white-space:pre-wrap;margin-bottom:10px;'>{(latest_revision)}</div>",
+            unsafe_allow_html=True)
+
+    r1, r2 = st.columns(2)
+    with r1:
+        use_disabled = not revisions_list and version_sel == "Version 1 (Original)"
+        if st.button("Use selected version", key=f"use_version_btn_{step_id}", type="secondary", use_container_width=True, disabled=use_disabled):
+            if selected_text is not None:
+                text_to_save = (selected_text if isinstance(selected_text, str) else str(selected_text)).strip()
+                if text_to_save:
+                    update_action(step_id, content_sent=text_to_save)
+            st.rerun()
+    with r2:
+        if revisions_list and st.button("Keep both versions", key=f"keep_both_btn_{step_id}", use_container_width=True):
+            # Save only the latest as main draft (single draft); keep all versions in dropdown
+            update_action(step_id, content_sent=latest_revision)
+            st.rerun()
+
+
 # ══════════════════════════════════════════════════════════════
 # SIDEBAR — CONVERSATION HISTORY
 # ══════════════════════════════════════════════════════════════
 
 with st.sidebar:
+    try:
+        _base = Path(__file__).resolve().parent
+        _logo_path = None
+        for _p in ("assets/lh2_holdings_logo.png", "assets/lh2_holdings_logo.jpeg", "lh2_holdings_logo.jpeg", "lh2_holdings_logo.png"):
+            _candidate = _base / _p
+            if _candidate.is_file():
+                _logo_path = str(_candidate)
+                break
+        if _logo_path:
+            st.markdown("<div class='sidebar-logo'>", unsafe_allow_html=True)
+            st.image(_logo_path, width=120)
+            st.markdown("</div>", unsafe_allow_html=True)
+    except Exception:
+        pass
     st.markdown(
         "<div style='font-size:12px;font-weight:700;letter-spacing:3px;"
         "color:var(--accent);padding:4px 0 12px;'>◆ LH2</div>",
@@ -403,7 +603,7 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{user['username']} · {user['role']}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{display_full_name(user['username'])} · {user['role']}</div>", unsafe_allow_html=True)
     if st.button("Sign Out", key="sb_logout", use_container_width=True):
         clear_session_user()
         for k in list(st.session_state.keys()):
@@ -441,9 +641,9 @@ with header_cols[2]:
     st.markdown(
         f"<div class='dashboard-header-right'>"
         f"<div class='user-badge'>"
-        f"<span class='user-avatar'>{user['username'][0].upper()}</span>"
+        f"<span class='user-avatar'>{display_full_name(user['username'])[0].upper()}</span>"
         f"<span class='user-info'>"
-        f"<span class='user-name' style='font-size:9px!important;'>{user['username'].title()}</span>"
+        f"<span class='user-name' style='font-size:9px!important;'>{display_full_name(user['username'])}</span>"
         f"<span class='user-role' style='font-size:7px!important;'>Admin</span>"
         f"</span>"
         f"</div>"
@@ -457,52 +657,52 @@ tabs = st.tabs(tab_labels)
 # ════════════════════ DASHBOARD ════════════════════
 
 with tabs[0]:  # DASHBOARD
-    st.markdown(sh("OVERVIEW"), unsafe_allow_html=True)
+    # === UI REFACTOR START ===
+    st.markdown(lh2_section_header("OVERVIEW"), unsafe_allow_html=True)
     stats = get_pipeline_stats()
-    mc = st.columns(4)
-    for col, (n, l) in zip(mc, [
+    kpi_items = [
         (len(get_all_companies()), "Companies"),
         (stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"),
-        (stats.get("meeting_booked", 0), "Meetings"), (stats.get("partnership_active", 0), "Partnerships"),
-    ]):
-        with col:
-            st.markdown(mcard(n, l), unsafe_allow_html=True)
+        (stats.get("meeting_booked", 0), "Meetings"),
+        (stats.get("partnership_active", 0), "Partnerships"),
+    ]
+    st.markdown(
+        "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, l) for n, l in kpi_items) + "</div>",
+        unsafe_allow_html=True)
 
-    st.markdown(sh("STATUS BREAKDOWN"), unsafe_allow_html=True)
-    scols = st.columns(len(CONTACT_STATUSES))
-    for col, s in zip(scols, CONTACT_STATUSES):
-        with col:
-            st.markdown(
-                f"<div style='text-align:center;'><div style='font-size:20px;font-weight:700;'>{stats.get(s,0)}</div>"
-                f"<div style='margin-top:4px;'>{bdg(CONTACT_STATUS_LABELS_STRIP.get(s,s), CONTACT_STATUS_COLORS.get(s,'gray'))}</div></div>",
-                unsafe_allow_html=True)
+    st.markdown(lh2_section_header("STATUS BREAKDOWN"), unsafe_allow_html=True)
+    status_items = [(stats.get(s, 0), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
+    st.markdown(
+        "<div class='lh2-status-grid'>" + "".join(lh2_status_cell(v, lbl) for v, lbl in status_items) + "</div>",
+        unsafe_allow_html=True)
+    # === UI REFACTOR END ===
 
+    st.markdown(lh2_section_header("ALERTS"), unsafe_allow_html=True)
     overdue = get_overdue_followups(3)
     todays = get_todays_scheduled()
-    if overdue or todays:
-        st.markdown(sh("ALERTS"), unsafe_allow_html=True)
-        
-        for a in overdue[:5]:
-            desc = a.get('description', '')
-            contact = a.get('contact_name', '?')
-            domain = a.get('company_domain', '?')
-            preview = f"⚠️ Overdue: {contact} at {domain}"
-            
-            with st.expander(preview, expanded=False):
-                st.markdown(f"**Action:** {desc}")
-                st.caption(f"Contact: {contact} | Company: {domain}")
-        
-        for a in todays[:5]:
-            desc = a.get('description', '')
-            contact = a.get('contact_name', '?')
-            preview = f"📅 Today: {contact}"
-            
-            with st.expander(preview, expanded=False):
-                st.markdown(f"**Action:** {desc}")
-                if a.get('company_domain'):
-                    st.caption(f"Contact: {contact} | Company: {a.get('company_domain')}")
+    for a in overdue[:5]:
+        desc = a.get('description', '')
+        contact = a.get('contact_name', '?')
+        domain = a.get('company_domain', '?')
+        preview = f"⚠️ Overdue: {contact} at {domain}"
+        with st.expander(preview, expanded=False):
+            st.markdown(f"**Action:** {desc}")
+            st.caption(f"Contact: {contact} | Company: {domain}")
+    if not overdue:
+        st.caption("No overdue follow-ups.")
+    for a in todays[:5]:
+        desc = a.get('description', '')
+        contact = a.get('contact_name', '?')
+        preview = f"📅 Today: {contact}"
+        with st.expander(preview, expanded=False):
+            st.markdown(f"**Action:** {desc}")
+            if a.get('company_domain'):
+                st.caption(f"Contact: {contact} | Company: {a.get('company_domain')}")
+    if not todays:
+        st.caption("No tasks due today.")
+    st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
 
-    st.markdown(sh("RECENT ACTIVITY"), unsafe_allow_html=True)
+    st.markdown(lh2_section_header("RECENT ACTIVITY"), unsafe_allow_html=True)
     recent = get_recent_activity(10)
     for a in recent:
         sc = ACTION_STATUS_COLORS.get(a["status"], "gray")
@@ -520,8 +720,10 @@ with tabs[0]:  # DASHBOARD
 # ════════════════════ COMPANIES ════════════════════
 
 with tabs[1]:  # COMPANIES
+    st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
     if st.session_state.get("clear_company_search"):
-        st.session_state.pop("csearch", None)
+        st.session_state["csearch"] = ""
+        st.session_state["liurl"] = ""
         st.session_state.pop("clear_company_search", None)
     # Pre-fill search after LinkedIn lookup (must set before csearch widget is created)
     if "linkedin_search_domain" in st.session_state:
@@ -546,6 +748,47 @@ with tabs[1]:  # COMPANIES
             st.session_state.chat_messages = []
             st.session_state.clear_company_search = True
             st.rerun()
+
+    # Contact timeline (shown only when user clicked "Timeline" on a contact)
+    tcid = st.session_state.get("timeline_contact_id")
+    tcoid = st.session_state.get("timeline_company_id")
+    tname = st.session_state.get("timeline_contact_name") or "Contact"
+    if tcid and tcoid:
+        comp_for_timeline = get_company(tcoid)
+        timeline_items = build_contact_timeline(
+            tcoid, tcid, user["id"],
+            company_domain=comp_for_timeline.get("domain") if comp_for_timeline else None,
+            company_name=comp_for_timeline.get("name") if comp_for_timeline else None,
+        )
+        with st.expander(f"📅 Contact timeline — {tname}", expanded=True):
+            close_col, _ = st.columns([1, 4])
+            with close_col:
+                if st.button("Close timeline", key="close_timeline", use_container_width=True):
+                    st.session_state.timeline_contact_id = None
+                    st.session_state.timeline_company_id = None
+                    st.session_state.timeline_contact_name = None
+                    st.rerun()
+            st.markdown("<div class='timeline-wrap'>", unsafe_allow_html=True)
+            for item in timeline_items:
+                ts_display = _format_timeline_ts(item.get("ts"))
+                st.markdown(
+                    timeline_item_html(
+                        ts_display,
+                        item.get("type"),
+                        item.get("channel"),
+                        item.get("status"),
+                        item.get("summary"),
+                        status_colors=ACTION_STATUS_COLORS,
+                    ),
+                    unsafe_allow_html=True,
+                )
+                full = (item.get("full_content") or "").strip()
+                if full:
+                    with st.expander("Full content", expanded=False):
+                        st.markdown(full)
+            st.markdown("</div>", unsafe_allow_html=True)
+            if not timeline_items:
+                st.caption("No timeline items yet for this contact.")
 
     with st.expander("🔗 Lookup by LinkedIn URL"):
         li_url = st.text_input("LinkedIn URL", placeholder="Paste LinkedIn URL...", key="liurl")
@@ -608,7 +851,7 @@ with tabs[1]:  # COMPANIES
             if cts:
                 with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
                     for ct in cts:
-                        cols = st.columns([2.5, 1.2, 0.5])
+                        cols = st.columns([2.5, 1.2, 0.4, 0.4])
                         with cols[0]:
                             scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
                             slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
@@ -627,6 +870,12 @@ with tabs[1]:  # COMPANIES
                         with cols[2]:
                             if st.button("→", key=f"go_{ct['id']}", use_container_width=True):
                                 select_contact(comp["id"], ct["id"])
+                                st.rerun()
+                        with cols[3]:
+                            if st.button("📅", key=f"tl_{ct['id']}", use_container_width=True, help="View contact timeline"):
+                                st.session_state.timeline_contact_id = ct["id"]
+                                st.session_state.timeline_company_id = comp["id"]
+                                st.session_state.timeline_contact_name = ct.get("name", "Contact")
                                 st.rerun()
 
 
@@ -655,13 +904,20 @@ with tabs[2]:  # INTELLIGENCE
             if ctid and st.session_state.session_id:
                 ct = get_contact(ctid)
                 if ct:
+                    st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
+                    st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
+                    brief_entry = st.text_input(
+                        "Brief",
+                        placeholder="e.g. Focus on power mapping · or leave blank for full brief",
+                        key=f"brief_entry_{cid}_{ctid}",
+                        label_visibility="collapsed",
+                    )
                     if st.session_state.auto_brief_text is None:
                         with st.spinner("Generating brief..."):
                             brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
                             st.session_state.auto_brief_text = brief or "Could not generate brief."
-                    st.markdown(sh_small(f"Strategic brief — {ct['name']}"), unsafe_allow_html=True)
                     st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.auto_brief_text}</div></div>", unsafe_allow_html=True)
-                    if st.button("🔄 Refresh", key="rb"):
+                    if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
                         st.session_state.auto_brief_text = None
                         st.rerun()
 
@@ -675,6 +931,119 @@ with tabs[2]:  # INTELLIGENCE
                 with col:
                     st.markdown(crd(l, v), unsafe_allow_html=True)
 
+            # ── Research document: replicate from Notion or run same as Notion bot; editable; AI commands ──
+            st.markdown(sh_small("Research document"), unsafe_allow_html=True)
+            extra = comp.get("extra_data") or {}
+            research_full_db = (extra.get("research_full") or "").strip()
+            if not research_full_db and rn:
+                research_full_display = "\n\n".join(
+                    f"{'='*60}\n{note.get('title') or 'Section'}\n{'='*60}\n\n{(note.get('content') or '').strip()}"
+                    for note in rn
+                ).strip()
+            else:
+                research_full_display = research_full_db
+
+            if not research_full_display and not rn:
+                st.caption("No research yet. Use **Run deep research** below (same prompt as the Notion research bot). Saves to Command Center and optionally to Notion.")
+                if has_perm("can_use_strategist") and st.button("🔬 Run deep research", key="run_res_doc", type="primary"):
+                    err_msg = None
+                    result = None
+                    try:
+                        pb = st.progress(0, text="Starting…")
+                        def _prog(c, e):
+                            pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                        result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                    except Exception as e:
+                        err_msg = str(e)
+                    if result:
+                        merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        if page_id:
+                            with st.spinner("Writing to Notion…"):
+                                write_research_to_notion(page_id, result, comp.get("domain", ""))
+                        if cid in st.session_state.get("research_cache", {}):
+                            del st.session_state.research_cache[cid]
+                        st.success("Research saved. Edit below and Save to store in Command Center.")
+                        st.rerun()
+                    else:
+                        st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
+            else:
+                st.caption("Edit by section (same structure as Notion) and click Save to store in DB. Use the AI command below to generate or extend.")
+                sections = split_research_into_sections(research_full_display)
+                section_bodies = []
+                for i, (sec_title, body) in enumerate(sections):
+                    with st.expander(sec_title, expanded=(i == 0)):
+                        edited = st.text_area(
+                            "Content",
+                            value=body,
+                            height=min(180, 120 + body.count("\n") * 18),
+                            key=f"research_sec_{cid}_{i}",
+                            label_visibility="collapsed",
+                            placeholder="(No content for this section.)",
+                        )
+                        section_bodies.append(edited)
+                # Current full document = concatenation of section edits (for AI command and Save)
+                current_research_text = "\n\n".join(section_bodies).strip() if section_bodies else research_full_display
+                save_col, _ = st.columns([1, 3])
+                with save_col:
+                    if st.button("💾 Save to DB", key=f"save_research_full_{cid}", use_container_width=True):
+                        merge_company_extra_data(cid, {"research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        st.session_state.auto_brief_text = None
+                        st.success("Saved.")
+                        st.rerun()
+
+                st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+                st.markdown(sh_small("Deep research — generate or extend"), unsafe_allow_html=True)
+                st.caption("e.g. \"Add a section on competitor landscape\" or \"Expand the power mapping with the CFO\".")
+                cmd_col1, cmd_col2 = st.columns([3, 1])
+                with cmd_col1:
+                    research_cmd = st.text_input(
+                        "Deep research command",
+                        placeholder="Describe what to add or change…",
+                        key=f"research_cmd_{cid}",
+                        label_visibility="collapsed",
+                    )
+                with cmd_col2:
+                    run_cmd = st.button("Run", key=f"research_cmd_run_{cid}", type="primary", use_container_width=True)
+                if run_cmd and (research_cmd or "").strip():
+                    with st.spinner("Running command…"):
+                        cmd_result = research_command_ai(comp.get("domain", ""), current_research_text or research_full_display, research_cmd.strip())
+                    if cmd_result:
+                        st.session_state["research_command_result"] = cmd_result
+                        st.session_state["research_command_result_cid"] = cid
+                        st.session_state["research_command_replace_key"] = f"research_full_edit_{cid}"
+                        st.rerun()
+                    else:
+                        st.error("Command failed.")
+
+                if st.session_state.get("research_command_result_cid") == cid and st.session_state.get("research_command_result"):
+                    cmd_result = st.session_state["research_command_result"]
+                    with st.expander("AI result — Replace or Append", expanded=True):
+                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
+                        app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
+                        with app_col1:
+                            if st.button("Replace document", key=f"cmd_replace_{cid}", use_container_width=True):
+                                merge_company_extra_data(cid, {"research_full": cmd_result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                st.session_state.auto_brief_text = None
+                                st.session_state.pop("research_command_result", None)
+                                st.session_state.pop("research_command_result_cid", None)
+                                st.success("Document replaced.")
+                                st.rerun()
+                        with app_col2:
+                            if st.button("Append to document", key=f"cmd_append_{cid}", use_container_width=True):
+                                current = (current_research_text or research_full_display or "").strip()
+                                merged = f"{current}\n\n{cmd_result}" if current else cmd_result
+                                merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                st.session_state.auto_brief_text = None
+                                st.session_state.pop("research_command_result", None)
+                                st.session_state.pop("research_command_result_cid", None)
+                                st.success("Appended.")
+                                st.rerun()
+                        with app_col3:
+                            if st.button("Dismiss", key=f"cmd_dismiss_{cid}", use_container_width=True):
+                                st.session_state.pop("research_command_result", None)
+                                st.session_state.pop("research_command_result_cid", None)
+                                st.rerun()
+
             st.markdown(sh_small("Request / suggest / look up person"), unsafe_allow_html=True)
             st.caption("Paste a LinkedIn URL or email to run AI research on that person (in context of this company), or describe what’s missing to get a suggestion.")
             intel_input = st.text_area(
@@ -684,7 +1053,7 @@ with tabs[2]:  # INTELLIGENCE
                 key="intel_request",
                 label_visibility="collapsed",
             )
-            if st.button("Run research or get suggestion", key="intel_submit", type="primary"):
+            if st.button("Look up person or get suggestion", key="intel_submit", type="secondary", help="Paste LinkedIn/email to research that person, or describe what to add for an AI suggestion"):
                 raw = (intel_input or "").strip()
                 if not raw:
                     st.warning("Enter a request, LinkedIn URL, or email.")
@@ -821,7 +1190,7 @@ with tabs[2]:  # INTELLIGENCE
                             st.rerun()
                 st.caption(f"{len(rn)} sections below. Use the request box above to research a person in this context.")
                 st.markdown(sh_small("Full sections"), unsafe_allow_html=True)
-                for note in rn:
+                for idx, note in enumerate(rn):
                     with st.expander(note["title"]):
                         title = note.get("title", "").strip() or "Untitled"
                         overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
@@ -847,12 +1216,12 @@ with tabs[2]:  # INTELLIGENCE
                             "Override",
                             value=(existing if has_override else (note.get("content") or "")),
                             height=220,
-                            key=f"ovr_{cid}_{title}",
+                            key=f"ovr_{cid}_{idx}",
                             label_visibility="collapsed",
                         )
                         b1, b2, b3 = st.columns([1, 1, 2])
                         with b1:
-                            if st.button("💾 Save override", key=f"saveovr_{cid}_{title}", use_container_width=True):
+                            if st.button("💾 Save override", key=f"saveovr_{cid}_{idx}", use_container_width=True):
                                 overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
                                 overrides[title] = new_txt
                                 merge_company_extra_data(cid, {"research_overrides": overrides})
@@ -860,7 +1229,7 @@ with tabs[2]:  # INTELLIGENCE
                                 st.success("Saved.")
                                 st.rerun()
                         with b2:
-                            if st.button("🧹 Clear override", key=f"clr_{cid}_{title}", use_container_width=True):
+                            if st.button("🧹 Clear override", key=f"clr_{cid}_{idx}", use_container_width=True):
                                 overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
                                 if title in overrides:
                                     del overrides[title]
@@ -871,24 +1240,7 @@ with tabs[2]:  # INTELLIGENCE
                         with b3:
                             st.caption("Overrides are stored locally (in your DB) and used by the strategist + briefs.")
             else:
-                st.info("No research in Notion.")
-                if has_perm("can_use_strategist"):
-                    if st.button("🔬 Run Deep Research", key="run_res"):
-                        pb = st.progress(0, text="Starting...")
-                        def _prog(c, e):
-                            pb.progress(min(c/40000, .95), text=f"Researching... {c:,} chars ({e:.0f}s)")
-                        result = run_research(comp["domain"], progress_callback=_prog)
-                        pb.progress(1.0, text="Done!")
-                        if result:
-                            st.success(f"{len(result):,} chars")
-                            if page_id:
-                                with st.spinner("Writing to Notion..."):
-                                    write_research_to_notion(page_id, result, comp["domain"])
-                                if cid in st.session_state.research_cache:
-                                    del st.session_state.research_cache[cid]
-                                st.rerun()
-                        else:
-                            st.error("Failed.")
+                st.info("No research in Notion. Use **Run deep research** in the Research document section above to generate full research (same as Notion bot).")
 
             if GOOGLE_SERVICE_ACCOUNT_JSON:
                 df = list_drive_files(company_name=comp.get("domain", ""))
@@ -944,7 +1296,7 @@ with tabs[3]:  # STRATEGIST
             sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
             with sel1:
                 all_users = get_all_users()
-                user_names = {u["id"]: u["username"] for u in all_users}
+                user_names = {u["id"]: display_full_name(u["username"]) for u in all_users}
                 sender_id = st.selectbox(
                     "FROM (sender)",
                     options=[u["id"] for u in all_users],
@@ -978,6 +1330,157 @@ with tabs[3]:  # STRATEGIST
                     f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
                     f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
                     unsafe_allow_html=True)
+
+            # ── Contact details & enrichment ──
+            st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
+            # Clear enrichment input when user clicks Clear (must run before text_input is created)
+            enrich_result_key = f"enrich_result_{ctid}"
+            if st.session_state.get("enrich_clear_input"):
+                st.session_state["enrich_lookup_input"] = ""
+                st.session_state.pop("last_enrichment_record_id", None)
+                st.session_state.pop(enrich_result_key, None)
+                st.session_state.pop("enrich_clear_input", None)
+            db_email = (ct.get("email") or "").strip()
+            db_linkedin = (ct.get("linkedin") or "").strip()
+            needs_enrichment = not db_email and not db_linkedin
+            if db_email or db_linkedin:
+                ecol1, ecol2 = st.columns(2)
+                with ecol1:
+                    st.markdown(
+                        f"<div class='c' style='padding:10px 14px;'><div class='c-l'>Email (DB)</div>"
+                        f"<div class='c-v'>{db_email or '—'} {bdg('From DB', 'gray') if db_email else ''}</div></div>",
+                        unsafe_allow_html=True)
+                with ecol2:
+                    st.markdown(
+                        f"<div class='c' style='padding:10px 14px;'><div class='c-l'>LinkedIn (DB)</div>"
+                        f"<div class='c-v'>{db_linkedin[:50] + '…' if db_linkedin and len(db_linkedin) > 50 else (db_linkedin or '—')} "
+                        f"{bdg('From DB', 'gray') if db_linkedin else ''}</div></div>",
+                        unsafe_allow_html=True)
+            if needs_enrichment or not db_email:
+                st.markdown(
+                    "<div style='background:var(--warn-bg);border:1px solid #f59e0b;border-radius:var(--radius);"
+                    "padding:12px 14px;margin:8px 0;font-size:13px;'>"
+                    "No verified email found. Run enrichment?</div>",
+                    unsafe_allow_html=True)
+            enrich_input = st.text_input(
+                "Look up by LinkedIn URL or email",
+                placeholder="Paste LinkedIn URL or email to enrich...",
+                key="enrich_lookup_input",
+                label_visibility="collapsed",
+            )
+            lookup_identifier = (enrich_input or "").strip() or (db_linkedin or db_email or "").strip()
+            run_col, clear_col, credits_col = st.columns([1, 0.6, 1])
+            with run_col:
+                run_enrich = st.button("🔍 Run enrichment", key="run_enrichment", type="primary", use_container_width=True)
+            with clear_col:
+                if st.button("Clear", key="enrich_clear_btn", use_container_width=True, help="Clear box and result to add another LinkedIn/email"):
+                    st.session_state.enrich_clear_input = True
+                    st.rerun()
+            with credits_col:
+                credits = get_signalhire_credits()
+                if credits is not None:
+                    st.caption(f"SignalHire credits: {credits}")
+                else:
+                    st.caption("Enrichment uses mock data when no API/callback")
+            if run_enrich:
+                if not lookup_identifier:
+                    st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
+                else:
+                    try:
+                        with st.spinner("Enriching contact..."):
+                            record_id, req_id, status = request_enrichment(lookup_identifier, user["id"])
+                        if record_id and status == "completed":
+                            st.session_state[enrich_result_key] = record_id
+                            st.success("Enrichment complete.")
+                            st.rerun()
+                        elif record_id and status == "pending":
+                            st.info("Enrichment requested. Results will appear when the callback is received. You can refresh in a moment.")
+                            st.session_state[enrich_result_key] = record_id
+                            st.rerun()
+                        else:
+                            st.error("Enrichment failed. Check API key and identifier, or see terminal logs.")
+                    except Exception as e:
+                        st.error(f"Enrichment error: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+            # Show enrichment result only for this contact (so switching company/contact doesn't show another person)
+            show_record_id = st.session_state.get(enrich_result_key)
+            if show_record_id:
+                try:
+                    er = get_enrichment_result(show_record_id)
+                except Exception:
+                    er = None
+                if er and er.get("status") == "completed" and er.get("result_json"):
+                    res = er["result_json"]
+                    display_name = (res.get("fullName") or "").strip() or (ct.get("name") or "").strip() or "Contact"
+                    st.markdown(
+                        "<div style='background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);"
+                        "padding:16px;margin-top:12px;'>"
+                        "<div style='font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:10px;'>"
+                        "Enrichment result — Verified vs Enriched</div>",
+                        unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='font-size:13px;font-weight:500;margin-bottom:8px;'>{display_name}"
+                        f" <span style='font-size:11px;color:var(--text-3);font-weight:400;'>· {comp.get('domain','')}</span></div>"
+                        f"<div style='font-size:12px;color:var(--text-3);margin-bottom:12px;'>{res.get('headline') or ''}</div>",
+                        unsafe_allow_html=True)
+                    for email in res.get("emails") or []:
+                        src = email.get("source", "Enriched")
+                        conf = email.get("confidence", 0)
+                        st.markdown(
+                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📧 {email.get('value','')}</div>"
+                            f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} "
+                            f"Confidence: {conf}% · {res.get('source','SignalHire')}</div></div>",
+                            unsafe_allow_html=True)
+                    for phone in res.get("phones") or []:
+                        src = phone.get("source", "Enriched")
+                        conf = phone.get("confidence", 0)
+                        st.markdown(
+                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📞 {phone.get('value','')}</div>"
+                            f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} Confidence: {conf}%</div></div>",
+                            unsafe_allow_html=True)
+                    if res.get("linkedin"):
+                        st.markdown(
+                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>LinkedIn</div>"
+                            f"<div class='c-v'><a href='{res['linkedin']}' target='_blank' rel='noopener'>Profile</a></div></div>",
+                            unsafe_allow_html=True)
+                    if not (res.get("emails") or res.get("phones")) and res.get("linkedin"):
+                        st.caption("To get company/personal email and phone for this profile, set up SignalHire callback (SIGNALHIRE_CALLBACK_BASE_URL in keys.env).")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    # Add contact to company
+                    st.markdown(sh_small("Add enriched contact to company"), unsafe_allow_html=True)
+                    add_cid = st.selectbox(
+                        "Company",
+                        options=[cid] + [c["id"] for c in get_all_companies() if c["id"] != cid],
+                        format_func=lambda x: get_company(x).get("domain", str(x)) if get_company(x) else str(x),
+                        index=0,
+                        key="enrich_add_company",
+                    )
+                    add_name = st.text_input("Contact name", value=res.get("fullName") or "", key="enrich_add_name")
+                    if st.button("✅ Add contact to company", key="add_enriched_contact", type="primary"):
+                        if not add_name or not add_cid:
+                            st.warning("Select company and enter contact name.")
+                        else:
+                            primary_email = (res.get("emails") or [{}])[0].get("value", "") if res.get("emails") else ""
+                            primary_phone = (res.get("phones") or [{}])[0].get("value", "") if res.get("phones") else ""
+                            extra = {
+                                "enrichment": {
+                                    "source": res.get("source", "SignalHire"),
+                                    "confidence": res.get("confidence", 0),
+                                    "enriched_at": datetime.utcnow().isoformat(),
+                                }
+                            }
+                            new_id = upsert_contact(
+                                add_cid, add_name.strip(),
+                                email=primary_email or None,
+                                linkedin=res.get("linkedin") or None,
+                                role=res.get("headline") or None,
+                                extra_data=extra,
+                            )
+                            st.success(f"Contact “{add_name.strip()}” added to {get_company(add_cid).get('domain','company')}.")
+                            st.session_state.pop(enrich_result_key, None)
+                            st.rerun()
 
             # ── Quick actions + Sequence builder ──
             q1, q2, q3, q4, q5 = st.columns(5)
@@ -1013,18 +1516,31 @@ with tabs[3]:  # STRATEGIST
                     unsafe_allow_html=True)
 
                 for step in plan:
-                    ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧"
-                    st.markdown(
-                        f"<div style='padding:10px 0;border-bottom:1px solid #e0e7ff;'>"
-                        f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                        f"<span style='font-size:13px;font-weight:600;'>"
-                        f"{ch_icon} Step {step['step']}: {step['channel']} — Day {step['day_offset']}</span>"
-                        f"<span style='font-size:11px;color:var(--text-3);'>{step.get('timing_note','')}</span></div>"
-                        f"<div style='font-size:12px;color:var(--text-2);margin-top:4px;'>{step['description']}</div>"
-                        f"<div style='font-size:12px;margin-top:6px;background:#fff;padding:8px 12px;"
-                        f"border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>"
-                        f"{(step.get('content_draft',''))[:500]}</div></div>",
-                        unsafe_allow_html=True)
+                    with st.container():
+                        st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
+                        ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧"
+                        content_draft = (step.get("content_draft") or "").strip()
+                        preview_len = 120
+                        st.markdown(
+                            f"<div class='sequence-step-header'>"
+                            f"<span style='font-size:13px;font-weight:600;'>"
+                            f"{ch_icon} Step {step['step']}: {step['channel']} — Day {step['day_offset']}</span>"
+                            f"<span style='font-size:11px;color:var(--text-3);'>{step.get('timing_note','')}</span></div>"
+                            f"<div style='font-size:12px;color:var(--text-2);'>{step['description']}</div>"
+                            f"<div class='sequence-step-divider'></div>",
+                            unsafe_allow_html=True)
+                        if content_draft:
+                            with st.expander(f"📄 Read full message" + (f" — {content_draft[:preview_len]}..." if len(content_draft) > preview_len else ""), expanded=False):
+                                st.markdown(
+                                    f"<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>{(content_draft)}</div>",
+                                    unsafe_allow_html=True)
+                        if "email" in step.get("channel", "").lower() and step.get("content_draft"):
+                            st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
+                            subj, bod = parse_email_content(step["content_draft"])
+                            _render_save_to_gmail(
+                                ct.get("email", ""), subj, bod,
+                                f"plan_{st.session_state.session_id}_{step['step']}",
+                            )
 
                 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1135,44 +1651,90 @@ with tabs[4]:  # ACTIONS
                 st.progress(progress)
 
                 for step in seq["steps"]:
-                    sc = ACTION_STATUS_COLORS.get(step["status"], "gray")
-                    is_done = step["status"] in ("sent", "completed", "replied_positive", "replied_negative", "meeting_booked")
-                    icon = "✅" if is_done else "📋"
-                    ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧" if "email" in step["channel"].lower() else "📞"
+                    with st.container():
+                        st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
+                        sc = ACTION_STATUS_COLORS.get(step["status"], "gray")
+                        is_done = step["status"] in ("sent", "completed", "replied_positive", "replied_negative", "meeting_booked")
+                        icon = "✅" if is_done else "📋"
+                        ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧" if "email" in step["channel"].lower() else "📞"
 
-                    s1, s2, s3 = st.columns([3, 1.2, 0.8])
-                    with s1:
-                        sent_html = ""
-                        if step.get("content_sent"):
-                            sent_html = f"<div style='font-size:11px;margin-top:4px;background:#f8f9fa;padding:6px 10px;border-radius:6px;border-left:2px solid #4caf50;'>{step['content_sent'][:200]}</div>"
-                        resp_html = ""
-                        if step.get("response_content"):
-                            resp_html = f"<div style='font-size:11px;margin-top:4px;background:#f0f4ff;padding:6px 10px;border-radius:6px;border-left:2px solid #2196f3;'>Response: {step['response_content'][:200]}</div>"
-                        sched = f" · 📅 {step['scheduled_at'][:10]}" if step.get("scheduled_at") else ""
-                        st.markdown(
-                            f"<div style='padding:6px 0;'>"
-                            f"<div>{icon} {ch_icon} <b>Step {step.get('sequence_step','?')}</b>: {step['channel']}{sched} {bdg(step['status'], sc)}</div>"
-                            f"<div style='font-size:12px;color:var(--text-2);margin-top:2px;'>{step['description'][:200]}</div>"
-                            f"{sent_html}{resp_html}</div>",
-                            unsafe_allow_html=True)
-                    with s2:
-                        if has_perm("can_log_outcomes"):
-                            new_s = st.selectbox("Status", ACTION_STATUSES,
-                                index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
-                                key=f"seq_{step['id']}", label_visibility="collapsed")
-                            if new_s != step["status"]:
-                                update_action(step["id"], status=new_s)
-                                # Trigger replan if response received
-                                if new_s in ("replied_positive", "replied_negative"):
+                        s1, s2, s3 = st.columns([3, 1.2, 0.8])
+                        with s1:
+                            sched = f" · 📅 {step['scheduled_at'][:10]}" if step.get("scheduled_at") else ""
+                            st.markdown(
+                                f"<div class='sequence-step-header'>"
+                                f"<span>{icon} {ch_icon} <b>Step {step.get('sequence_step','?')}</b>: {step['channel']}{sched}</span>"
+                                f"{bdg(step['status'], sc)}</div>"
+                                f"<div style='font-size:12px;color:var(--text-2);margin-top:2px;'>{step['description'][:200]}</div>"
+                                f"<div class='sequence-step-divider'></div>",
+                                unsafe_allow_html=True)
+                            if step.get("content_sent"):
+                                ch_lower = (step.get("channel") or "").lower()
+                                # Show the version currently selected in refinement dropdown; single draft only
+                                rev_list_key = f"draft_revisions_list_{step['id']}"
+                                orig_stored_key = f"draft_original_{step['id']}"
+                                revisions_list = st.session_state.get(rev_list_key) or []
+                                if not isinstance(revisions_list, list):
+                                    revisions_list = [revisions_list] if revisions_list else []
+                                # After refresh: restore revision list from DB so drafts persist
+                                if not revisions_list and step.get("draft_revisions"):
+                                    revs = step["draft_revisions"]
+                                    revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
+                                    st.session_state[rev_list_key] = revisions_list
+                                version_sel = st.session_state.get(f"refine_version_sel_{step['id']}")
+                                # Version 1 = persisted draft_original from DB (after refresh) or current content_sent
+                                original_for_display = (step.get("draft_original") or "").strip() or st.session_state.get(orig_stored_key) or _display_original_from_content_sent(step.get("content_sent"))
+                                if revisions_list and version_sel:
+                                    if version_sel == "Version 1 (Original)":
+                                        display_content = original_for_display
+                                    else:
+                                        try:
+                                            m = re.search(r"Version\s+(\d+)", version_sel)
+                                            v = int(m.group(1)) if m else 2
+                                            idx = v - 2
+                                            raw = (revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original_for_display))
+                                            display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
+                                        except Exception:
+                                            raw = revisions_list[-1] if revisions_list else original_for_display
+                                            display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
+                                else:
+                                    display_content = original_for_display
+                                expander_label = "💬 Read full LinkedIn draft" if "linkedin" in ch_lower else "📧 Read full email"
+                                with st.expander(expander_label, expanded=False):
+                                    st.markdown(
+                                        f"<div style='font-size:12px;background:#f8f9fa;padding:8px 10px;border-radius:6px;border-left:2px solid #4caf50;white-space:pre-wrap;'>{display_content}</div>",
+                                        unsafe_allow_html=True)
+                            if step.get("response_content"):
+                                resp_content = (step["response_content"] or "").strip()
+                                with st.expander("💬 Read full response", expanded=False):
+                                    st.markdown(
+                                        f"<div style='font-size:12px;background:#f0f4ff;padding:8px 10px;border-radius:6px;border-left:2px solid #2196f3;white-space:pre-wrap;'>{resp_content}</div>",
+                                        unsafe_allow_html=True)
+                            if step.get("content_sent") and ("email" in (step.get("channel") or "").lower() or "linkedin" in (step.get("channel") or "").lower()):
+                                _render_ai_refinement(step, seq["id"], step.get("channel", ""))
+                        with s2:
+                            if has_perm("can_log_outcomes"):
+                                new_s = st.selectbox("Status", ACTION_STATUSES,
+                                    index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
+                                    key=f"seq_{step['id']}", label_visibility="collapsed")
+                                if new_s != step["status"]:
+                                    update_action(step["id"], status=new_s)
+                                    # Trigger replan if response received
+                                    if new_s in ("replied_positive", "replied_negative"):
+                                        st.session_state[f"replan_{seq['id']}"] = step["id"]
+                                    st.rerun()
+                        with s3:
+                            if not is_done and has_perm("can_log_outcomes"):
+                                resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
+                                if resp:
+                                    update_action(step["id"], response_content=resp, status="replied_positive")
                                     st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                st.rerun()
-                    with s3:
-                        if not is_done and has_perm("can_log_outcomes"):
-                            resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
-                            if resp:
-                                update_action(step["id"], response_content=resp, status="replied_positive")
-                                st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                st.rerun()
+                                    st.rerun()
+                        if "email" in step.get("channel", "").lower() and step.get("content_sent"):
+                            st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
+                            single_draft = _display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
+                            subj, bod = parse_email_content(single_draft)
+                            _render_save_to_gmail(ct.get("email", ""), subj, bod, f"act_{step['id']}")
 
                 # ── Replan trigger ──
                 replan_key = f"replan_{seq['id']}"
@@ -1288,10 +1850,8 @@ with tabs[5]:  # TIMELINE
 
 with tabs[6]:  # CALENDAR
     st.markdown(sh("UPCOMING ACTIONS"), unsafe_allow_html=True)
-    cid = st.session_state.sel_company
-    ctid = st.session_state.sel_contact
-
-    tl = get_timeline_actions(company_id=cid, contact_id=ctid, limit=2000) if cid else get_user_actions(user["id"], limit=2000)
+    # Always show all scheduled events (not scoped to selected company/contact)
+    tl = get_timeline_actions(limit=2000)
 
     upcoming = []
     from datetime import datetime, timedelta
@@ -1338,7 +1898,8 @@ with tabs[6]:  # CALENDAR
 # ════════════════════ PIPELINE ════════════════════
 
 with tabs[7]:  # PIPELINE
-    st.markdown(sh("CONTACT PIPELINE"), unsafe_allow_html=True)
+    # === UI REFACTOR START ===
+    st.markdown(lh2_section_header("CONTACT PIPELINE"), unsafe_allow_html=True)
     all_comp = get_all_companies()
     pipeline = {s: [] for s in CONTACT_STATUSES}
     for cd in all_comp:
@@ -1347,10 +1908,10 @@ with tabs[7]:  # PIPELINE
             if status in pipeline:
                 pipeline[status].append({"contact": ctd, "company": cd})
 
-    mcols = st.columns(len(CONTACT_STATUSES))
-    for col, s in zip(mcols, CONTACT_STATUSES):
-        with col:
-            st.markdown(mcard(len(pipeline[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)), unsafe_allow_html=True)
+    kpi_pipeline = [(len(pipeline[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
+    st.markdown(
+        "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, lbl) for n, lbl in kpi_pipeline) + "</div>",
+        unsafe_allow_html=True)
 
     bcols = st.columns(len(CONTACT_STATUSES))
     for i, s in enumerate(CONTACT_STATUSES):
@@ -1359,21 +1920,19 @@ with tabs[7]:  # PIPELINE
                 ctd, cd = item["contact"], item["company"]
                 score = compute_lead_score(cd, ctd)
                 si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                st.markdown(
-                    f"<div class='pc'><div style='font-size:13px;font-weight:500;'>{ctd['name']}</div>"
-                    f"<div style='font-size:11px;color:var(--text-3);'>{cd['domain']}</div>"
-                    f"<div style='font-size:11px;'>{si} {score}/100</div></div>",
-                    unsafe_allow_html=True)
+                st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], f"{si} {score}/100"), unsafe_allow_html=True)
             if not pipeline[s]:
-                st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:#ccc;'>—</div>", unsafe_allow_html=True)
+                st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>", unsafe_allow_html=True)
+    # === UI REFACTOR END ===
 
 
 # ════════════════════ HISTORY ════════════════════
 
 with tabs[8]:  # HISTORY
+    # === UI REFACTOR START ===
     ginsights = get_global_insights(user["id"], limit=8)
     if ginsights:
-        st.markdown(sh("GLOBAL PATTERNS"), unsafe_allow_html=True)
+        st.markdown(lh2_section_header("GLOBAL PATTERNS"), unsafe_allow_html=True)
         for g in ginsights:
             cc2 = "green" if g["confidence_score"] >= 0.7 else "yellow" if g["confidence_score"] >= 0.4 else "gray"
             conf_lbl = f"conf: {g['confidence_score']:.1f}"
@@ -1385,19 +1944,20 @@ with tabs[8]:  # HISTORY
 
     all_ua = get_user_actions(user["id"], limit=200)
     if all_ua:
-        st.markdown(sh("ANALYTICS"), unsafe_allow_html=True)
+        st.markdown(lh2_section_header("ANALYTICS"), unsafe_allow_html=True)
         total = len(all_ua)
         sent = sum(1 for a in all_ua if a["status"] in ("sent", "completed", "replied_positive", "replied_negative", "meeting_booked", "deal_closed"))
         pos = sum(1 for a in all_ua if a["status"] in ("replied_positive", "meeting_booked", "deal_closed"))
         mtg = sum(1 for a in all_ua if a["status"] == "meeting_booked")
         nr = sum(1 for a in all_ua if a["status"] == "no_response")
         rate = f"{(pos/sent*100):.0f}%" if sent else "—"
-        am = st.columns(5)
-        for col, (n, l) in zip(am, [(total, "Total"), (sent, "Sent"), (rate, "Positive Rate"), (mtg, "Meetings"), (nr, "No Response")]):
-            with col:
-                st.markdown(mcard(n, l), unsafe_allow_html=True)
+        analytics_items = [(total, "Total"), (sent, "Sent"), (rate, "Positive Rate"), (mtg, "Meetings"), (nr, "No Response")]
+        st.markdown(
+            "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, l) for n, l in analytics_items) + "</div>",
+            unsafe_allow_html=True)
 
-    st.markdown(sh("ALL SESSIONS"), unsafe_allow_html=True)
+    st.markdown(lh2_section_header("ALL SESSIONS"), unsafe_allow_html=True)
+    # === UI REFACTOR END ===
     sessions = get_user_sessions(user["id"])
     for sx in sessions:
         sh1, sh2, sh3 = st.columns([2, 1.5, 1])
