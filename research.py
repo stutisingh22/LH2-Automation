@@ -203,6 +203,34 @@ def _set_research_status(page_id, status):
         log.error("Failed to set research status: %s", e)
 
 
+def write_brief_to_notion(page_id, brief_text, domain):
+    """Append the brief as blocks to the company page in Notion."""
+    if not page_id or not NOTION_TOKEN or not (brief_text or "").strip():
+        return False
+    try:
+        blocks = [
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Brief"}}]},
+            },
+        ]
+        blocks.extend(_text_to_blocks((brief_text or "").strip()))
+        for i in range(0, len(blocks), NOTION_BATCH_LIMIT):
+            batch = blocks[i : i + NOTION_BATCH_LIMIT]
+            r = requests.patch(
+                f"{NOTION_API}/blocks/{page_id}/children",
+                headers=_headers(),
+                json={"children": batch},
+            )
+            r.raise_for_status()
+        log.info("Brief written to Notion for %s", domain)
+        return True
+    except Exception as e:
+        log.error("Failed to write brief to Notion: %s", e)
+        return False
+
+
 def _text_to_blocks(text):
     """Convert text to Notion paragraph blocks."""
     blocks = []
@@ -230,7 +258,7 @@ def build_research_prompt(domain, context=""):
     """The full institutional-grade research prompt."""
     return f"""{context}
 
-You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships.
+You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. This research is produced by you (Claude) only — no external search APIs. Completely ignore any contact details or SPOC data stored in Notion; do not use or reference the user's Notion database or contact lists. Use only your knowledge of publicly available information about the company and its stakeholders.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
 It must demonstrate analytical rigor, structural clarity, economic reasoning, and decisive judgment.
 This is not descriptive research.
@@ -269,7 +297,7 @@ Formatting Rules (MANDATORY):
 
 Use section dividers exactly as written below (the === and --- lines).
 Use proper paragraph spacing between all sections and subsections.
-Use clean, consistent pipe-formatted tables with column headers.
+Tables MUST be proper Markdown: (1) header row with pipe-separated column names, (2) immediately on the next line a separator row with dashes (e.g. |---||---||---|), (3) then one data row per item. Never output a table without the separator row.
 No markdown bold (no ** or __).
 No emojis.
 No decorative commentary.
@@ -283,8 +311,14 @@ Target Domain: {domain}
 0. ELIGIBILITY CHECK
 ============================================================
 
-Provide the following table:
+Provide a proper Markdown table (header row, then separator row |---||---||---|, then one row per criterion):
 | Criterion | Assessment | Pass/Fail |
+|-----------|------------|-----------|
+| Paywall exposure | ... | Pass/Fail |
+| Content structure | ... | Pass/Fail |
+| Category alignment | ... | Pass/Fail |
+| Pod revenue plausibility | ... | Pass/Fail |
+
 Evaluate these four criteria:
 
 Paywall exposure: Is content free and open, or gated behind subscription/registration?
@@ -325,11 +359,11 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-Identify leads and stakeholders from the WEB-SOURCED SPOCs block above when provided; otherwise from publicly discoverable sources only. Target only C-level/executive: CEO, CFO, COO, founder, president, board members. Do not recommend or list editors. Do not use or reference the user's Notion database or existing contact lists. When the block contains specific names and LinkedIn URLs, include them explicitly in the Ranked Stakeholder Table (Name | Title | LinkedIn URL when available). Do not output generic or speculative lines like "Unknown contact" or "domain registration traces to".
+Identify leads and stakeholders using only your knowledge of publicly available information (LinkedIn, company pages, press, job postings). Completely ignore any contact details or SPOC data stored in Notion — do not use or reference the user's Notion database or contact lists. Recommend the most appropriate leads based on role, authority, and relevance.
 
 3A. Organizational Reality
 3B. Identified Power Center
-3C. Ranked Stakeholder Table (include actual names and LinkedIn profile URLs from the web-sourced block when present)
+3C. Ranked Stakeholder Table
 3D. Contact Logic
 
 ============================================================
@@ -461,22 +495,9 @@ def run_research(domain, context="", progress_callback=None):
     Returns the research text, or None on failure.
 
     progress_callback(chars_received, elapsed_seconds) is called periodically.
-    Injects web-sourced contact/lead data when available so Power Mapping uses
-    real scraped names and roles, not Notion or domain/WHOIS speculation.
     """
     if not ANTHROPIC_API_KEY:
         return None
-
-    try:
-        from web_search import power_scrape_company_spocs
-        spocs_blob = power_scrape_company_spocs(domain)
-        if spocs_blob:
-            context = (
-                "WEB-SOURCED SPOCs (C-level only: CEO, CFO, COO, founder, board — no editors; use only this; do not use Notion or domain/WHOIS):\n"
-                + spocs_blob + "\n\n" + context
-            )
-    except Exception as e:
-        log.debug("Power scrape injection skipped: %s", e)
 
     MAX_CONTEXT = 60000
     if len(context) > MAX_CONTEXT:
@@ -528,53 +549,32 @@ def run_research(domain, context="", progress_callback=None):
 def research_command_ai(domain, current_research_text, user_command):
     """
     Run an AI command on the research document: extend, add section, or revise.
-    Uses streaming to avoid long-request timeouts. Optionally injects power-scraped
-    SPOCs when the user asks to extend power mapping / contacts.
     Returns the full updated research text (to replace or append in the UI).
     """
     if not (user_command or "").strip() or not ANTHROPIC_API_KEY:
         return None
     current = (current_research_text or "").strip()
-    cmd_lower = (user_command or "").strip().lower()
-    # When extending power mapping / contacts, inject web-scraped SPOCs so the model has real names and LinkedIn URLs
-    spocs_block = ""
-    if any(k in cmd_lower for k in ("power", "contact", "spoc", "ceo", "cfo", "leadership", "stakeholder", "mapping")):
-        try:
-            from web_search import power_scrape_company_spocs
-            spocs = power_scrape_company_spocs(domain)
-            if spocs:
-                spocs_block = f"""
-WEB-SOURCED SPOCs (C-level only; use for names and LinkedIn URLs when extending Power Mapping):
-{spocs[:6000]}
-"""
-        except Exception as e:
-            log.debug("Power scrape for extend skipped: %s", e)
     prompt = f"""You are editing institutional-grade strategic research for {domain}.
 
 CURRENT RESEARCH DOCUMENT:
 {current[:40000] if current else '(Document is empty. Generate new research in the same format and tone as the Notion research bot.)'}
-{spocs_block}
 
 USER COMMAND:
 {user_command.strip()}
 
 Instructions:
 - If the user asks to add a section, extend, or research something new: add or extend the document in the same style (institutional, structured, tables where appropriate). Return the COMPLETE updated document including all existing content plus your addition.
-- If the user asks to extend power mapping or contacts: use the WEB-SOURCED SPOCs above and include specific names and LinkedIn URLs in the table(s). Target C-level only (CEO, CFO, etc.); no editors.
 - If the user asks to revise or fix something: apply the change and return the COMPLETE document.
 - Use the same section structure and formatting (===, ---, pipe tables) as the existing research. No markdown bold, no emojis.
 - Output ONLY the full research document. No preamble or "Here is the updated document"."""
     try:
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        collected = []
-        with client.messages.stream(
+        r = client.messages.create(
             model=RESEARCH_MODEL,
-            max_tokens=32000,
+            max_tokens=RESEARCH_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                collected.append(text)
-        return ("".join(collected)).strip()
+        )
+        return (r.content[0].text or "").strip()
     except Exception as e:
         log.error("Research command AI failed: %s", e)
         return None

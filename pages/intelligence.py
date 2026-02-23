@@ -8,8 +8,7 @@ import streamlit as st
 from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON
 from db_ops import get_company, get_contact, get_contacts, merge_company_extra_data, upsert_contact
 from notion_sync import create_notion_contact_page
-from web_search import search_web_for_person, search_web_for_person_by_name, power_scrape_company_spocs
-from research import fetch_research_from_notion, write_research_to_notion, run_research, split_research_into_sections, research_command_ai
+from research import fetch_research_from_notion, write_research_to_notion, write_brief_to_notion, run_research, split_research_into_sections, research_command_ai
 from ai_engine import (
     auto_brief,
     research_person_for_company,
@@ -18,7 +17,7 @@ from ai_engine import (
     get_local_time,
 )
 from drive_sync import list_drive_files, create_doc_in_drive
-from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm, render_brief_card_html, markdown_to_html
+from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm
 from app_helpers import select_contact, get_current_notion_database_id
 
 
@@ -46,9 +45,7 @@ def render():
             if ctid and st.session_state.session_id:
                 ct = get_contact(ctid)
                 if ct:
-                    _contact_label = ct.get("name") or "Unknown"
-                    _domain = comp.get("domain") or ""
-                    st.markdown(sh_small(f"Brief — {_contact_label}" + (f" · {_domain}" if _domain else "")), unsafe_allow_html=True)
+                    st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
                     st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
                     brief_entry = st.text_input(
                         "Brief",
@@ -58,23 +55,32 @@ def render():
                     )
                     if st.session_state.auto_brief_text is None:
                         with st.spinner("Generating brief..."):
-                            contact_web_ctx = search_web_for_person(
-                                company_domain=comp.get("domain"),
-                                person_name=ct.get("name"),
-                                email=ct.get("email"),
-                                linkedin_url=ct.get("linkedin"),
-                            )
-                            company_spocs_ctx = power_scrape_company_spocs(comp.get("domain"))
-                            brief = auto_brief(
-                                comp, ct, user.get("id"), st.session_state.session_id, rn,
-                                contact_web_context=contact_web_ctx,
-                                company_spocs_web_context=company_spocs_ctx,
-                            )
+                            brief = auto_brief(comp, ct, user.get("id"), st.session_state.session_id, rn)
                             st.session_state.auto_brief_text = brief or "Could not generate brief."
-                    st.markdown(render_brief_card_html(st.session_state.auto_brief_text or ""), unsafe_allow_html=True)
-                    if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
-                        st.session_state.auto_brief_text = None
-                        st.rerun()
+                    st.markdown("<div class='brief-card'>", unsafe_allow_html=True)
+                    st.markdown(st.session_state.auto_brief_text or "")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    brief_btn1, brief_btn2 = st.columns(2)
+                    with brief_btn1:
+                        if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
+                            st.session_state.auto_brief_text = None
+                            st.rerun()
+                    with brief_btn2:
+                        if st.button("💾 Save", key="brief_save_all_intel", help="Save brief to DB, Notion, and Drive"):
+                            _brief = (st.session_state.auto_brief_text or "").strip()
+                            if not _brief:
+                                st.warning("No brief to save.")
+                            else:
+                                merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
+                                _doc_name = comp.get("domain") or comp.get("name", "Company")
+                                fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
+                                if page_id:
+                                    write_brief_to_notion(page_id, _brief, comp.get("domain", ""))
+                                if fid:
+                                    st.toast("Brief saved to DB, Notion, and Drive.")
+                                else:
+                                    st.toast("Brief saved to DB" + (" and Notion." if page_id else ".") + (" Drive: " + (err_drive or "failed") if err_drive else ""))
+                                st.rerun()
 
             st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
             r1 = st.columns(5)
@@ -122,7 +128,7 @@ def render():
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             else:
-                st.caption("Edit by section (same structure as Notion) and click Save to store in DB, Drive, and Notion. Use the AI command below to generate or extend.")
+                st.caption("Edit by section (same structure as Notion) and click Save to store in DB. Use the AI command below to generate or extend.")
                 sections = split_research_into_sections(research_full_display)
                 section_bodies = []
                 for i, (sec_title, body) in enumerate(sections):
@@ -138,40 +144,25 @@ def render():
                         section_bodies.append(edited)
                 # Current full document = concatenation of section edits (for AI command and Save)
                 current_research_text = "\n\n".join(section_bodies).strip() if section_bodies else research_full_display
-                page_id = comp.get("notion_page_id")
-                save_col, delete_col, _ = st.columns([1, 1, 3])
-                with save_col:
-                    if st.button("💾 Save", key=f"save_research_full_{cid}", use_container_width=True, help="Save research to DB, Drive, and Notion"):
-                        text = (current_research_text or "").strip()
-                        merge_company_extra_data(cid, {"research_full": text, "research_full_updated_at": datetime.utcnow().isoformat()})
-                        st.session_state.auto_brief_text = None
-                        ok_drive = True
-                        if text:
-                            _doc_name = comp.get("domain") or comp.get("name", "Company")
-                            fid, _, err = create_doc_in_drive(f"{_doc_name} - Research", text)
-                            ok_drive = bool(fid)
-                            if not ok_drive and err:
-                                st.toast(f"Drive: {err}")
+                if st.button("💾 Save", key=f"save_research_all_{cid}", use_container_width=True, help="Save research to DB, Notion, and Drive"):
+                    _research = (current_research_text or "").strip()
+                    if not _research:
+                        st.warning("No research to save.")
+                    else:
+                        merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        _doc_name = comp.get("domain") or comp.get("name", "Company")
+                        fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _research)
                         ok_notion = True
-                        if page_id and text and len(text) >= 500:
+                        if page_id and len(_research) >= 500:
                             with st.spinner("Writing to Notion…"):
-                                ok_notion = write_research_to_notion(page_id, text, comp.get("domain", ""))
+                                ok_notion = write_research_to_notion(page_id, _research, comp.get("domain", ""))
                             if ok_notion and cid in st.session_state.get("research_cache", {}):
                                 del st.session_state.research_cache[cid]
-                        if not text:
-                            st.success("Saved to DB.")
-                        elif ok_drive and (not (page_id and len(text) >= 500) or ok_notion):
-                            st.success("Saved to DB, Drive, and Notion." if (page_id and len(text) >= 500 and ok_notion) else "Saved to DB and Drive.")
-                        else:
-                            st.success("Saved to DB." + (" Drive failed." if not ok_drive else " Notion failed."))
-                        st.rerun()
-                with delete_col:
-                    if st.button("🗑️ Delete deep research", key=f"delete_research_{cid}", use_container_width=True, help="Clear deep research from Command Center (DB)"):
-                        merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                         st.session_state.auto_brief_text = None
-                        if cid in st.session_state.get("research_cache", {}):
-                            del st.session_state.research_cache[cid]
-                        st.success("Deep research deleted.")
+                        if fid and ok_notion:
+                            st.toast("Research saved to DB, Notion, and Drive.")
+                        else:
+                            st.toast("Research saved to DB" + (", Notion" if ok_notion else "") + (", Drive" if fid else "") + ".")
                         st.rerun()
 
                 st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
@@ -201,8 +192,7 @@ def render():
                 if st.session_state.get("research_command_result_cid") == cid and st.session_state.get("research_command_result"):
                     cmd_result = st.session_state["research_command_result"]
                     with st.expander("AI result — Replace or Append", expanded=True):
-                        _cmd_display = cmd_result[:25000] + ("…" if len(cmd_result) > 25000 else "")
-                        st.markdown(f"<div class='markdown-rendered' style='max-height:300px;overflow-y:auto;'>{markdown_to_html(_cmd_display)}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
                     app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
                     with app_col1:
                         if st.button("Replace document", key=f"cmd_replace_{cid}", use_container_width=True):
@@ -229,7 +219,7 @@ def render():
                             st.rerun()
 
             st.markdown(sh_small("Request / suggest / look up person"), unsafe_allow_html=True)
-            st.caption("Paste a LinkedIn URL, email, or a person's name (or role like 'the editor') to research from the web. Results are always from web search — never from Notion.")
+            st.caption("Paste a LinkedIn URL, email, or type a person's name to get an AI research brief. Or describe what's missing for an AI suggestion.")
             intel_input = st.text_area(
                 "Request",
                 placeholder="E.g. linkedin.com/in/... · name@company.com · or 'Mitch Williams' / 'research the editor'",
@@ -237,7 +227,7 @@ def render():
                 key="intel_request",
                 label_visibility="collapsed",
             )
-            if st.button("Look up person or get suggestion", key="intel_submit", type="secondary", help="Research person from the web (LinkedIn/email/name) or get an AI suggestion"):
+            if st.button("Look up person or get suggestion", key="intel_submit", type="secondary", help="Look up person (name, LinkedIn, or email) for AI research brief, or get an AI suggestion"):
                 raw = (intel_input or "").strip()
                 if not raw:
                     st.warning("Enter a request, LinkedIn URL, email, or person name.")
@@ -246,48 +236,37 @@ def render():
                     email_match = re.search(r"[\w.-]+@[\w.-]+\.\w+", raw)
                     if linkedin_match:
                         url = linkedin_match.group(0).strip().rstrip(".,;:)")
-                        web_snippet = None
-                        with st.spinner("Searching the web for this person..."):
-                            web_snippet = search_web_for_person(linkedin_url=url, company_domain=comp.get("domain"))
-                        st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
                         with st.spinner("Running AI research on this person..."):
-                            _kw = dict(comp=comp, research_notes=rn, linkedin_url=url, web_search_results=web_snippet)
-                            brief = research_person_for_company(**_kw)
+                            brief = research_person_for_company(comp=comp, research_notes=rn, linkedin_url=url)
+                        st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
                         st.session_state.intel_person_brief = brief
                         st.session_state.intel_suggestion = None
                         st.rerun()
                     elif email_match:
                         em = email_match.group(0).strip()
-                        web_snippet = None
-                        with st.spinner("Searching the web for this person..."):
-                            web_snippet = search_web_for_person(email=em, company_domain=comp.get("domain"))
-                        st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
                         with st.spinner("Running AI research on this person..."):
-                            _kw = dict(comp=comp, research_notes=rn, email=em, web_search_results=web_snippet)
-                            brief = research_person_for_company(**_kw)
+                            brief = research_person_for_company(comp=comp, research_notes=rn, email=em)
+                        st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
                         st.session_state.intel_person_brief = brief
                         st.session_state.intel_suggestion = None
                         st.rerun()
                     else:
-                        # Person name or role (e.g. "Mitch Williams", "the editor") — look up from web, then run person research
-                        web_snippet = None
-                        with st.spinner("Searching the web for this person..."):
-                            web_snippet = search_web_for_person_by_name(raw, comp.get("domain"))
-                        if web_snippet:
-                            with st.spinner("Running AI research on this person..."):
-                                _kw = dict(comp=comp, research_notes=rn, person_name=raw, web_search_results=web_snippet)
-                                brief = research_person_for_company(**_kw)
-                            st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
-                            st.session_state.intel_person_brief = brief
-                            st.session_state.intel_suggestion = None
-                            st.rerun()
-                        else:
+                        suggestion_phrases = ("missing", "add ", "add a", "expand", "section on", "suggest", "what's missing", "what to add")
+                        is_suggestion = any(p in raw.lower() for p in suggestion_phrases)
+                        if is_suggestion:
                             with st.spinner("Asking AI for suggestion..."):
                                 suggestion = intelligence_request(comp, rn, raw)
                             st.session_state.intel_suggestion = suggestion
                             st.session_state.intel_suggestion_raw = raw
                             st.session_state.intel_lookup_lead = None
                             st.session_state.intel_person_brief = None
+                            st.rerun()
+                        else:
+                            with st.spinner("Running AI research on this person..."):
+                                brief = research_person_for_company(comp=comp, research_notes=rn, person_name=raw)
+                            st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
+                            st.session_state.intel_person_brief = brief
+                            st.session_state.intel_suggestion = None
                             st.rerun()
 
             if st.session_state.get("intel_lookup_lead") or st.session_state.get("intel_person_brief"):
@@ -296,7 +275,7 @@ def render():
                 label = (lead.get("name") or lead.get("email") or "Contact").strip() or "Person"
                 st.markdown(sh_small(f"Research — {label}"), unsafe_allow_html=True)
                 if brief:
-                    st.markdown(render_brief_card_html(brief), unsafe_allow_html=True)
+                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{brief}</div></div>", unsafe_allow_html=True)
                 if lead.get("domain") or lead.get("linkedin") or lead.get("email"):
                     st.caption("You can add this person to this company's contacts and optionally sync to Notion below.")
                 with st.form("add_contact_from_intel"):
@@ -351,7 +330,7 @@ def render():
 
             if st.session_state.get("intel_suggestion"):
                 st.markdown(sh_small("Suggestion — save as override?"), unsafe_allow_html=True)
-                st.markdown(render_brief_card_html(st.session_state.intel_suggestion or ""), unsafe_allow_html=True)
+                st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.intel_suggestion}</div></div>", unsafe_allow_html=True)
                 section_options = [n.get("title", "Untitled") for n in rn] if rn else []
                 section_options.append("New section")
                 apply_to = st.selectbox("Apply to section", options=section_options, key="intel_apply_section")
@@ -380,7 +359,7 @@ def render():
                     st.session_state.research_summary_cache = {}
                 if cid in st.session_state.research_summary_cache:
                     st.markdown(sh_small("Company context (short)"), unsafe_allow_html=True)
-                    st.markdown(render_brief_card_html(st.session_state.research_summary_cache.get(cid) or ""), unsafe_allow_html=True)
+                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.research_summary_cache[cid]}</div></div>", unsafe_allow_html=True)
                 elif st.button("Get short context summary", key="intel_summary_btn"):
                     with st.spinner("Summarizing..."):
                         summary = summarize_research_to_context(comp, rn)
@@ -405,7 +384,7 @@ def render():
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            markdown_to_html((note.get("content") or "")[:6000]),
+                            f"<div style='font-size:13px;white-space:pre-wrap;font-family:monospace;'>{(note.get('content') or '')[:6000]}</div>",
                             unsafe_allow_html=True,
                         )
 

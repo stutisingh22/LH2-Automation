@@ -170,7 +170,7 @@ def claim_task(page_id):
 def build_prompt(domain, context):
     return f"""{context}
 
-You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships.
+You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. This research is produced by you (Claude) only — no external search APIs. Completely ignore any contact details or SPOC data stored in Notion; do not use or reference the user's Notion database or contact lists. Use only your knowledge of publicly available information about the company and its stakeholders.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
 It must demonstrate analytical rigor, structural clarity, economic reasoning, and decisive judgment.
 This is not descriptive research.
@@ -209,7 +209,7 @@ Formatting Rules (MANDATORY):
 
 Use section dividers exactly as written below (the === and --- lines).
 Use proper paragraph spacing between all sections and subsections.
-Use clean, consistent pipe-formatted tables with column headers.
+Tables MUST be proper Markdown: (1) header row with pipe-separated column names, (2) immediately on the next line a separator row with dashes (e.g. |---||---||---|), (3) then one data row per item. Never output a table without the separator row.
 No markdown bold (no ** or __).
 No emojis.
 No decorative commentary.
@@ -223,8 +223,14 @@ Target Domain: {domain}
 0. ELIGIBILITY CHECK
 ============================================================
 
-Provide the following table:
+Provide a proper Markdown table (header row, then separator row |---||---||---|, then one row per criterion):
 | Criterion | Assessment | Pass/Fail |
+|-----------|------------|-----------|
+| Paywall exposure | ... | Pass/Fail |
+| Content structure | ... | Pass/Fail |
+| Category alignment | ... | Pass/Fail |
+| Pod revenue plausibility | ... | Pass/Fail |
+
 Evaluate these four criteria:
 
 Paywall exposure: Is content free and open, or gated behind subscription/registration?
@@ -307,11 +313,11 @@ Single Biggest Bottleneck (one sentence)
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-Identify leads and stakeholders from the WEB-SOURCED SPOCs block above when provided; otherwise from publicly discoverable sources only. Target only C-level/executive: CEO, CFO, COO, founder, president, board members. Do not recommend or list editors. Do not use or reference the user's Notion database or existing contact lists. When the block contains specific names and LinkedIn URLs, include them explicitly in the table (Name | Title | LinkedIn URL when available). Do not output generic or speculative lines like "Unknown contact" or "domain registration traces to".
+Identify leads and stakeholders using only your knowledge of publicly available information (LinkedIn, company pages, press, job postings). Completely ignore any contact details or SPOC data stored in Notion — do not use or reference the user's Notion database or contact lists. Recommend the most appropriate leads based on role, authority, and relevance.
 
 3A. Organizational Reality bullets
 3B. Identified Power Center (1-2 paragraphs)
-3C. Ranked Stakeholder Table: | Priority | Name | Title | LinkedIn URL | Economic Authority | Why They Matter | Core Incentive |
+3C. Ranked Stakeholder Table: | Priority | Name | Title | Economic Authority | Why They Matter | Core Incentive |
 3D. Contact Logic bullets including Who to Avoid
 
 ============================================================
@@ -641,20 +647,8 @@ def run_task(task):
     log.info(f"  >>> START: {domain}")
     start_time = time.time()
 
-    context = cached_context
     try:
-        from web_search import power_scrape_company_spocs
-        spocs_blob = power_scrape_company_spocs(domain)
-        if spocs_blob:
-            context = (
-                "WEB-SOURCED SPOCs (C-level only: CEO, CFO, COO, founder, board — no editors; use only this; do not use Notion or domain/WHOIS):\n"
-                + spocs_blob + "\n\n" + cached_context
-            )
-    except Exception as e:
-        log.debug("  [%s] Power scrape injection skipped: %s", domain, e)
-
-    try:
-        research_data = deep_research_agent(domain, context)
+        research_data = deep_research_agent(domain, cached_context)
     except Exception as e:
         log.error(f"  [{domain}] Research crash: {type(e).__name__}: {e}")
         research_data = None

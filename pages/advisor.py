@@ -74,7 +74,7 @@ def render():
                     prompt,
                     [{"role": m["role"], "content": m["content"]} for m in st.session_state.advisor_messages[:-1]],
                 )
-            st.markdown(reply or "No response.")
-        st.session_state.advisor_messages.append({"role": "assistant", "content": reply or ""})
+            st.markdown(reply)
+        st.session_state.advisor_messages.append({"role": "assistant", "content": reply})
         save_advisor_conversation(uid, st.session_state.advisor_messages)
         st.rerun()
