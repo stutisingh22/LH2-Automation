@@ -5,7 +5,7 @@ models.py — SQLAlchemy ORM models
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, Float, Boolean, DateTime,
-    ForeignKey, JSON,
+    ForeignKey, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship, declarative_base
 
@@ -164,4 +164,14 @@ class EnrichmentResult(Base):
     identifier = Column(String(512), nullable=False)  # LinkedIn URL or email used for lookup
     result_json = Column(JSON)  # Normalized {verified, enriched, contacts[], source, confidence}
     status = Column(String(20), default="pending")  # pending | completed | failed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ProcessedGmailMessage(Base):
+    """Tracks Gmail message IDs we've already synced so we don't log the same sent email twice."""
+    __tablename__ = "processed_gmail_messages"
+    __table_args__ = (UniqueConstraint("user_id", "gmail_message_id", name="uq_user_gmail_msg"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    gmail_message_id = Column(String(64), nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -86,6 +86,15 @@ def upsert_advisor_company(domain, parent_name, notion_page_id=None):
         return row.id
 
 
+def get_advisor_company(advisor_id):
+    """Return a single advisor company by id, or None."""
+    if advisor_id is None:
+        return None
+    with db_advisor() as s:
+        c = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
+        return _advisor_comp_dict(c) if c else None
+
+
 def get_all_advisor_companies():
     """Return all advisor companies as list of dicts (domain, parent_name, id, ...)."""
     with db_advisor() as s:

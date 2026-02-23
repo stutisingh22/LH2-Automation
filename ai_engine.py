@@ -6,6 +6,8 @@ FIX LOG:
   - Added auto_brief() for instant analysis on contact select
   - Added streaming support for chat
   - Smarter context assembly with research integration
+  - Optimized all AI prompts for clarity and token efficiency
+  - Bumped max_tokens on constrained outputs
 """
 
 import re
@@ -108,20 +110,20 @@ def compute_lead_score(comp, ct=None):
 def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
     """Build the full context system prompt."""
     summary, _ = get_session_summary(sid)
-    summary_block = f"\n{summary}" if summary else "(No summary yet.)"
+    summary_block = f"\n{summary}" if summary else "(None yet.)"
 
     events = get_memory_events(sid, min_imp=4)
     events_block = (
         "\n".join([
-            f"- [{e['event_type']}] {e['summary']} (importance: {e['importance_score']}/10)"
+            f"- [{e['event_type']}] {e['summary']} (imp: {e['importance_score']}/10)"
             for e in events[:8]
-        ]) or "(No key events yet.)"
+        ]) or "(None yet.)"
     )
 
     ginsights = get_global_insights(uid, limit=8)
     global_block = (
         "\n".join([f"- {g['insight']} (conf: {g['confidence_score']:.1f})" for g in ginsights])
-        or "(No global insights yet.)"
+        or "(None yet.)"
     )
 
     # Research context — prefer Command Center research_full when set; else Notion notes/overrides
@@ -158,49 +160,50 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
             + (f" (scheduled: {a['scheduled_at']})" if a.get('scheduled_at') else "")
             + (f" → Response: {a['response_content'][:80]}" if a.get('response_content') else "")
             for a in actions[:15]
-        ]) or "(No prior actions.)"
+        ]) or "(None.)"
     )
 
     local_time, tz_str = get_local_time(ct.get("country", ""), ct.get("state", ""))
     score = compute_lead_score(comp, ct)
 
-    system = f"""You are the LH2 Strategic Outreach Advisor for digital media partnerships.
-You have layered memory — you remember everything about this target across the entire conversation, plus patterns from all past outreach.
+    system = f"""You are the LH2 Strategic Outreach Advisor — a digital media partnership strategist with persistent memory.
 
-== COMPANY PROFILE ==
+Your job: Give decisive, research-backed outreach recommendations. Every response must reference specific data from the context below.
+
+== TARGET ==
 Domain: {comp.get('domain','?')} | Type: {comp.get('publisher_type','?')} | Content: {comp.get('content_type','?')}
-Monthly Visits: {comp.get('monthly_visits','?')} | Research: {comp.get('research_status','?')} | Score: {score}/100
+Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')} | Lead Score: {score}/100
 
-== CONTACT PROFILE ==
+== CONTACT ==
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
 LinkedIn: {ct.get('linkedin','N/A')} | Location: {ct.get('city','')}, {ct.get('state','')} {ct.get('country','')}
-Local Time: {local_time} ({tz_str or '?'}) | Status: {ct.get('status','not_contacted')}
+Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','not_contacted')}
 
-== SESSION MEMORY ==
+== SESSION SUMMARY ==
 {summary_block}
 
 == KEY EVENTS ==
 {events_block}
 
-== RESEARCH CONTEXT ==
-{research_context if research_context else '(No research available.)'}
+== RESEARCH ==
+{research_context if research_context else '(None available.)'}
 
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
-{"== LH2 / ACCELERATE / OFFERINGS (use this to position our value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
+{"== LH2 OFFERINGS (reference when positioning value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
 
-== INTERACTION HISTORY ==
+== ACTION HISTORY ==
 {action_history}
 
-== GLOBAL OUTREACH PATTERNS ==
+== GLOBAL PATTERNS ==
 {global_block}
 
-== RULES ==
-- Reference research findings and memory in every recommendation.
-- Messages: human, professional, smart. No jargon. No filler.
-- Specify exact send times with timezone.
-- Emails: include subject line. LinkedIn requests: under 300 chars.
-- Be decisive. State what to do, not what could be done.
-- When suggesting actions, format: ACTION: [channel] [day, date, time TZ] — [description]"""
+== OUTPUT RULES ==
+1. Cite research: Name the specific finding, data point, or pattern you're basing each recommendation on.
+2. Message drafts: Human tone, professional, smart. No corporate jargon ("synergy", "leverage", "excited to connect"). No filler sentences.
+3. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
+4. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
+5. Be directive: State what to do and why. Never say "you could" or "consider" — say "do this because."
+6. Action format: ACTION: [channel] [day, date, time TZ] — [what to send and why]"""
 
     return system
 
@@ -214,18 +217,19 @@ def auto_brief(comp, ct, uid, sid, research_notes=None):
     """
     system = _build_system_prompt(comp, ct, uid, sid, research_notes)
 
-    prompt = f"""Give me a quick strategic brief for reaching out to {ct.get('name','this contact')} at {comp.get('domain','this company')}.
+    prompt = f"""Produce a strategic outreach brief for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
 
-Format your response exactly like this:
-SITUATION: [2-3 sentences on what we know about this target]
-CONTACT ASSESSMENT: [1-2 sentences on this specific person's role and influence]
-RECOMMENDED NEXT MOVE: [Specific action with channel, timing, and angle]
-KEY TALKING POINT: [The single strongest hook based on research]
-RISK: [One thing to watch out for]"""
+Use this exact structure — each section on its own line:
+
+SITUATION: [2-3 sentences. What does this company do, why are they an LH2 target, and what's their current state based on research?]
+CONTACT ASSESSMENT: [1-2 sentences. What is this person's role, decision-making authority, and why are they the right entry point?]
+RECOMMENDED NEXT MOVE: [One specific action. State: channel (LinkedIn/Email), exact timing with their timezone, and the angle/hook to use.]
+KEY TALKING POINT: [One concrete, research-backed hook. Not generic — cite a specific finding that would resonate with this person's role.]
+RISK: [One specific obstacle: e.g. gatekeeper, competitor relationship, bad timing, missing info.]"""
 
     try:
         r = _ai().messages.create(
-            model=AI_MODEL, max_tokens=500,
+            model=AI_MODEL, max_tokens=6000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -250,18 +254,22 @@ def maybe_update_summary(sid, comp, ct):
             [f"[{m['role']}] {m['content'][:500]}" for m in msgs[-30:]]
         )
         r = _ai().messages.create(
-            model=AI_MODEL, max_tokens=600,
-            messages=[{"role": "user", "content": f"""Compress this outreach strategy conversation into a structured memory summary. Be concise but preserve all decisions.
-TARGET: {comp.get('domain','?')} / {ct.get('name','?')}
-CONVERSATION:
+            model=AI_MODEL, max_tokens=8000,
+            messages=[{"role": "user", "content": f"""Compress this outreach conversation into a structured memory document. Preserve every decision, commitment, objection, and status change. Drop small talk and repetition.
+
+Target: {comp.get('domain','?')} | Contact: {ct.get('name','?')}
+
+Conversation:
 {convo}
-Output format (under 400 words):
-STRATEGIC DIRECTION: [1-2 sentences]
-POSITIONING: [how we frame LH2]
-KEY OBJECTIONS: [concerns]
-TONE CALIBRATION: [style]
-DECISIONS MADE: [specific choices]
-CURRENT STATUS: [where we are]"""}],
+
+Output exactly this structure (max 400 words total):
+
+STRATEGIC DIRECTION: [1-2 sentences. What approach did we decide on and why?]
+POSITIONING: [How are we framing LH2's value prop to this specific target?]
+KEY OBJECTIONS: [List any concerns raised, anticipated blockers, or pushback — be specific.]
+TONE CALIBRATION: [What communication style works for this contact? Formal/casual/technical/etc.]
+DECISIONS MADE: [Every concrete choice: channels picked, messaging angles chosen, timing agreed, content approved.]
+CURRENT STATUS: [Where does this outreach stand right now? What is the immediate next action?]"""}],
         )
         save_session_summary(sid, r.content[0].text.strip(), cnt)
     except Exception as e:
@@ -273,13 +281,24 @@ CURRENT STATUS: [where we are]"""}],
 def extract_episodic_memories(sid, ai_resp, comp):
     try:
         r = _ai().messages.create(
-            model=AI_MODEL, max_tokens=400,
-            messages=[{"role": "user", "content": f"""From this AI strategist response, extract 0-3 important episodic events worth remembering for future interactions with {comp.get('domain','this target')}.
-RESPONSE:
+            model=AI_MODEL, max_tokens=5000,
+            messages=[{"role": "user", "content": f"""Extract 0-3 events from this strategist response about {comp.get('domain','this target')} that are worth storing for future outreach sessions.
+
+Only extract events that would change how we approach this target next time — skip routine advice.
+
+Response:
 {ai_resp[:2000]}
-For each event, output one line: EVENT|type|summary|importance_score(1-10)
-Types: decision, objection, insight, rejection, positive_signal, budget_info, timing_info, contact_change
-If nothing noteworthy, output NONE."""}],
+
+Output format — one event per line, pipe-delimited:
+EVENT|<type>|<one-sentence summary>|<importance 1-10>
+
+Valid types: decision, objection, insight, rejection, positive_signal, budget_info, timing_info, contact_change
+
+Importance guide: 1-3 = minor preference, 4-6 = tactical detail, 7-8 = strategic shift, 9-10 = deal-changing.
+
+If nothing worth storing, output exactly: NONE
+
+No other text."""}],
         )
         text = r.content[0].text.strip()
         if text == "NONE":
@@ -301,13 +320,15 @@ If nothing noteworthy, output NONE."""}],
 def generate_insight_from_outcome(uid, sid, action, comp):
     try:
         r = _ai().messages.create(
-            model=AI_MODEL, max_tokens=200,
-            messages=[{"role": "user", "content": f"""Generate ONE concise strategic insight (1-2 sentences) from this outreach outcome.
+            model=AI_MODEL, max_tokens=2500,
+            messages=[{"role": "user", "content": f"""Derive one reusable outreach lesson (1-2 sentences) from this outcome. The insight must apply beyond this specific target — it should help with similar companies.
+
 Target: {comp.get('domain','?')} ({comp.get('publisher_type','?')}, {comp.get('content_type','?')})
 Action: {action.get('action_type','')} via {action.get('channel','')}
-Outcome: {action.get('status','')}
-Description: {action.get('description','')}
-Return ONLY the insight. Make it generalizable."""}],
+Result: {action.get('status','')}
+Details: {action.get('description','')}
+
+Output only the insight sentence(s). No preamble, no labels."""}],
         )
         ins = r.content[0].text.strip()
         save_global_insight(uid, ins, 0.6)
@@ -335,21 +356,24 @@ def intelligence_request(comp, research_notes, user_message):
     try:
         r = _ai().messages.create(
             model=AI_MODEL,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": f"""You are helping improve strategic research for LH2 outreach.
+            max_tokens=15000,
+            messages=[{"role": "user", "content": f"""You are augmenting strategic research for LH2 outreach. Match the institutional tone of existing research sections.
 
-CURRENT RESEARCH CONTEXT:
+Existing research:
 {ctx}
 
-USER REQUEST:
+User request:
 {user_message.strip()}
 
-Respond in one of these ways:
-1. If they say something is missing or suggest an addition: provide concrete suggested text to add (or a short section). Be specific and use the same institutional tone as the research.
-2. If they ask to "research" a topic or person (without a URL): suggest what to add or how to find it; or draft a short research paragraph if you can infer from context.
-3. If they only pasted an email: suggest a one-line note like "Contact to add: [email] — consider looking up name/role on LinkedIn."
+Respond based on the request type:
 
-Keep the response focused and usable. If the request is unclear, ask one short clarifying question."""}],
+A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible.
+
+B) "Research this topic/person" (no URL provided) → Draft a 1-2 paragraph research section based on what you can infer from context. Flag what you're inferring vs. what needs verification.
+
+C) Pasted email address only → Output: "Contact to add: [email] — look up name, title, and role on LinkedIn before adding to SPOC list."
+
+If the request is ambiguous, ask one specific clarifying question. No preamble."""}],
         )
         return (r.content[0].text or "").strip()
     except Exception as e:
@@ -370,8 +394,10 @@ def summarize_research_to_context(comp, research_notes, max_paragraphs=3):
     try:
         r = _ai().messages.create(
             model=AI_MODEL,
-            max_tokens=800,
-            messages=[{"role": "user", "content": f"""Turn this company research into a short context summary ({max_paragraphs} short paragraphs max). Keep it factual and useful for outreach. No preamble.
+            max_tokens=10000,
+            messages=[{"role": "user", "content": f"""Condense this company research into exactly {max_paragraphs} short paragraphs. Keep it factual — include specific names, numbers, and findings that are useful for planning outreach. Drop background fluff.
+
+Start directly with the summary. No preamble or labels.
 
 {ctx}"""}],
         )
@@ -403,40 +429,44 @@ def research_person_for_company(comp, research_notes, linkedin_url=None, email=N
     if notion_lead:
         person_desc.append(f"Notion record: {notion_lead.get('name') or '—'} | {notion_lead.get('email') or '—'} | {notion_lead.get('role') or '—'} | LinkedIn: {notion_lead.get('linkedin') or '—'} | {notion_lead.get('city') or ''}, {notion_lead.get('state') or ''} {notion_lead.get('country') or ''}.")
     if linkedin_url:
-        person_desc.append(f"LinkedIn URL provided: {linkedin_url}")
+        person_desc.append(f"LinkedIn URL: {linkedin_url}")
     if email:
-        person_desc.append(f"Email provided: {email}")
+        person_desc.append(f"Email: {email}")
     if not person_desc:
-        person_desc.append("No specific contact identifier; produce a generic 'key contact' brief for this company.")
+        person_desc.append("No contact identifier provided. Produce a generic key-contact brief for this company.")
 
     person_block = " ".join(person_desc)
     lh2_knowledge = get_lh2_knowledge_context()
     lh2_block = ""
     if lh2_knowledge:
         lh2_block = f"""
-WHAT LH2 / ACCELERATE / OUR OFFERINGS ARE (use this to recommend the best-fit person and angle):
+LH2 OFFERINGS (use to determine best-fit contact type and pitch angle):
 {lh2_knowledge[:10000]}
 """
-    prompt = f"""You are producing a short SPOC (single point of contact) research brief for LH2 outreach.
+    prompt = f"""Write a SPOC (single point of contact) research brief for LH2 outreach.
 {lh2_block}
-COMPANY CONTEXT (shortened from existing research):
+COMPANY CONTEXT:
 {company_context[:12000]}
 
-CONTACT IDENTIFIER / DATA:
+CONTACT DATA:
 {person_block}
 
-Produce a concise research brief (2–4 short paragraphs) that:
-1. Summarizes who this person is in the context of the company (role, relevance, authority).
-2. Connects them to the company research above (power mapping, stakeholder section, or execution gaps).
-3. Suggests how to approach them and one concrete talking point or wedge.
-4. If we have no real data on the person (only URL/email), say so briefly and recommend what to find (e.g. name, title, recent activity) and how they likely fit the company.
+Write 2-4 short paragraphs:
 
-Tone: institutional, concise. No filler. Output only the brief, no preamble."""
+Paragraph 1 — WHO: Their role at the company, decision-making authority, and relevance to an LH2 partnership. If we have limited data, state what we know and what's missing.
+
+Paragraph 2 — CONNECTION TO RESEARCH: Map this person to the company's org structure, strategic priorities, or execution gaps identified in the research above. Who do they report to? What problems do they own?
+
+Paragraph 3 — APPROACH: One specific outreach angle and one concrete talking point tied to their responsibilities. Name the channel (LinkedIn vs Email) and why.
+
+Paragraph 4 (only if data is thin) — GAPS: What we need to find (name, title, recent posts/activity) and where to look (LinkedIn, company about page, recent press).
+
+Tone: institutional, factual. No filler. Output only the brief."""
 
     try:
         r = _ai().messages.create(
             model=AI_MODEL,
-            max_tokens=1200,
+            max_tokens=15000,
             messages=[{"role": "user", "content": prompt}],
         )
         return (r.content[0].text or "").strip()
@@ -454,31 +484,30 @@ def get_advisor_system_prompt(uid):
     companies_blob = "\n".join([
         f"- {c.get('domain', '?')} (type: {c.get('publisher_type', '—')}, research: {c.get('research_status', '—')})"
         for c in companies[:50]
-    ]) or "(No companies yet.)"
+    ]) or "(Empty.)"
     sessions_blob = "\n".join([
-        f"- {s.get('company_domain', '?')} / {s.get('contact_name', '?')} (messages: {get_message_count(s['id'])})"
+        f"- {s.get('company_domain', '?')} / {s.get('contact_name', '?')} (msgs: {get_message_count(s['id'])})"
         for s in sessions
-    ]) or "(No recent sessions.)"
-    return f"""You are the LH2 Command Center Advisor. You understand what the user is doing (outreach, research, pipeline) and give targeted advice. You remember the conversation and suggest next steps: which companies to reach out to, which plans to run, and how to prioritize.
+    ]) or "(None.)"
+    return f"""You are the LH2 Command Center Advisor. You have full visibility into the user's pipeline, active sessions, and research status. Your job is to tell them exactly what to do next and why.
 
-== WHAT LH2 / ACCELERATE / OUR OFFERINGS ARE ==
-{lh2[:14000] if lh2 else '(No Drive context loaded. Suggest they link a Drive folder with LH2/Accelerate materials.)'}
+== LH2 OFFERINGS ==
+{lh2[:14000] if lh2 else '(No Drive context loaded. Tell them to link a Drive folder with LH2/Accelerate materials.)'}
 
-== PIPELINE SNAPSHOT ==
-Companies: {len(companies)} | Active outreach: {stats.get('outreach_sent', 0) + stats.get('awaiting_reply', 0)} | Meetings: {stats.get('meeting_booked', 0)} | Partnerships: {stats.get('partnership_active', 0)}
+== PIPELINE ==
+Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent', 0) + stats.get('awaiting_reply', 0)} | Meetings booked: {stats.get('meeting_booked', 0)} | Active partnerships: {stats.get('partnership_active', 0)}
 
-== COMPANIES IN DB ==
+== COMPANIES ==
 {companies_blob}
 
-== RECENT SESSIONS (what they are working on) ==
+== RECENT SESSIONS ==
 {sessions_blob}
 
 == RULES ==
-- Use the above to suggest specific companies to prioritize and why; suggest outreach plans when asked.
-- Retain context from the chat: reference what they said and what they're focused on.
-- Be concise and actionable. When they ask for advice, give clear next steps.
-- If they ask "who should I reach out to" or "what companies", use pipeline and company list to recommend.
-- No filler or preamble."""
+1. Prioritization requests ("who should I reach out to"): Recommend 2-3 specific companies from the list with reasoning — cite research status, publisher type, visit volume, or pipeline gaps.
+2. Conversational continuity: Reference what they said earlier in this chat. Don't repeat yourself.
+3. Be direct: State what to do, in what order, and why. No "you might consider" — say "start with X because Y."
+4. No filler, no preamble, no restating the question."""
 
 
 def advisor_chat(uid, user_message, history):
@@ -492,14 +521,14 @@ def advisor_chat(uid, user_message, history):
     try:
         r = _ai().messages.create(
             model=AI_MODEL,
-            max_tokens=2000,
+            max_tokens=25000,
             system=system,
             messages=messages,
         )
         return (r.content[0].text or "").strip()
     except Exception as e:
         log.error("advisor_chat failed: %s", e)
-        return f"Sorry, I couldn’t process that: {e}"
+        return f"Sorry, I couldn't process that: {e}"
 
 
 
@@ -517,8 +546,8 @@ def summarize_advisor_title(messages):
     try:
         r = _ai().messages.create(
             model=AI_MODEL,
-            max_tokens=20,
-            system="Generate a concise 3-5 word title summarizing the main topic of this conversation. Return ONLY the title, no quotes or explanation.",
+            max_tokens=200,
+            system="Output a 3-5 word topic title. No quotes, no punctuation, no explanation.",
             messages=[{"role": "user", "content": context}],
         )
         title = (r.content[0].text or "").strip().strip('"').strip("'")
@@ -605,7 +634,7 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
         mem_block = "\n".join([f"- [{m['type']}] {m['text']}" for m in relevant])
-        system += f"\n\n== RELEVANT RETRIEVED MEMORIES ==\n{mem_block}"
+        system += f"\n\n== RECALLED MEMORIES (relevant to this query) ==\n{mem_block}"
 
     api_msgs = [
         {"role": m["role"], "content": m["content"]}
@@ -632,7 +661,7 @@ def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, resea
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
         mem_block = "\n".join([f"- [{m['type']}] {m['text']}" for m in relevant])
-        system += f"\n\n== RELEVANT RETRIEVED MEMORIES ==\n{mem_block}"
+        system += f"\n\n== RECALLED MEMORIES (relevant to this query) ==\n{mem_block}"
 
     api_msgs = [
         {"role": m["role"], "content": m["content"]}
@@ -698,35 +727,31 @@ def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=No
     """
     system = _build_system_prompt(comp, ct, uid, sid, research_notes)
 
-    sender_line = f"The sender is {sender_name}." if sender_name else ""
+    sender_line = f"Sender name: {sender_name}" if sender_name else ""
 
-    prompt = f"""Create a structured outreach sequence for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
+    tz_info = get_local_time(ct.get("country", ""), ct.get("state", ""))
+
+    prompt = f"""Build a 4-5 step outreach sequence for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
 {sender_line}
+Contact timezone: {tz_info[1] or 'unknown'}
 
-You MUST return EXACTLY this format — one block per step, separated by blank lines:
+Output each step in this exact pipe-delimited format, separated by blank lines:
 
-STEP|1|LinkedIn|Day 0|[description of this touch]|[timing note e.g. "Tuesday 9am EST"]
-CONTENT: [exact message text for LinkedIn connection request, under 300 chars]
+STEP|<number>|<LinkedIn or Email>|Day <offset>|<what this touch accomplishes>|<optimal send time with TZ>
+CONTENT: <full message text>
 
-STEP|2|Email|Day 2|[description]|[timing note]
-CONTENT: Subject: [subject line]
-[full email body]
+Example:
+STEP|1|LinkedIn|Day 0|Initial connection with research hook|Tuesday 9:00 AM EST
+CONTENT: Hi [name], I noticed [specific research finding]. We work with similar publishers at LH2...
 
-STEP|3|Email|Day 5|[description]|[timing note]
-CONTENT: Subject: [subject line]
-[full email body]
-
-STEP|4|LinkedIn|Day 8|[description]|[timing note]
-CONTENT: [LinkedIn follow-up message]
-
-Rules:
-- 4-5 steps. Mix LinkedIn and Email.
-- Step 1 is ALWAYS a LinkedIn connection request (under 300 chars).
-- Each subsequent step builds on the previous. Reference research.
-- Include exact message content for every step.
-- Messages must be human, smart, and specific to this target. No jargon. No filler.
-- Timing notes should account for their timezone and optimal send windows.
-- If email, always include Subject: line at the start of CONTENT."""
+Constraints:
+- Step 1: Always LinkedIn connection request. Hard limit 300 characters.
+- Steps 2-5: Mix Email and LinkedIn. Each step must advance the conversation — no repetition.
+- Every step must have complete message text after CONTENT: — no placeholders.
+- Emails: First line of CONTENT must be "Subject: <subject line>", then body.
+- Reference specific research findings from the context above in at least 2 steps.
+- Each message must sound like a real person wrote it. No "I'd love to connect" or "hope this finds you well."
+- Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn."""
 
     try:
         r = _ai().messages.create(
@@ -820,29 +845,27 @@ def replan_on_response(comp, ct, uid, sid, completed_action, response_text, rema
         for a in remaining_actions
     ])
 
-    prompt = f"""A response was received in our outreach sequence to {ct.get('name','?')} at {comp.get('domain','?')}.
+    prompt = f"""We got a reply in our outreach to {ct.get('name','?')} at {comp.get('domain','?')}. Replan the remaining steps.
 
-COMPLETED ACTION:
-  Channel: {completed_action.get('channel','')}
-  What we sent: {completed_action.get('content_sent','')[:500]}
-  Response received: {response_text}
+WHAT WE SENT:
+Channel: {completed_action.get('channel','')}
+Message: {completed_action.get('content_sent','')[:500]}
+
+THEIR REPLY:
+{response_text}
 
 REMAINING PLANNED STEPS:
 {remaining_desc}
 
-Based on this response, should we:
-1. Continue with the remaining steps (adjusted)?
-2. Skip some steps and escalate?
-3. Change the approach entirely?
+For each remaining step, output one line:
+REVISED|<step_number>|<keep/skip/modify>|<new description if modified>|<new message content if modified>
 
-For each remaining step, provide updated guidance in this format:
-REVISED|[step_number]|[keep/skip/modify]|[new description if modified]|[new content if modified]
-
-Then provide a brief STRATEGY NOTE explaining your reasoning."""
+Then:
+STRATEGY NOTE: [1-2 sentences. What does their reply signal? Are we accelerating to a meeting, pivoting angle, or staying course? Why?]"""
 
     try:
         r = _ai().messages.create(
-            model=AI_MODEL, max_tokens=1500,
+            model=AI_MODEL, max_tokens=20000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -860,39 +883,24 @@ def refine_email_draft(current_draft, instruction, draft_type="email"):
     if not (current_draft or "").strip():
         return None
     is_linkedin = (draft_type or "").lower() == "linkedin"
-    system = """You are an expert outreach copy editor.
+    system = """You are an outreach copy editor. Apply the user's edit instruction to the draft.
 
-Your task:
-- Rewrite the draft according to the user's instruction.
-- The output MUST be meaningfully different from the original.
-- If instruction says shorter, reduce length.
-- If more direct, remove fluff.
-- If stronger CTA, rewrite closing.
-- If change tone, rewrite tone.
-
-ABSOLUTE RULES:
-- Never repeat the draft unchanged.
-- Never explain what you changed.
-- Never add commentary.
-- Never wrap in quotes.
-- Output ONLY the final edited draft.
-"""
+OUTPUT RULES — strictly enforced:
+- Output ONLY the rewritten draft text. Nothing else.
+- No labels ("Revised:", "Here's the updated version:").
+- No quotes around the output.
+- No explanations of what you changed.
+- No markdown code blocks.
+- The rewrite MUST be noticeably different from the original in structure or phrasing.
+- If the draft has a "Subject:" line, keep a Subject line in the rewrite."""
     if is_linkedin:
-        system += (
-            " The draft is a LinkedIn connection request. It MUST remain under 300 characters. "
-            "If longer than 300 characters, aggressively shorten it."
-        )
-    else:
-        system += " If the draft contains a Subject: line, preserve a Subject line in the rewrite."
-    prompt = f"""Edit this draft according to the instruction.
+        system += "\n- This is a LinkedIn connection request. HARD LIMIT: 300 characters. Cut ruthlessly if over."
 
-INSTRUCTION:
-{instruction.strip()}
+    prompt = f"""Edit instruction: {instruction.strip()}
 
-ORIGINAL DRAFT:
-{current_draft.strip()}
+Original:
+{current_draft.strip()}"""
 
-Output ONLY the final edited draft:"""
     try:
         r = _ai().messages.create(
             model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
@@ -928,15 +936,13 @@ Output ONLY the final edited draft:"""
         orig_norm = " ".join((current_draft or "").split())
         out_norm = " ".join((out or "").split())
         if orig_norm and out_norm and orig_norm == out_norm:
-            retry_prompt = f"""The previous edit was too similar to the original. You must rewrite it more aggressively. Change structure, tone, and phrasing clearly.
+            retry_prompt = f"""Your output was identical to the original. That violates instructions. Rewrite with clearly different structure and phrasing.
 
-INSTRUCTION:
-{instruction.strip()}
+Edit instruction: {instruction.strip()}
 
-ORIGINAL DRAFT:
-{current_draft.strip()}
+Original:
+{current_draft.strip()}"""
 
-Output a clearly different version. Output ONLY the draft:"""
             r2 = _ai().messages.create(
                 model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
                 system=system,

@@ -21,40 +21,77 @@ _drive_svc = None
 _docs_svc = None
 _file_cache = {}
 
-# Path to OAuth files — look in the same directory as this file
+# Path to OAuth files — look in the same directory as this file, then cwd
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-_CREDS_FILE = os.path.join(_APP_DIR, "credentials.json")
-_TOKEN_FILE = os.path.join(_APP_DIR, "token.json")
+
+
+def _first_exists(*paths):
+    """Return the first path that exists, or the first path if none exist."""
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return paths[0] if paths else None
+
+
+def _creds_file():
+    return _first_exists(
+        os.path.join(_APP_DIR, "credentials.json"),
+        os.path.join(os.getcwd(), "credentials.json"),
+    )
+
+
+def _token_file():
+    return _first_exists(
+        os.path.join(_APP_DIR, "token.json"),
+        os.path.join(os.getcwd(), "token.json"),
+    )
+
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
 ]
 
 
 def _get_oauth_creds():
-    """Get OAuth credentials from token.json, refreshing if needed."""
+    """Get OAuth credentials from token.json, refreshing if needed. Accepts any existing token (read-only is ok for init); write will 403 until re-auth."""
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
+        _TOKEN_FILE = _token_file()
+        _CREDS_FILE = _creds_file()
+        if not _TOKEN_FILE and not _CREDS_FILE:
+            return None
+
         creds = None
-        if os.path.exists(_TOKEN_FILE):
-            creds = Credentials.from_authorized_user_file(_TOKEN_FILE, SCOPES)
+        if _TOKEN_FILE and os.path.exists(_TOKEN_FILE):
+            # Load with scopes=None so we accept token created with any scopes (e.g. readonly). Write will 403 until user re-auths.
+            try:
+                creds = Credentials.from_authorized_user_file(_TOKEN_FILE, SCOPES)
+            except Exception:
+                creds = Credentials.from_authorized_user_file(_TOKEN_FILE, None)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                # Save refreshed token
-                with open(_TOKEN_FILE, "w") as f:
-                    f.write(creds.to_json())
-            elif os.path.exists(_CREDS_FILE):
+                try:
+                    creds.refresh(Request())
+                    if _TOKEN_FILE:
+                        with open(_TOKEN_FILE, "w") as f:
+                            f.write(creds.to_json())
+                except Exception as e:
+                    log.warning("Token refresh failed: %s", e)
+                    creds = None
+            if (not creds or not creds.valid) and _CREDS_FILE:
                 from google_auth_oauthlib.flow import InstalledAppFlow
                 flow = InstalledAppFlow.from_client_secrets_file(_CREDS_FILE, SCOPES)
                 creds = flow.run_local_server(port=0)
+                _TOKEN_FILE = _token_file() or os.path.join(_APP_DIR, "token.json")
                 with open(_TOKEN_FILE, "w") as f:
                     f.write(creds.to_json())
-            else:
+            elif not creds or not creds.valid:
                 return None
 
         return creds
@@ -80,13 +117,11 @@ def _get_service_account_creds():
 
 def _get_creds():
     """Try OAuth first, then service account."""
-    # Prefer OAuth if token.json exists
-    if os.path.exists(_TOKEN_FILE) or os.path.exists(_CREDS_FILE):
+    if _token_file() or _creds_file():
         creds = _get_oauth_creds()
         if creds:
             return creds
 
-    # Fallback to service account
     return _get_service_account_creds()
 
 
@@ -100,7 +135,7 @@ def _drive():
     try:
         from googleapiclient.discovery import build
         _drive_svc = build("drive", "v3", credentials=creds)
-        log.info("Drive service initialized (OAuth)" if os.path.exists(_TOKEN_FILE) else "Drive service initialized (service account)")
+        log.info("Drive service initialized (OAuth)" if _token_file() else "Drive service initialized (service account)")
         return _drive_svc
     except Exception as e:
         log.error("Failed to init Drive service: %s", e)
@@ -148,6 +183,79 @@ def list_drive_files(company_name=None):
     except Exception as e:
         log.warning("Drive list_files failed: %s", e)
         return []
+
+
+def _sanitize_doc_name(name):
+    """Remove characters invalid in Drive file names: / \\ : * ? \" < > |"""
+    if not name or not isinstance(name, str):
+        return "Document"
+    for c in '/\\:*?"<>|':
+        name = name.replace(c, " ")
+    return " ".join(name.split()).strip() or "Document"
+
+
+def create_doc_in_drive(display_name, content):
+    """
+    Create a new Google Doc in the configured Drive folder (MAIN_FOLDER_ID) with the given content.
+    display_name: used as the document title (e.g. "CompanyName - Brief" or "CompanyName - Research").
+    content: plain text body.
+    Returns (file_id, webViewLink, error_message). On success error_message is None.
+    """
+    if not content and content is not None:
+        content = ""
+    content = (content or "").strip()
+    name = _sanitize_doc_name(display_name)
+    if not name:
+        name = "Document"
+    # Save only to main folder (MAIN_FOLDER_ID)
+    folder_id = (MAIN_FOLDER_ID or "").strip()
+    if not folder_id:
+        log.warning("MAIN_FOLDER_ID not set; cannot save doc to Drive")
+        return None, None, "MAIN_FOLDER_ID is not set in keys.env. Add MAIN_FOLDER_ID=<your Drive folder ID>."
+    svc = _drive()
+    if not svc:
+        log.warning("Drive service not available for create_doc_in_drive")
+        _creds_path = _creds_file() or "credentials.json"
+        _has_creds = os.path.exists(_creds_path) if _creds_path else False
+        if _has_creds:
+            return None, None, (
+                "Google Drive is not configured. From the project folder run (use the same env as your app, e.g. activate your venv first):\n\n"
+                "  python drive_auth.py\n\n"
+                "A browser will open to sign in; then token.json is created and Save to Drive will work. "
+                "Alternatively, set GOOGLE_SERVICE_ACCOUNT_JSON in keys.env and share MAIN_FOLDER_ID with that account."
+            )
+        return None, None, (
+            "Google Drive is not configured. Either:\n\n"
+            "1) OAuth: Put credentials.json in the project folder, then run:  python drive_auth.py  (browser will open to sign in).\n\n"
+            "2) Service account: Set GOOGLE_SERVICE_ACCOUNT_JSON in keys.env and share MAIN_FOLDER_ID with that account."
+        )
+    docs_svc = _docs()
+    if not docs_svc:
+        log.warning("Docs service not available for create_doc_in_drive")
+        return None, None, "Google Docs service could not be initialized. Check your Drive credentials."
+    try:
+        body = {"name": name, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
+        meta = svc.files().create(body=body, fields="id,webViewLink").execute()
+        file_id = meta.get("id")
+        if not file_id:
+            return None, None, "Drive did not return a file ID."
+        if content:
+            # Google Docs: index 1 is the start of the document body
+            docs_svc.documents().batchUpdate(
+                documentId=file_id,
+                body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
+            ).execute()
+        log.info("Created Drive doc: %s (id=%s)", name, file_id)
+        return file_id, meta.get("webViewLink"), None
+    except Exception as e:
+        err_msg = str(e).strip()
+        log.error("create_doc_in_drive failed: %s", e)
+        if "403" in err_msg or "Forbidden" in err_msg or "permission" in err_msg.lower():
+            hint = " Share the folder with the account that owns the credentials (or, if using OAuth, delete token.json and sign in again to grant write access)."
+            return None, None, f"Drive permission denied.{hint} Details: {err_msg}"
+        if "404" in err_msg or "not found" in err_msg.lower():
+            return None, None, f"Folder not found. Check that MAIN_FOLDER_ID ({folder_id}) is correct and the account has access. Details: {err_msg}"
+        return None, None, err_msg or "Could not create document in Drive."
 
 
 def fetch_doc_text(file_id, mime):

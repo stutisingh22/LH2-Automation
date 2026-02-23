@@ -22,6 +22,7 @@ from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
+    ProcessedGmailMessage,
 )
 
 log = logging.getLogger(__name__)
@@ -369,6 +370,26 @@ def update_contact(contact_id, **kw):
         c.updated_at = datetime.utcnow()
 
 
+def get_user_by_email(email):
+    """Return user dict (id, username, email) for the given email, or None. Email match is case-insensitive."""
+    if not (email or "").strip():
+        return None
+    with db() as s:
+        u = s.query(User).filter(User.email.ilike((email or "").strip())).first()
+        return {"id": u.id, "username": u.username, "email": u.email} if u else None
+
+
+def get_contact_by_email(email):
+    """Return first contact with this email, with company_id. Email match is case-insensitive. Returns dict or None."""
+    if not (email or "").strip():
+        return None
+    with db() as s:
+        c = s.query(Contact).filter(Contact.email.ilike((email or "").strip())).first()
+        if not c:
+            return None
+        return {"id": c.id, "company_id": c.company_id, "email": c.email, "name": c.name, "status": c.status}
+
+
 # ── Enrichment results ───────────────────────────────────────
 
 def save_enrichment_pending(user_id, request_id, identifier):
@@ -593,6 +614,75 @@ def log_action(sid, uid, atype, channel, desc, status="planned",
         s.add(a)
         s.flush()
         return a.id
+
+
+def is_gmail_message_processed(user_id, gmail_message_id):
+    """True if we already recorded this Gmail message for this user (idempotency)."""
+    with db() as s:
+        return s.query(ProcessedGmailMessage).filter_by(
+            user_id=user_id, gmail_message_id=str(gmail_message_id)
+        ).first() is not None
+
+
+def mark_gmail_message_processed(user_id, gmail_message_id):
+    """Record that we processed this Gmail message so we don't double-log."""
+    with db() as s:
+        try:
+            s.add(ProcessedGmailMessage(user_id=user_id, gmail_message_id=str(gmail_message_id)))
+        except Exception:
+            s.rollback()
+            pass  # ignore duplicate
+
+
+def record_sent_email(sender_email, recipient_email, subject, body, gmail_message_id, sent_at=None):
+    """
+    When a Command Center user (sender_email) sends an email to a contact (recipient_email):
+    find or create session, log a completed Email action, update contact status if needed.
+    Returns (action_id, None) on success, or (None, error_message) on failure.
+    Idempotent: if this gmail_message_id was already processed for this user, returns (None, "already_processed").
+    """
+    user = get_user_by_email(sender_email)
+    if not user:
+        return None, "sender_not_found"
+    contact = get_contact_by_email(recipient_email)
+    if not contact:
+        return None, "recipient_not_found"
+    if is_gmail_message_processed(user["id"], gmail_message_id):
+        return None, "already_processed"
+    score = 0
+    try:
+        sid = get_or_create_session(
+            contact["company_id"], contact["id"], user["id"], score=score
+        )
+    except Exception as e:
+        log.exception("get_or_create_session failed: %s", e)
+        return None, str(e)
+    desc = f"Email to {contact.get('name') or recipient_email}"
+    if (subject or "").strip():
+        desc += f" — {subject.strip()[:80]}"
+    content_sent = None
+    if (subject or "").strip() or (body or "").strip():
+        content_sent = f"Subject: {subject or ''}\n\n{body or ''}"
+    try:
+        aid = log_action(
+            sid, user["id"], "Outreach", "Email", desc, status="completed",
+            content_sent=(content_sent[:50000] if content_sent else None),  # allow full thread
+        )
+    except Exception as e:
+        log.exception("log_action failed: %s", e)
+        return None, str(e)
+    if aid and sent_at:
+        with db() as s:
+            a = s.get(Action, aid)
+            if a:
+                try:
+                    a.completed_at = sent_at if hasattr(sent_at, "isoformat") else datetime.fromisoformat(str(sent_at).replace("Z", "+00:00"))
+                except Exception:
+                    a.completed_at = datetime.utcnow()
+    if (contact.get("status") or "").strip() == "not_contacted":
+        update_contact_status(contact["id"], "contacted")
+    mark_gmail_message_processed(user["id"], gmail_message_id)
+    return aid, None
 
 
 def get_session_actions(sid):
