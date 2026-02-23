@@ -55,6 +55,8 @@ from db_ops import (
     get_enrichment_result, get_latest_enrichment_for_user,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
+from notion_sync_advisor import sync_notion_advisor_to_db
+from db_advisor import get_all_advisor_companies, search_advisor_companies, get_advisor_parents_with_children
 from drive_sync import list_drive_files
 from ai_engine import (
     compute_lead_score, get_local_time,
@@ -617,6 +619,15 @@ with st.sidebar:
 
 TAB_NAMES = ["DASHBOARD", "COMPANIES", "INTELLIGENCE", "STRATEGIST", "ACTIONS", "TIMELINE", "CALENDAR", "PIPELINE", "HISTORY", "ADVISOR"]
 
+# Which Notion DB drives the Companies view: Independent (NOTION_DATABASE_ID) or Media Houses (NOTION_DATABASE_ID_2)
+if "notion_companies_source" not in st.session_state:
+    st.session_state.notion_companies_source = "Independent"
+else:
+    v = st.session_state.notion_companies_source
+    if v == "Primary":
+        st.session_state.notion_companies_source = "Independent"
+    elif v == "Advisor":
+        st.session_state.notion_companies_source = "Media Houses"
 current_tab = st.session_state.get("current_tab", "DASHBOARD")
 if current_tab not in TAB_NAMES:
     current_tab = "DASHBOARD"
@@ -638,6 +649,13 @@ with header_cols[1]:
     # Breadcrumb (company > contact) intentionally not shown — selection stays in list only
     pass
 with header_cols[2]:
+    st.selectbox(
+        "Companies DB",
+        options=["Independent", "Media Houses"],
+        index=["Independent", "Media Houses"].index(st.session_state.get("notion_companies_source", "Independent")),
+        key="notion_companies_source",
+        label_visibility="collapsed",
+    )
     st.markdown(
         f"<div class='dashboard-header-right'>"
         f"<div class='user-badge'>"
@@ -660,8 +678,9 @@ with tabs[0]:  # DASHBOARD
     # === UI REFACTOR START ===
     st.markdown(lh2_section_header("OVERVIEW"), unsafe_allow_html=True)
     stats = get_pipeline_stats()
+    _companies_count = len(get_all_advisor_companies()) if st.session_state.get("notion_companies_source") == "Media Houses" else len(get_all_companies())
     kpi_items = [
-        (len(get_all_companies()), "Companies"),
+        (_companies_count, "Companies"),
         (stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"),
         (stats.get("meeting_booked", 0), "Meetings"),
         (stats.get("partnership_active", 0), "Partnerships"),
@@ -721,162 +740,205 @@ with tabs[0]:  # DASHBOARD
 
 with tabs[1]:  # COMPANIES
     st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
-    if st.session_state.get("clear_company_search"):
-        st.session_state["csearch"] = ""
-        st.session_state["liurl"] = ""
-        st.session_state.pop("clear_company_search", None)
-    # Pre-fill search after LinkedIn lookup (must set before csearch widget is created)
-    if "linkedin_search_domain" in st.session_state:
-        st.session_state["csearch"] = st.session_state.pop("linkedin_search_domain")
-    cc1, cc2, cc3 = st.columns([2, 1, 1])
-    with cc1:
-        sq = st.text_input("Search", placeholder="Search domain or name...", label_visibility="collapsed", key="csearch")
-    with cc2:
-        if st.button("🔄 Sync Notion", key="nsync", use_container_width=True):
-            with st.spinner("Syncing..."):
-                r = sync_notion_to_db()
-                if r.get("error"):
-                    st.error(f"Error: {r['error']}")
-                else:
-                    st.success(f"Synced {r['companies']} companies, {r['contacts']} contacts")
-                st.rerun()
-    with cc3:
-        if st.button("Reset", key="resetsel", use_container_width=True):
-            st.session_state.sel_company = None
-            st.session_state.sel_contact = None
-            st.session_state.session_id = None
-            st.session_state.chat_messages = []
-            st.session_state.clear_company_search = True
-            st.rerun()
+    _companies_source = st.session_state.get("notion_companies_source", "Independent")
 
-    # Contact timeline (shown only when user clicked "Timeline" on a contact)
-    tcid = st.session_state.get("timeline_contact_id")
-    tcoid = st.session_state.get("timeline_company_id")
-    tname = st.session_state.get("timeline_contact_name") or "Contact"
-    if tcid and tcoid:
-        comp_for_timeline = get_company(tcoid)
-        timeline_items = build_contact_timeline(
-            tcoid, tcid, user["id"],
-            company_domain=comp_for_timeline.get("domain") if comp_for_timeline else None,
-            company_name=comp_for_timeline.get("name") if comp_for_timeline else None,
-        )
-        with st.expander(f"📅 Contact timeline — {tname}", expanded=True):
-            close_col, _ = st.columns([1, 4])
-            with close_col:
-                if st.button("Close timeline", key="close_timeline", use_container_width=True):
-                    st.session_state.timeline_contact_id = None
-                    st.session_state.timeline_company_id = None
-                    st.session_state.timeline_contact_name = None
-                    st.rerun()
-            st.markdown("<div class='timeline-wrap'>", unsafe_allow_html=True)
-            for item in timeline_items:
-                ts_display = _format_timeline_ts(item.get("ts"))
-                st.markdown(
-                    timeline_item_html(
-                        ts_display,
-                        item.get("type"),
-                        item.get("channel"),
-                        item.get("status"),
-                        item.get("summary"),
-                        status_colors=ACTION_STATUS_COLORS,
-                    ),
-                    unsafe_allow_html=True,
-                )
-                full = (item.get("full_content") or "").strip()
-                if full:
-                    with st.expander("Full content", expanded=False):
-                        st.markdown(full)
-            st.markdown("</div>", unsafe_allow_html=True)
-            if not timeline_items:
-                st.caption("No timeline items yet for this contact.")
-
-    with st.expander("🔗 Lookup by LinkedIn URL"):
-        li_url = st.text_input("LinkedIn URL", placeholder="Paste LinkedIn URL...", key="liurl")
-        if st.button("Find", key="lisync"):
-            if li_url:
-                with st.spinner("Searching..."):
-                    lead = lookup_lead_in_notion(li_url)
-                    if lead and lead.get("domain"):
-                        cid = upsert_company(domain=lead["domain"], name=lead.get("name") or lead["domain"],
-                            publisher_type=lead.get("publisher_type"), content_type=lead.get("content_type"),
-                            monthly_visits=lead.get("monthly_visits"), notion_page_id=lead.get("page_id"),
-                            research_status=lead.get("research_status"), gmail_thread=lead.get("gmail_thread"),
-                            extra_data={"research_notes": lead.get("research_notes", [])})
-                        if lead.get("name"):
-                            upsert_contact(company_id=cid, name=lead["name"], role="SPOC / Editor",
-                                email=lead.get("email"), linkedin=lead.get("linkedin"),
-                                city=lead.get("city"), state=lead.get("state"), country=lead.get("country"),
-                                notion_page_id=lead.get("page_id"))
-                        # Do NOT set sel_company/sel_contact — show in list so user can select like domain search
-                        st.session_state["linkedin_search_domain"] = lead["domain"]
-                        spoc_label = f" — {lead['name']}" if lead.get("name") else ""
-                        st.success(f"Found: {lead['domain']}{spoc_label}. Select it from the list below.")
-                        st.rerun()
+    if _companies_source == "Media Houses":
+        # ── Media Houses DB (NOTION_DATABASE_ID_2): parent (media) → children (domain) ──
+        cc1, cc2 = st.columns([2, 1])
+        with cc1:
+            sq_adv = st.text_input("Search", placeholder="Search domain or parent...", label_visibility="collapsed", key="csearch_advisor")
+        with cc2:
+            if st.button("🔄 Sync Notion (Media Houses)", key="nsync_advisor", use_container_width=True):
+                with st.spinner("Syncing Media Houses DB..."):
+                    r = sync_notion_advisor_to_db()
+                    if r.get("error"):
+                        st.error(f"Error: {r['error']}")
                     else:
-                        st.error("No match in Notion")
-
-    companies = search_companies(sq) if sq else get_all_companies()
-
-    # Quick dropdown of matching companies when searching
-    if sq and companies:
-        sel_cid = st.selectbox(
-            "Matching companies",
-            options=[c["id"] for c in companies],
-            format_func=lambda cid: next((f"{c['domain']} — {c.get('publisher_type','')}" for c in companies if c["id"] == cid), str(cid)),
-            key="company_search_dropdown",
-        )
-        if sel_cid and sel_cid != st.session_state.sel_company:
-            st.session_state.sel_company = sel_cid
-            st.session_state.current_tab = "COMPANIES"
-            st.rerun()
-    if not companies:
-        st.markdown(
-            "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
-            "<div style='font-size:32px;opacity:.2;margin-bottom:14px;'>◆</div>"
-            "<div style='font-size:14px;'>No companies yet — Sync from Notion</div></div>",
-            unsafe_allow_html=True)
-    else:
-        st.markdown(sh(f"{len(companies)} COMPANIES"), unsafe_allow_html=True)
-        for comp in companies:
-            is_sel = st.session_state.sel_company == comp["id"]
-            border = "border-left:3px solid var(--accent);" if is_sel else ""
+                        st.success(f"Synced {r['companies']} companies from Media Houses DB")
+                    st.rerun()
+        if sq_adv.strip():
+            advisor_rows = search_advisor_companies(sq_adv)
+            # Flatten for count; display grouped by parent
+            by_parent = {}
+            for row in advisor_rows:
+                p = row["parent_name"] or "(No parent)"
+                if p not in by_parent:
+                    by_parent[p] = []
+                by_parent[p].append(row)
+            advisor_groups = [{"parent_name": p, "children": kids} for p, kids in sorted(by_parent.items())]
+        else:
+            advisor_groups = get_advisor_parents_with_children()
+            advisor_rows = get_all_advisor_companies()
+        if not advisor_rows:
             st.markdown(
-                f"<div class='c' style='padding:10px 14px;{border}'>"
-                f"<div style='display:flex;justify-content:space-between;'>"
-                f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
-                f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
-                f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
+                "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
+                "<div style='font-size:32px;opacity:.2;margin-bottom:14px;'>◆</div>"
+                "<div style='font-size:14px;'>No companies yet — Sync from Notion (Media Houses)</div></div>",
                 unsafe_allow_html=True)
-            cts = get_contacts(comp["id"])
-            if cts:
-                with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
-                    for ct in cts:
-                        cols = st.columns([2.5, 1.2, 0.4, 0.4])
-                        with cols[0]:
-                            scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
-                            slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
-                            st.markdown(
-                                f"<b>{ct['name']}</b> <span style='font-size:11px;color:var(--text-3);'>"
-                                f"{ct.get('role','')}</span> {bdg(slabel, scolor)}",
-                                unsafe_allow_html=True)
-                        with cols[1]:
-                            ns = st.selectbox("s", CONTACT_STATUSES,
-                                index=CONTACT_STATUSES.index(ct.get("status", "not_contacted")) if ct.get("status") in CONTACT_STATUSES else 0,
-                                format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
-                                key=f"qs_{ct['id']}", label_visibility="collapsed")
-                            if ns != ct.get("status"):
-                                update_contact_status(ct["id"], ns)
-                                st.rerun()
-                        with cols[2]:
-                            if st.button("→", key=f"go_{ct['id']}", use_container_width=True):
-                                select_contact(comp["id"], ct["id"])
-                                st.rerun()
-                        with cols[3]:
-                            if st.button("📅", key=f"tl_{ct['id']}", use_container_width=True, help="View contact timeline"):
-                                st.session_state.timeline_contact_id = ct["id"]
-                                st.session_state.timeline_company_id = comp["id"]
-                                st.session_state.timeline_contact_name = ct.get("name", "Contact")
-                                st.rerun()
+        else:
+            st.markdown(sh(f"{len(advisor_rows)} COMPANIES (by parent)"), unsafe_allow_html=True)
+            for grp in advisor_groups:
+                with st.expander(f"**{grp['parent_name']}** — {len(grp['children'])} child(ren)", expanded=True):
+                    for ch in grp["children"]:
+                        st.markdown(
+                            f"<div class='c' style='padding:8px 12px;'>"
+                            f"<span style='font-size:13px;'>{ch['domain']}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True)
+    else:
+        # ── Primary DB: existing companies + contacts flow ──
+        if st.session_state.get("clear_company_search"):
+            st.session_state["csearch"] = ""
+            st.session_state["liurl"] = ""
+            st.session_state.pop("clear_company_search", None)
+        if "linkedin_search_domain" in st.session_state:
+            st.session_state["csearch"] = st.session_state.pop("linkedin_search_domain")
+        cc1, cc2, cc3 = st.columns([2, 1, 1])
+        with cc1:
+            sq = st.text_input("Search", placeholder="Search domain or name...", label_visibility="collapsed", key="csearch")
+        with cc2:
+            if st.button("🔄 Sync Notion", key="nsync", use_container_width=True):
+                with st.spinner("Syncing..."):
+                    r = sync_notion_to_db()
+                    if r.get("error"):
+                        st.error(f"Error: {r['error']}")
+                    else:
+                        st.success(f"Synced {r['companies']} companies, {r['contacts']} contacts")
+                    st.rerun()
+        with cc3:
+            if st.button("Reset", key="resetsel", use_container_width=True):
+                st.session_state.sel_company = None
+                st.session_state.sel_contact = None
+                st.session_state.session_id = None
+                st.session_state.chat_messages = []
+                st.session_state.clear_company_search = True
+                st.rerun()
+
+        tcid = st.session_state.get("timeline_contact_id")
+        tcoid = st.session_state.get("timeline_company_id")
+        tname = st.session_state.get("timeline_contact_name") or "Contact"
+        if tcid and tcoid:
+            comp_for_timeline = get_company(tcoid)
+            timeline_items = build_contact_timeline(
+                tcoid, tcid, user["id"],
+                company_domain=comp_for_timeline.get("domain") if comp_for_timeline else None,
+                company_name=comp_for_timeline.get("name") if comp_for_timeline else None,
+            )
+            with st.expander(f"📅 Contact timeline — {tname}", expanded=True):
+                close_col, _ = st.columns([1, 4])
+                with close_col:
+                    if st.button("Close timeline", key="close_timeline", use_container_width=True):
+                        st.session_state.timeline_contact_id = None
+                        st.session_state.timeline_company_id = None
+                        st.session_state.timeline_contact_name = None
+                        st.rerun()
+                st.markdown("<div class='timeline-wrap'>", unsafe_allow_html=True)
+                for item in timeline_items:
+                    ts_display = _format_timeline_ts(item.get("ts"))
+                    st.markdown(
+                        timeline_item_html(
+                            ts_display,
+                            item.get("type"),
+                            item.get("channel"),
+                            item.get("status"),
+                            item.get("summary"),
+                            status_colors=ACTION_STATUS_COLORS,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    full = (item.get("full_content") or "").strip()
+                    if full:
+                        with st.expander("Full content", expanded=False):
+                            st.markdown(full)
+                st.markdown("</div>", unsafe_allow_html=True)
+                if not timeline_items:
+                    st.caption("No timeline items yet for this contact.")
+
+        with st.expander("🔗 Lookup by LinkedIn URL"):
+            li_url = st.text_input("LinkedIn URL", placeholder="Paste LinkedIn URL...", key="liurl")
+            if st.button("Find", key="lisync"):
+                if li_url:
+                    with st.spinner("Searching..."):
+                        lead = lookup_lead_in_notion(li_url)
+                        if lead and lead.get("domain"):
+                            cid = upsert_company(domain=lead["domain"], name=lead.get("name") or lead["domain"],
+                                publisher_type=lead.get("publisher_type"), content_type=lead.get("content_type"),
+                                monthly_visits=lead.get("monthly_visits"), notion_page_id=lead.get("page_id"),
+                                research_status=lead.get("research_status"), gmail_thread=lead.get("gmail_thread"),
+                                extra_data={"research_notes": lead.get("research_notes", [])})
+                            if lead.get("name"):
+                                upsert_contact(company_id=cid, name=lead["name"], role="SPOC / Editor",
+                                    email=lead.get("email"), linkedin=lead.get("linkedin"),
+                                    city=lead.get("city"), state=lead.get("state"), country=lead.get("country"),
+                                    notion_page_id=lead.get("page_id"))
+                            st.session_state["linkedin_search_domain"] = lead["domain"]
+                            spoc_label = f" — {lead['name']}" if lead.get("name") else ""
+                            st.success(f"Found: {lead['domain']}{spoc_label}. Select it from the list below.")
+                            st.rerun()
+                        else:
+                            st.error("No match in Notion")
+
+        companies = search_companies(sq) if sq else get_all_companies()
+
+        if sq and companies:
+            sel_cid = st.selectbox(
+                "Matching companies",
+                options=[c["id"] for c in companies],
+                format_func=lambda cid: next((f"{c['domain']} — {c.get('publisher_type','')}" for c in companies if c["id"] == cid), str(cid)),
+                key="company_search_dropdown",
+            )
+            if sel_cid and sel_cid != st.session_state.sel_company:
+                st.session_state.sel_company = sel_cid
+                st.session_state.current_tab = "COMPANIES"
+                st.rerun()
+        if not companies:
+            st.markdown(
+                "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
+                "<div style='font-size:32px;opacity:.2;margin-bottom:14px;'>◆</div>"
+                "<div style='font-size:14px;'>No companies yet — Sync from Notion</div></div>",
+                unsafe_allow_html=True)
+        else:
+            st.markdown(sh(f"{len(companies)} COMPANIES"), unsafe_allow_html=True)
+            for comp in companies:
+                is_sel = st.session_state.sel_company == comp["id"]
+                border = "border-left:3px solid var(--accent);" if is_sel else ""
+                st.markdown(
+                    f"<div class='c' style='padding:10px 14px;{border}'>"
+                    f"<div style='display:flex;justify-content:space-between;'>"
+                    f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
+                    f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
+                    f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
+                    unsafe_allow_html=True)
+                cts = get_contacts(comp["id"])
+                if cts:
+                    with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
+                        for ct in cts:
+                            cols = st.columns([2.5, 1.2, 0.4, 0.4])
+                            with cols[0]:
+                                scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
+                                slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
+                                st.markdown(
+                                    f"<b>{ct['name']}</b> <span style='font-size:11px;color:var(--text-3);'>"
+                                    f"{ct.get('role','')}</span> {bdg(slabel, scolor)}",
+                                    unsafe_allow_html=True)
+                            with cols[1]:
+                                ns = st.selectbox("s", CONTACT_STATUSES,
+                                    index=CONTACT_STATUSES.index(ct.get("status", "not_contacted")) if ct.get("status") in CONTACT_STATUSES else 0,
+                                    format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                                    key=f"qs_{ct['id']}", label_visibility="collapsed")
+                                if ns != ct.get("status"):
+                                    update_contact_status(ct["id"], ns)
+                                    st.rerun()
+                            with cols[2]:
+                                if st.button("→", key=f"go_{ct['id']}", use_container_width=True):
+                                    select_contact(comp["id"], ct["id"])
+                                    st.rerun()
+                            with cols[3]:
+                                if st.button("📅", key=f"tl_{ct['id']}", use_container_width=True, help="View contact timeline"):
+                                    st.session_state.timeline_contact_id = ct["id"]
+                                    st.session_state.timeline_company_id = comp["id"]
+                                    st.session_state.timeline_contact_name = ct.get("name", "Contact")
+                                    st.rerun()
 
 
 # ════════════════════ INTELLIGENCE ════════════════════

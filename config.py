@@ -41,6 +41,7 @@ def _clean_notion_id(raw: str) -> str:
     return clean  # Return as-is if we can't parse it
 
 NOTION_DATABASE_ID = _clean_notion_id(os.getenv("NOTION_DATABASE_ID", ""))
+NOTION_DATABASE_ID_2 = _clean_notion_id(os.getenv("NOTION_DATABASE_ID_2", ""))
 
 # ── AI Settings ───────────────────────────────────────────────
 AI_MODEL = os.getenv("AI_MODEL", "claude-sonnet-4-5")
