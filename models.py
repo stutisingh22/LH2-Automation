@@ -167,6 +167,17 @@ class EnrichmentResult(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AdvisorCompany(Base):
+    """Media Houses / Advisor companies (Notion DB2). Stored in main DB when DATABASE_URL is set (Supabase)."""
+    __tablename__ = "advisor_companies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    domain = Column(String(255), nullable=False, index=True)
+    parent_name = Column(String(255), nullable=False, index=True)
+    notion_page_id = Column(String(64))
+    extra_data = Column(JSON)  # research_full, etc., when using main DB
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ProcessedGmailMessage(Base):
     """Tracks Gmail message IDs we've already synced so we don't log the same sent email twice."""
     __tablename__ = "processed_gmail_messages"

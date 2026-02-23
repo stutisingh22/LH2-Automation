@@ -1,6 +1,7 @@
 """
 db_advisor.py — Database ops for Advisor (NOTION_DATABASE_ID_2) companies only.
-Uses a separate SQLite file lh2_advisor.db so primary platform logic is unaffected.
+When DATABASE_URL is set (Supabase), uses the main DB so all data is in Supabase.
+Otherwise uses a separate SQLite file lh2_advisor.db.
 """
 
 import os
@@ -9,10 +10,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import StaticPool
 
-from models_advisor import BaseAdvisor, AdvisorCompany
-
 _DB_DIR = os.path.dirname(os.path.abspath(__file__))
 _ADVISOR_SQLITE_PATH = os.path.join(_DB_DIR, "lh2_advisor.db")
+
+# When using main DB (Supabase), we use models.AdvisorCompany; else models_advisor.AdvisorCompany
+_AdvisorModel = None
 
 
 def _advisor_engine():
@@ -25,8 +27,9 @@ def _advisor_engine():
 
 @contextmanager
 def init_db_advisor():
-    """Create tables if needed. Call once at startup or first use."""
+    """Create tables if needed. Call once at startup or first use (SQLite path only)."""
     engine = _advisor_engine()
+    from models_advisor import BaseAdvisor
     BaseAdvisor.metadata.create_all(engine)
     yield engine
 
@@ -36,12 +39,36 @@ _advisor_session_factory = None
 
 
 def _get_advisor_session_factory():
-    global _advisor_session_factory
-    if _advisor_session_factory is None:
+    global _advisor_session_factory, _AdvisorModel
+    if _advisor_session_factory is not None:
+        return _advisor_session_factory
+    from config import DATABASE_URL
+    if DATABASE_URL:
+        from db_ops import init_db
+        from models import AdvisorCompany as MainAdvisorCompany
+        # Use same engine as main app so advisor_companies table lives in Supabase
+        _advisor_session_factory = sessionmaker(bind=init_db().bind, expire_on_commit=False)
+        _AdvisorModel = MainAdvisorCompany
+    else:
+        from models_advisor import BaseAdvisor, AdvisorCompany as SqliteAdvisorCompany
+        from sqlalchemy import text
         engine = _advisor_engine()
         BaseAdvisor.metadata.create_all(engine)
+        # Add extra_data column if missing (existing SQLite DBs)
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE advisor_companies ADD COLUMN extra_data TEXT"))
+                conn.commit()
+        except Exception:
+            pass  # column already exists
         _advisor_session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        _AdvisorModel = SqliteAdvisorCompany
     return _advisor_session_factory
+
+
+def _model():
+    _get_advisor_session_factory()
+    return _AdvisorModel
 
 
 @contextmanager
@@ -58,17 +85,23 @@ def db_advisor():
 
 
 def _advisor_comp_dict(c):
-    return {
+    out = {
         "id": c.id,
         "domain": c.domain,
         "parent_name": c.parent_name,
         "notion_page_id": c.notion_page_id,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
+    if hasattr(c, "extra_data") and c.extra_data is not None:
+        out["extra_data"] = c.extra_data if isinstance(c.extra_data, dict) else {}
+    else:
+        out["extra_data"] = {}
+    return out
 
 
 def upsert_advisor_company(domain, parent_name, notion_page_id=None):
     """Upsert by (domain, parent_name). Returns row id."""
+    AdvisorCompany = _model()
     with db_advisor() as s:
         row = s.query(AdvisorCompany).filter_by(domain=domain.strip(), parent_name=(parent_name or "").strip()).first()
         if row:
@@ -87,22 +120,39 @@ def upsert_advisor_company(domain, parent_name, notion_page_id=None):
 
 
 def get_advisor_company(advisor_id):
-    """Return a single advisor company by id, or None."""
+    """Return a single advisor company by id, or None. Includes extra_data (research etc.)."""
     if advisor_id is None:
         return None
+    AdvisorCompany = _model()
     with db_advisor() as s:
         c = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
         return _advisor_comp_dict(c) if c else None
 
 
+def merge_advisor_company_extra_data(advisor_id, patch):
+    """Merge patch dict into advisor company's extra_data (e.g. research_full). Persists to DB (Supabase or SQLite)."""
+    if not advisor_id or not patch:
+        return
+    AdvisorCompany = _model()
+    with db_advisor() as s:
+        row = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
+        if not row:
+            return
+        current = row.extra_data if hasattr(row, "extra_data") and isinstance(row.extra_data, dict) else {}
+        row.extra_data = {**(current or {}), **patch}
+        s.flush()
+
+
 def get_all_advisor_companies():
     """Return all advisor companies as list of dicts (domain, parent_name, id, ...)."""
+    AdvisorCompany = _model()
     with db_advisor() as s:
         return [_advisor_comp_dict(c) for c in s.query(AdvisorCompany).order_by(AdvisorCompany.parent_name, AdvisorCompany.domain).all()]
 
 
 def search_advisor_companies(q):
     """Fuzzy search on domain and parent_name."""
+    AdvisorCompany = _model()
     with db_advisor() as s:
         q = (q or "").strip()
         if not q:

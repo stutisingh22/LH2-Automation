@@ -56,7 +56,7 @@ from db_ops import (
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
-from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children
+from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children, merge_advisor_company_extra_data
 from drive_sync import list_drive_files, create_doc_in_drive
 from ai_engine import (
     compute_lead_score, get_local_time,
@@ -990,7 +990,7 @@ with tabs[2]:  # INTELLIGENCE
             st.error("Company not found.")
             comp = None
         else:
-            adv_extra = (st.session_state.get("advisor_extra_data") or {}).get(aid, {})
+            adv_extra = comp.get("extra_data") or {}  # from DB (Supabase or SQLite)
             comp = {
                 "id": comp["id"],
                 "domain": comp.get("domain", "—"),
@@ -1089,9 +1089,7 @@ with tabs[2]:  # INTELLIGENCE
                         err_msg = str(e)
                     if result:
                         if is_advisor:
-                            adv_extra = (st.session_state.get("advisor_extra_data") or {}).copy()
-                            adv_extra[aid] = {**(adv_extra.get(aid) or {}), "research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()}
-                            st.session_state.advisor_extra_data = adv_extra
+                            merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                         else:
                             merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                         if page_id:
@@ -1137,9 +1135,7 @@ with tabs[2]:  # INTELLIGENCE
                 with save_col1:
                     if st.button("💾 Save to DB", key=f"save_research_full_{cache_key}", use_container_width=True, help="Store in Command Center (and optionally push to Notion separately)"):
                         if is_advisor:
-                            adv_extra = (st.session_state.get("advisor_extra_data") or {}).copy()
-                            adv_extra[aid] = {**(adv_extra.get(aid) or {}), "research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()}
-                            st.session_state.advisor_extra_data = adv_extra
+                            merge_advisor_company_extra_data(aid, {"research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()})
                         else:
                             merge_company_extra_data(cid, {"research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()})
                         st.session_state.auto_brief_text = None
@@ -1202,9 +1198,7 @@ with tabs[2]:  # INTELLIGENCE
                         with app_col1:
                             if st.button("Replace document", key=f"cmd_replace_{cache_key}", use_container_width=True):
                                 if is_advisor:
-                                    adv_extra = (st.session_state.get("advisor_extra_data") or {}).copy()
-                                    adv_extra[aid] = {**(adv_extra.get(aid) or {}), "research_full": cmd_result, "research_full_updated_at": datetime.utcnow().isoformat()}
-                                    st.session_state.advisor_extra_data = adv_extra
+                                    merge_advisor_company_extra_data(aid, {"research_full": cmd_result, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"research_full": cmd_result, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 st.session_state.auto_brief_text = None
@@ -1217,9 +1211,7 @@ with tabs[2]:  # INTELLIGENCE
                                 current = (current_research_text or research_full_display or "").strip()
                                 merged = f"{current}\n\n{cmd_result}" if current else cmd_result
                                 if is_advisor:
-                                    adv_extra = (st.session_state.get("advisor_extra_data") or {}).copy()
-                                    adv_extra[aid] = {**(adv_extra.get(aid) or {}), "research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()}
-                                    st.session_state.advisor_extra_data = adv_extra
+                                    merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 st.session_state.auto_brief_text = None
@@ -1853,16 +1845,16 @@ with tabs[4]:  # ACTIONS
                 st.progress(progress)
 
                 for step in seq["steps"]:
-                    with st.container():
-                        st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
-                        sc = ACTION_STATUS_COLORS.get(step["status"], "gray")
-                        is_done = step["status"] in ("sent", "completed", "replied_positive", "replied_negative", "meeting_booked")
-                        icon = "✅" if is_done else "📋"
-                        ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧" if "email" in step["channel"].lower() else "📞"
+                    sc = ACTION_STATUS_COLORS.get(step["status"], "gray")
+                    is_done = step["status"] in ("sent", "completed", "replied_positive", "replied_negative", "meeting_booked")
+                    icon = "✅" if is_done else "📋"
+                    ch_icon = "💬" if "linkedin" in (step.get("channel") or "").lower() else "📧" if "email" in (step.get("channel") or "").lower() else "📞"
+                    sched = f" · 📅 {step['scheduled_at'][:10]}" if step.get("scheduled_at") else ""
+                    step_expander_label = f"{icon} {ch_icon} Step {step.get('sequence_step', '?')}: {step.get('channel', '')}{sched} — {step.get('status', '')}"
 
-                        s1, s2, s3 = st.columns([3, 1.2, 0.8])
-                        with s1:
-                            sched = f" · 📅 {step['scheduled_at'][:10]}" if step.get("scheduled_at") else ""
+                    with st.expander(step_expander_label, expanded=False):
+                        with st.container():
+                            st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
                             st.markdown(
                                 f"<div class='sequence-step-header'>"
                                 f"<span>{icon} {ch_icon} <b>Step {step.get('sequence_step','?')}</b>: {step['channel']}{sched}</span>"
@@ -1870,73 +1862,71 @@ with tabs[4]:  # ACTIONS
                                 f"<div style='font-size:12px;color:var(--text-2);margin-top:2px;'>{step['description'][:200]}</div>"
                                 f"<div class='sequence-step-divider'></div>",
                                 unsafe_allow_html=True)
-                            if step.get("content_sent"):
-                                ch_lower = (step.get("channel") or "").lower()
-                                # Show the version currently selected in refinement dropdown; single draft only
-                                rev_list_key = f"draft_revisions_list_{step['id']}"
-                                orig_stored_key = f"draft_original_{step['id']}"
-                                revisions_list = st.session_state.get(rev_list_key) or []
-                                if not isinstance(revisions_list, list):
-                                    revisions_list = [revisions_list] if revisions_list else []
-                                # After refresh: restore revision list from DB so drafts persist
-                                if not revisions_list and step.get("draft_revisions"):
-                                    revs = step["draft_revisions"]
-                                    revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
-                                    st.session_state[rev_list_key] = revisions_list
-                                version_sel = st.session_state.get(f"refine_version_sel_{step['id']}")
-                                # Version 1 = persisted draft_original from DB (after refresh) or current content_sent
-                                original_for_display = (step.get("draft_original") or "").strip() or st.session_state.get(orig_stored_key) or _display_original_from_content_sent(step.get("content_sent"))
-                                if revisions_list and version_sel:
-                                    if version_sel == "Version 1 (Original)":
-                                        display_content = original_for_display
+                            s1, s2, s3 = st.columns([3, 1.2, 0.8])
+                            with s1:
+                                if step.get("content_sent"):
+                                    ch_lower = (step.get("channel") or "").lower()
+                                    rev_list_key = f"draft_revisions_list_{step['id']}"
+                                    orig_stored_key = f"draft_original_{step['id']}"
+                                    revisions_list = st.session_state.get(rev_list_key) or []
+                                    if not isinstance(revisions_list, list):
+                                        revisions_list = [revisions_list] if revisions_list else []
+                                    if not revisions_list and step.get("draft_revisions"):
+                                        revs = step["draft_revisions"]
+                                        revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
+                                        st.session_state[rev_list_key] = revisions_list
+                                    version_sel = st.session_state.get(f"refine_version_sel_{step['id']}")
+                                    original_for_display = (step.get("draft_original") or "").strip() or st.session_state.get(orig_stored_key) or _display_original_from_content_sent(step.get("content_sent"))
+                                    if revisions_list and version_sel:
+                                        if version_sel == "Version 1 (Original)":
+                                            display_content = original_for_display
+                                        else:
+                                            try:
+                                                m = re.search(r"Version\s+(\d+)", version_sel)
+                                                v = int(m.group(1)) if m else 2
+                                                idx = v - 2
+                                                raw = (revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original_for_display))
+                                                display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
+                                            except Exception:
+                                                raw = revisions_list[-1] if revisions_list else original_for_display
+                                                display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
                                     else:
-                                        try:
-                                            m = re.search(r"Version\s+(\d+)", version_sel)
-                                            v = int(m.group(1)) if m else 2
-                                            idx = v - 2
-                                            raw = (revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original_for_display))
-                                            display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
-                                        except Exception:
-                                            raw = revisions_list[-1] if revisions_list else original_for_display
-                                            display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
-                                else:
-                                    display_content = original_for_display
-                                expander_label = "💬 Read full LinkedIn draft" if "linkedin" in ch_lower else "📧 Read full email"
-                                with st.expander(expander_label, expanded=False):
-                                    st.markdown(
-                                        f"<div style='font-size:12px;background:#f8f9fa;padding:8px 10px;border-radius:6px;border-left:2px solid #4caf50;white-space:pre-wrap;'>{display_content}</div>",
-                                        unsafe_allow_html=True)
-                            if step.get("response_content"):
-                                resp_content = (step["response_content"] or "").strip()
-                                with st.expander("💬 Read full response", expanded=False):
-                                    st.markdown(
-                                        f"<div style='font-size:12px;background:#f0f4ff;padding:8px 10px;border-radius:6px;border-left:2px solid #2196f3;white-space:pre-wrap;'>{resp_content}</div>",
-                                        unsafe_allow_html=True)
-                            if step.get("content_sent") and ("email" in (step.get("channel") or "").lower() or "linkedin" in (step.get("channel") or "").lower()):
-                                _render_ai_refinement(step, seq["id"], step.get("channel", ""))
-                        with s2:
-                            if has_perm("can_log_outcomes"):
-                                new_s = st.selectbox("Status", ACTION_STATUSES,
-                                    index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
-                                    key=f"seq_{step['id']}", label_visibility="collapsed")
-                                if new_s != step["status"]:
-                                    update_action(step["id"], status=new_s)
-                                    # Trigger replan if response received
-                                    if new_s in ("replied_positive", "replied_negative"):
+                                        display_content = original_for_display
+                                    read_label = "💬 Read full LinkedIn draft" if "linkedin" in ch_lower else "📧 Read full email"
+                                    with st.expander(read_label, expanded=False):
+                                        st.markdown(
+                                            f"<div style='font-size:12px;background:#f8f9fa;padding:8px 10px;border-radius:6px;border-left:2px solid #4caf50;white-space:pre-wrap;'>{display_content}</div>",
+                                            unsafe_allow_html=True)
+                                if step.get("response_content"):
+                                    resp_content = (step["response_content"] or "").strip()
+                                    with st.expander("💬 Read full response", expanded=False):
+                                        st.markdown(
+                                            f"<div style='font-size:12px;background:#f0f4ff;padding:8px 10px;border-radius:6px;border-left:2px solid #2196f3;white-space:pre-wrap;'>{resp_content}</div>",
+                                            unsafe_allow_html=True)
+                                if step.get("content_sent") and ("email" in (step.get("channel") or "").lower() or "linkedin" in (step.get("channel") or "").lower()):
+                                    _render_ai_refinement(step, seq["id"], step.get("channel", ""))
+                            with s2:
+                                if has_perm("can_log_outcomes"):
+                                    new_s = st.selectbox("Status", ACTION_STATUSES,
+                                        index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
+                                        key=f"seq_{step['id']}", label_visibility="collapsed")
+                                    if new_s != step["status"]:
+                                        update_action(step["id"], status=new_s)
+                                        if new_s in ("replied_positive", "replied_negative"):
+                                            st.session_state[f"replan_{seq['id']}"] = step["id"]
+                                        st.rerun()
+                            with s3:
+                                if not is_done and has_perm("can_log_outcomes"):
+                                    resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
+                                    if resp:
+                                        update_action(step["id"], response_content=resp, status="replied_positive")
                                         st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                    st.rerun()
-                        with s3:
-                            if not is_done and has_perm("can_log_outcomes"):
-                                resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
-                                if resp:
-                                    update_action(step["id"], response_content=resp, status="replied_positive")
-                                    st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                    st.rerun()
-                        if "email" in step.get("channel", "").lower() and step.get("content_sent"):
-                            st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
-                            single_draft = _display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
-                            subj, bod = parse_email_content(single_draft)
-                            _render_save_to_gmail(ct.get("email", ""), subj, bod, f"act_{step['id']}")
+                                        st.rerun()
+                            if "email" in step.get("channel", "").lower() and step.get("content_sent"):
+                                st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
+                                single_draft = _display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
+                                subj, bod = parse_email_content(single_draft)
+                                _render_save_to_gmail(ct.get("email", ""), subj, bod, f"act_{step['id']}")
 
                 # ── Replan trigger ──
                 replan_key = f"replan_{seq['id']}"

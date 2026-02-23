@@ -4,7 +4,7 @@ Separate from main models.py so primary platform logic is unaffected.
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, JSON
 from sqlalchemy.orm import declarative_base
 
 BaseAdvisor = declarative_base()
@@ -15,10 +15,12 @@ class AdvisorCompany(BaseAdvisor):
     Child company from NOTION_DATABASE_ID_2.
     - domain: title property (child company identifier)
     - parent_name: select property "media" (parent company)
+    - extra_data: optional JSON for research_full etc. (when using SQLite path)
     """
     __tablename__ = "advisor_companies"
     id = Column(Integer, primary_key=True, autoincrement=True)
     domain = Column(String(255), nullable=False, index=True)
     parent_name = Column(String(255), nullable=False, index=True)  # media = parent company
     notion_page_id = Column(String(64))
+    extra_data = Column(JSON)  # research_full, etc.
     created_at = Column(DateTime, default=datetime.utcnow)
