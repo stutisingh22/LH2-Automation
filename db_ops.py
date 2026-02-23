@@ -26,17 +26,49 @@ from models import (
 
 log = logging.getLogger(__name__)
 
-# Absolute path for SQLite — always next to this file, never relative to cwd
+# Absolute path for SQLite — prefer next to this file; fallback to user dir if project dir is read-only
 _DB_DIR = os.path.dirname(os.path.abspath(__file__))
 _SQLITE_PATH = os.path.join(_DB_DIR, "lh2_platform.db")
+_SQLITE_FALLBACK_DIR = os.path.join(os.path.expanduser("~"), ".lh2_platform")
+_SQLITE_FALLBACK_PATH = os.path.join(_SQLITE_FALLBACK_DIR, "lh2_platform.db")
+
+
+def _sqlite_path_writable(db_dir: str, db_path: str) -> bool:
+    """Return True if the given directory and (if existing) file are writable."""
+    if not os.access(db_dir, os.W_OK):
+        return False
+    if os.path.exists(db_path) and not os.access(db_path, os.W_OK):
+        return False
+    return True
+
+
+def _get_writable_sqlite_path():
+    """Return a (db_dir, db_path) where we can create/write the SQLite DB. Prefer project dir; fallback to ~/.lh2_platform."""
+    if _sqlite_path_writable(_DB_DIR, _SQLITE_PATH):
+        return _DB_DIR, _SQLITE_PATH
+    try:
+        os.makedirs(_SQLITE_FALLBACK_DIR, mode=0o700, exist_ok=True)
+        if _sqlite_path_writable(_SQLITE_FALLBACK_DIR, _SQLITE_FALLBACK_PATH):
+            log.info(
+                "Project SQLite path not writable (e.g. sandbox); using fallback: %s",
+                _SQLITE_FALLBACK_PATH,
+            )
+            return _SQLITE_FALLBACK_DIR, _SQLITE_FALLBACK_PATH
+    except OSError as e:
+        log.warning("Could not use fallback SQLite dir %s: %s", _SQLITE_FALLBACK_DIR, e)
+    raise RuntimeError(
+        f"SQLite database path is not writable: {_SQLITE_PATH!r}. "
+        "Fix permissions (e.g. chmod u+w on the file and directory) or use PostgreSQL (set DATABASE_URL in keys.env)."
+    )
 
 
 # ── Engine + Session Factory ──────────────────────────────────
 
 def _create_sqlite_engine():
-    log.info("Using SQLite at %s", _SQLITE_PATH)
+    _db_dir, db_path = _get_writable_sqlite_path()
+    log.info("Using SQLite at %s", db_path)
     return create_engine(
-        f"sqlite:///{_SQLITE_PATH}",
+        f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -89,6 +121,15 @@ def db():
     try:
         yield session
         session.commit()
+    except OperationalError as e:
+        session.rollback()
+        if "readonly" in (e.orig.args[0] if e.orig else "").lower() or "readonly" in str(e).lower():
+            raise RuntimeError(
+                f"Database is read-only: {e}. "
+                f"If using SQLite, ensure the file and directory are writable: {_SQLITE_PATH!r}. "
+                "Or use PostgreSQL by setting DATABASE_URL in keys.env and ensuring the server is reachable."
+            ) from e
+        raise
     except Exception:
         session.rollback()
         raise
