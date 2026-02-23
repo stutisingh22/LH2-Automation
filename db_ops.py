@@ -13,9 +13,10 @@ from contextlib import contextmanager
 
 import streamlit as st
 from passlib.hash import pbkdf2_sha256
-from sqlalchemy import create_engine, or_
+from sqlalchemy import create_engine, or_, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.exc import OperationalError
 
 from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
@@ -32,33 +33,50 @@ _SQLITE_PATH = os.path.join(_DB_DIR, "lh2_platform.db")
 
 # ── Engine + Session Factory ──────────────────────────────────
 
+def _create_sqlite_engine():
+    log.info("Using SQLite at %s", _SQLITE_PATH)
+    return create_engine(
+        f"sqlite:///{_SQLITE_PATH}",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+
 @st.cache_resource
 def init_db():
+    engine = None
     if DATABASE_URL:
-        engine = create_engine(
-            DATABASE_URL, poolclass=QueuePool, pool_size=5,
-            max_overflow=10, pool_pre_ping=True, pool_recycle=300,
-        )
-    else:
-        log.info("Using SQLite at %s", _SQLITE_PATH)
-        engine = create_engine(
-            f"sqlite:///{_SQLITE_PATH}",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-    Base.metadata.create_all(engine)
+        try:
+            engine = create_engine(
+                DATABASE_URL, poolclass=QueuePool, pool_size=5,
+                max_overflow=10, pool_pre_ping=True, pool_recycle=300,
+            )
+            Base.metadata.create_all(engine)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            log.info("DB connected successfully (PostgreSQL)")
+        except OperationalError as e:
+            log.warning("PostgreSQL unreachable (%s), falling back to SQLite", e)
+            engine = _create_sqlite_engine()
+            Base.metadata.create_all(engine)
+    if engine is None:
+        engine = _create_sqlite_engine()
+        Base.metadata.create_all(engine)
     # Add draft_revisions / draft_original columns if missing (existing DBs)
-    from sqlalchemy import text
-    for col, typ in (("draft_revisions", "TEXT" if (not DATABASE_URL or "sqlite" in (DATABASE_URL or "").lower()) else "JSON"), ("draft_original", "TEXT")):
+    is_sqlite = "sqlite" in (engine.url.drivername or "")
+    for col, typ in (("draft_revisions", "TEXT" if is_sqlite else "JSON"), ("draft_original", "TEXT")):
         try:
             with engine.connect() as conn:
                 with conn.begin():
                     conn.execute(text(f"ALTER TABLE actions ADD COLUMN {col} {typ}"))
         except Exception as e:
-            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+            err = str(e).lower()
+            if "duplicate column" in err or "already exists" in err:
                 pass
             else:
                 log.warning("Migration %s: %s", col, e)
+    db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
+    print(f"DB connected successfully ({db_type})")
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 

@@ -4,13 +4,17 @@ config.py — Configuration, env vars, and constants
 
 import os
 import re
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv("keys.env")
-load_dotenv(".env")
+# Load from project root (directory containing this file) so env is found
+# regardless of where the app is run from (important for DATABASE_URL / Postgres)
+_config_dir = Path(__file__).resolve().parent
+load_dotenv(_config_dir / "keys.env")
+load_dotenv(_config_dir / ".env")
 
 # ── Database ──────────────────────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
