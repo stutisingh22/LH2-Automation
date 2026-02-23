@@ -13,7 +13,7 @@ import os
 import logging
 from datetime import datetime
 
-from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAX_DRIVE_TOKENS
+from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAIN_FOLDER_ID, MAX_DRIVE_TOKENS
 
 log = logging.getLogger(__name__)
 
@@ -324,7 +324,7 @@ def get_lh2_knowledge_context(force_refresh=False):
     """
     Build a single context string from the linked Drive (all folders) describing
     LH2, Accelerate, and offerings. Used so the AI knows what we do when researching
-    people and suggesting targets. Cached for 1 hour.
+    people and suggesting targets. Uses MAIN_FOLDER_ID when set, else GOOGLE_DRIVE_FOLDER_ID. Cached for 1 hour.
     """
     global _LH2_KNOWLEDGE_CACHE, _LH2_KNOWLEDGE_CACHE_AT
     now = datetime.utcnow()
@@ -332,11 +332,12 @@ def get_lh2_knowledge_context(force_refresh=False):
         return _LH2_KNOWLEDGE_CACHE.get("text", "")
 
     svc = _drive()
-    if not svc or not GOOGLE_DRIVE_FOLDER_ID:
+    knowledge_folder_id = MAIN_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID
+    if not svc or not knowledge_folder_id:
         return ""
 
     try:
-        files = _list_all_files_recursive(GOOGLE_DRIVE_FOLDER_ID, svc, max_files=80)
+        files = _list_all_files_recursive(knowledge_folder_id, svc, max_files=80)
         parts = []
         total_chars = 0
         for f in files:
