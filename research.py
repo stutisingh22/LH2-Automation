@@ -325,9 +325,11 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
+Identify leads and stakeholders from the WEB-SOURCED SPOCs block above when provided; otherwise from publicly discoverable sources only. Target only C-level/executive: CEO, CFO, COO, founder, president, board members. Do not recommend or list editors. Do not use or reference the user's Notion database or existing contact lists. When the block contains specific names and LinkedIn URLs, include them explicitly in the Ranked Stakeholder Table (Name | Title | LinkedIn URL when available). Do not output generic or speculative lines like "Unknown contact" or "domain registration traces to".
+
 3A. Organizational Reality
 3B. Identified Power Center
-3C. Ranked Stakeholder Table
+3C. Ranked Stakeholder Table (include actual names and LinkedIn profile URLs from the web-sourced block when present)
 3D. Contact Logic
 
 ============================================================
@@ -459,9 +461,22 @@ def run_research(domain, context="", progress_callback=None):
     Returns the research text, or None on failure.
 
     progress_callback(chars_received, elapsed_seconds) is called periodically.
+    Injects web-sourced contact/lead data when available so Power Mapping uses
+    real scraped names and roles, not Notion or domain/WHOIS speculation.
     """
     if not ANTHROPIC_API_KEY:
         return None
+
+    try:
+        from web_search import power_scrape_company_spocs
+        spocs_blob = power_scrape_company_spocs(domain)
+        if spocs_blob:
+            context = (
+                "WEB-SOURCED SPOCs (C-level only: CEO, CFO, COO, founder, board — no editors; use only this; do not use Notion or domain/WHOIS):\n"
+                + spocs_blob + "\n\n" + context
+            )
+    except Exception as e:
+        log.debug("Power scrape injection skipped: %s", e)
 
     MAX_CONTEXT = 60000
     if len(context) > MAX_CONTEXT:
@@ -513,32 +528,53 @@ def run_research(domain, context="", progress_callback=None):
 def research_command_ai(domain, current_research_text, user_command):
     """
     Run an AI command on the research document: extend, add section, or revise.
+    Uses streaming to avoid long-request timeouts. Optionally injects power-scraped
+    SPOCs when the user asks to extend power mapping / contacts.
     Returns the full updated research text (to replace or append in the UI).
     """
     if not (user_command or "").strip() or not ANTHROPIC_API_KEY:
         return None
     current = (current_research_text or "").strip()
+    cmd_lower = (user_command or "").strip().lower()
+    # When extending power mapping / contacts, inject web-scraped SPOCs so the model has real names and LinkedIn URLs
+    spocs_block = ""
+    if any(k in cmd_lower for k in ("power", "contact", "spoc", "ceo", "cfo", "leadership", "stakeholder", "mapping")):
+        try:
+            from web_search import power_scrape_company_spocs
+            spocs = power_scrape_company_spocs(domain)
+            if spocs:
+                spocs_block = f"""
+WEB-SOURCED SPOCs (C-level only; use for names and LinkedIn URLs when extending Power Mapping):
+{spocs[:6000]}
+"""
+        except Exception as e:
+            log.debug("Power scrape for extend skipped: %s", e)
     prompt = f"""You are editing institutional-grade strategic research for {domain}.
 
 CURRENT RESEARCH DOCUMENT:
 {current[:40000] if current else '(Document is empty. Generate new research in the same format and tone as the Notion research bot.)'}
+{spocs_block}
 
 USER COMMAND:
 {user_command.strip()}
 
 Instructions:
 - If the user asks to add a section, extend, or research something new: add or extend the document in the same style (institutional, structured, tables where appropriate). Return the COMPLETE updated document including all existing content plus your addition.
+- If the user asks to extend power mapping or contacts: use the WEB-SOURCED SPOCs above and include specific names and LinkedIn URLs in the table(s). Target C-level only (CEO, CFO, etc.); no editors.
 - If the user asks to revise or fix something: apply the change and return the COMPLETE document.
 - Use the same section structure and formatting (===, ---, pipe tables) as the existing research. No markdown bold, no emojis.
 - Output ONLY the full research document. No preamble or "Here is the updated document"."""
     try:
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        r = client.messages.create(
+        collected = []
+        with client.messages.stream(
             model=RESEARCH_MODEL,
-            max_tokens=RESEARCH_MAX_TOKENS,
+            max_tokens=32000,
             messages=[{"role": "user", "content": prompt}],
-        )
-        return (r.content[0].text or "").strip()
+        ) as stream:
+            for text in stream.text_stream:
+                collected.append(text)
+        return ("".join(collected)).strip()
     except Exception as e:
         log.error("Research command AI failed: %s", e)
         return None

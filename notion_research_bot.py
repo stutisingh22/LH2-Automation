@@ -307,9 +307,11 @@ Single Biggest Bottleneck (one sentence)
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
+Identify leads and stakeholders from the WEB-SOURCED SPOCs block above when provided; otherwise from publicly discoverable sources only. Target only C-level/executive: CEO, CFO, COO, founder, president, board members. Do not recommend or list editors. Do not use or reference the user's Notion database or existing contact lists. When the block contains specific names and LinkedIn URLs, include them explicitly in the table (Name | Title | LinkedIn URL when available). Do not output generic or speculative lines like "Unknown contact" or "domain registration traces to".
+
 3A. Organizational Reality bullets
 3B. Identified Power Center (1-2 paragraphs)
-3C. Ranked Stakeholder Table: | Priority | Name | Title | Economic Authority | Why They Matter | Core Incentive |
+3C. Ranked Stakeholder Table: | Priority | Name | Title | LinkedIn URL | Economic Authority | Why They Matter | Core Incentive |
 3D. Contact Logic bullets including Who to Avoid
 
 ============================================================
@@ -639,8 +641,20 @@ def run_task(task):
     log.info(f"  >>> START: {domain}")
     start_time = time.time()
 
+    context = cached_context
     try:
-        research_data = deep_research_agent(domain, cached_context)
+        from web_search import power_scrape_company_spocs
+        spocs_blob = power_scrape_company_spocs(domain)
+        if spocs_blob:
+            context = (
+                "WEB-SOURCED SPOCs (C-level only: CEO, CFO, COO, founder, board — no editors; use only this; do not use Notion or domain/WHOIS):\n"
+                + spocs_blob + "\n\n" + cached_context
+            )
+    except Exception as e:
+        log.debug("  [%s] Power scrape injection skipped: %s", domain, e)
+
+    try:
+        research_data = deep_research_agent(domain, context)
     except Exception as e:
         log.error(f"  [{domain}] Research crash: {type(e).__name__}: {e}")
         research_data = None

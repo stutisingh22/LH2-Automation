@@ -9,6 +9,7 @@ Features:
   - Streaming chat with proper styling
 """
 
+import inspect
 import re
 import time
 import streamlit as st
@@ -65,9 +66,10 @@ from ai_engine import (
     maybe_update_summary, extract_episodic_memories,
     generate_insight_from_outcome, parse_ai_actions, export_session_csv,
     intelligence_request, research_person_for_company, summarize_research_to_context,
-    advisor_chat, refine_email_draft,
+    advisor_chat, refine_email_draft, company_brief_with_power_mapping,
 )
 from research import fetch_research_from_notion, run_research, write_research_to_notion, research_command_ai, split_research_into_sections
+from web_search import search_web_for_person, search_web_for_person_by_name, power_scrape_company_spocs
 from contact_timeline import build_contact_timeline
 from signalhire_enrichment import (
     get_credits as get_signalhire_credits,
@@ -75,7 +77,7 @@ from signalhire_enrichment import (
     has_verified_email,
 )
 from gmail_service import create_gmail_draft, parse_email_content
-from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name
+from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_brief_card_html, markdown_to_html
 
 inject_css()
 
@@ -267,6 +269,7 @@ defaults = {
     "intel_lookup_lead": None, "intel_person_brief": None,
     "intel_suggestion": None, "intel_suggestion_raw": None,
     "current_tab": "DASHBOARD", "advisor_messages": [],
+    "company_arrow_cid": None, "company_brief_cache": {},
     "timeline_contact_id": None, "timeline_company_id": None, "timeline_contact_name": None,
 }
 for k, d in defaults.items():
@@ -809,7 +812,7 @@ with tabs[1]:  # COMPANIES
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with row_col2:
-                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary" if is_sel_adv else "primary", use_container_width=True):
+                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary", use_container_width=True):
                                 st.session_state.sel_company = None
                                 st.session_state.sel_contact = None
                                 st.session_state.session_id = None
@@ -937,13 +940,23 @@ with tabs[1]:  # COMPANIES
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
                 border = "border-left:3px solid var(--accent);" if is_sel else ""
-                st.markdown(
-                    f"<div class='c' style='padding:10px 14px;{border}'>"
-                    f"<div style='display:flex;justify-content:space-between;'>"
-                    f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
-                    f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
-                    f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
-                    unsafe_allow_html=True)
+                row_col1, row_col2 = st.columns([4, 0.35])
+                with row_col1:
+                    st.markdown(
+                        f"<div class='c' style='padding:10px 14px;{border}'>"
+                        f"<div style='display:flex;justify-content:space-between;'>"
+                        f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
+                        f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
+                        f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
+                        unsafe_allow_html=True)
+                with row_col2:
+                    if st.button("→", key=f"company_arrow_{comp['id']}", type="secondary", use_container_width=True, help="Brief, research & power mapping"):
+                        st.session_state.sel_company = comp["id"]
+                        st.session_state.sel_contact = None
+                        st.session_state.session_id = None
+                        st.session_state.company_arrow_cid = comp["id"]
+                        st.session_state.current_tab = "INTELLIGENCE"
+                        st.rerun()
                 cts = get_contacts(comp["id"])
                 if cts:
                     with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
@@ -965,7 +978,7 @@ with tabs[1]:  # COMPANIES
                                     update_contact_status(ct["id"], ns)
                                     st.rerun()
                             with cols[2]:
-                                if st.button("→", key=f"go_{ct['id']}", use_container_width=True):
+                                if st.button("→", key=f"go_{ct['id']}", type="secondary", use_container_width=True):
                                     select_contact(comp["id"], ct["id"])
                                     st.rerun()
                             with cols[3]:
@@ -1020,10 +1033,40 @@ with tabs[2]:  # INTELLIGENCE
             else:
                 rn = st.session_state.research_cache[cache_key]
 
+            # Company brief & power mapping (Independent only): show when opened via arrow or when cached
+            _arrow_cid = st.session_state.get("company_arrow_cid")
+            _brief_cache = st.session_state.get("company_brief_cache") or {}
+            if not is_advisor and cid and (_arrow_cid == cid or cid in _brief_cache):
+                if _arrow_cid == cid and cid not in _brief_cache:
+                    with st.spinner("Building company brief & power mapping (3+ SPOCs)…"):
+                        spocs_ctx = power_scrape_company_spocs(comp.get("domain"))
+                        brief_text = company_brief_with_power_mapping(
+                            comp, research_notes=rn, company_spocs_web_context=spocs_ctx,
+                        )
+                        if brief_text:
+                            if "company_brief_cache" not in st.session_state:
+                                st.session_state.company_brief_cache = {}
+                            st.session_state.company_brief_cache[cid] = {"text": brief_text, "domain": comp.get("domain")}
+                        st.session_state.company_arrow_cid = None
+                    st.rerun()
+                if cid in (st.session_state.get("company_brief_cache") or {}):
+                    _cached = st.session_state.company_brief_cache[cid]
+                    st.markdown(sh_small("Company brief & power mapping"), unsafe_allow_html=True)
+                    st.markdown(render_brief_card_html(_cached["text"]), unsafe_allow_html=True)
+                    regen_col, _ = st.columns([1, 4])
+                    with regen_col:
+                        if st.button("🔄 Regenerate brief & SPOCs", key="regen_company_brief", use_container_width=True):
+                            _cache = st.session_state.get("company_brief_cache") or {}
+                            _cache.pop(cid, None)
+                            st.session_state.company_brief_cache = _cache
+                            st.session_state.company_arrow_cid = cid
+                            st.rerun()
             if ctid and st.session_state.session_id:
                 ct = get_contact(ctid)
                 if ct:
-                    st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
+                    _contact_label = ct.get("name") or "Unknown"
+                    _domain = comp.get("domain") or ""
+                    st.markdown(sh_small(f"Brief — {_contact_label}" + (f" · {_domain}" if _domain else "")), unsafe_allow_html=True)
                     st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
                     brief_entry = st.text_input(
                         "Brief",
@@ -1033,9 +1076,20 @@ with tabs[2]:  # INTELLIGENCE
                     )
                     if st.session_state.auto_brief_text is None:
                         with st.spinner("Generating brief..."):
-                            brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
+                            contact_web_ctx = search_web_for_person(
+                                company_domain=comp.get("domain"),
+                                person_name=ct.get("name"),
+                                email=ct.get("email"),
+                                linkedin_url=ct.get("linkedin"),
+                            )
+                            company_spocs_ctx = power_scrape_company_spocs(comp.get("domain"))
+                            brief = auto_brief(
+                                comp, ct, user["id"], st.session_state.session_id, rn,
+                                contact_web_context=contact_web_ctx,
+                                company_spocs_web_context=company_spocs_ctx,
+                            )
                             st.session_state.auto_brief_text = brief or "Could not generate brief."
-                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.auto_brief_text}</div></div>", unsafe_allow_html=True)
+                    st.markdown(render_brief_card_html(st.session_state.auto_brief_text or ""), unsafe_allow_html=True)
                     brief_btn_col1, brief_btn_col2 = st.columns(2)
                     with brief_btn_col1:
                         if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
@@ -1063,6 +1117,8 @@ with tabs[2]:  # INTELLIGENCE
 
             # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
             st.markdown(sh_small("Research document"), unsafe_allow_html=True)
+            if is_advisor:
+                st.caption("Same power-scraped SPOCs and deep research flow as Independent — Run deep research and extend use web-sourced C-level contacts.")
             extra = comp.get("extra_data") or {}
             research_full_db = (extra.get("research_full") or "").strip() if not is_advisor else (extra.get("research_full") or "").strip()
             research_source_from_notion = False
@@ -1097,17 +1153,14 @@ with tabs[2]:  # INTELLIGENCE
                                 write_research_to_notion(page_id, result, comp.get("domain", ""))
                         if cache_key in st.session_state.get("research_cache", {}):
                             del st.session_state.research_cache[cache_key]
-                        st.success("Research saved. Edit below; use Save to DB, Drive, or Notion as needed.")
+                        st.success("Research saved. Edit below and click Save to store everywhere.")
                         st.rerun()
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             else:
                 # Same flow whether research came from Notion or DB or deep research: manual edit + AI extend + save options
                 _source_label = "Loaded from Notion" if research_source_from_notion and page_id else "Command Center"
-                if page_id:
-                    st.caption(f"**{_source_label}** — Edit sections below, use the AI command to generate or extend, then save to DB, Drive, or back to Notion.")
-                else:
-                    st.caption(f"**{_source_label}** — Edit sections below and use the AI command to generate or extend; save to DB or Drive.")
+                st.caption(f"**{_source_label}** — Edit sections below, use the AI command to generate or extend, then Save.")
                 if page_id and research_source_from_notion:
                     if st.button("🔄 Refresh from Notion", key=f"refresh_notion_{cache_key}", use_container_width=False, help="Re-pull latest research from Notion"):
                         if cache_key in st.session_state.get("research_cache", {}):
@@ -1128,43 +1181,46 @@ with tabs[2]:  # INTELLIGENCE
                         section_bodies.append(edited)
                 # Current full document = concatenation of section edits (for AI command and Save)
                 current_research_text = "\n\n".join(section_bodies).strip() if section_bodies else research_full_display
-                if page_id:
-                    save_col1, save_col2, save_col3, _ = st.columns([1, 1, 1, 4])
-                else:
-                    save_col1, save_col2, _ = st.columns([1, 1, 3])
-                with save_col1:
-                    if st.button("💾 Save to DB", key=f"save_research_full_{cache_key}", use_container_width=True, help="Store in Command Center (and optionally push to Notion separately)"):
+                save_col, delete_col, _ = st.columns([1, 1, 4])
+                with save_col:
+                    if st.button("💾 Save", key=f"save_research_full_{cache_key}", use_container_width=True, help="Save research to DB, Drive, and Notion"):
+                        text = (current_research_text or "").strip()
                         if is_advisor:
-                            merge_advisor_company_extra_data(aid, {"research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            merge_advisor_company_extra_data(aid, {"research_full": text, "research_full_updated_at": datetime.utcnow().isoformat()})
                         else:
-                            merge_company_extra_data(cid, {"research_full": current_research_text, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            merge_company_extra_data(cid, {"research_full": text, "research_full_updated_at": datetime.utcnow().isoformat()})
                         st.session_state.auto_brief_text = None
-                        st.success("Saved.")
-                        st.rerun()
-                with save_col2:
-                    if st.button("📁 Save to Drive", key=f"save_research_drive_{cache_key}", use_container_width=True, help="Save research as a Google Doc in your main Drive folder"):
-                        _doc_name = comp.get("domain") or comp.get("name", "Company")
-                        fid, _, err = create_doc_in_drive(f"{_doc_name} - Research", current_research_text or "")
-                        if fid:
-                            st.toast("Research saved to Google Drive (main folder)")
-                            st.rerun()
+                        ok_drive = True
+                        if text:
+                            _doc_name = comp.get("domain") or comp.get("name", "Company")
+                            fid, _, err = create_doc_in_drive(f"{_doc_name} - Research", text)
+                            ok_drive = bool(fid)
+                            if not ok_drive and err:
+                                st.toast(f"Drive: {err}")
+                        ok_notion = True
+                        if page_id and text and len(text) >= 500:
+                            with st.spinner("Writing to Notion…"):
+                                ok_notion = write_research_to_notion(page_id, text, comp.get("domain", ""))
+                            if ok_notion and cache_key in st.session_state.get("research_cache", {}):
+                                del st.session_state.research_cache[cache_key]
+                        if not text:
+                            st.success("Saved to DB.")
+                        elif ok_drive and (not (page_id and len(text) >= 500) or ok_notion):
+                            st.success("Saved to DB, Drive, and Notion." if (page_id and len(text) >= 500 and ok_notion) else "Saved to DB and Drive.")
                         else:
-                            st.error(err or "Could not save to Drive.")
-                if page_id:
-                    with save_col3:
-                        if st.button("📤 Save to Notion", key=f"save_research_notion_{cache_key}", use_container_width=True, help="Push current research to the linked Notion page as child pages"):
-                            if len((current_research_text or "").strip()) < 500:
-                                st.warning("Research is too short to write to Notion (need at least ~500 chars).")
-                            else:
-                                with st.spinner("Writing to Notion…"):
-                                    ok = write_research_to_notion(page_id, current_research_text or "", comp.get("domain", ""))
-                                if ok:
-                                    if cache_key in st.session_state.get("research_cache", {}):
-                                        del st.session_state.research_cache[cache_key]
-                                    st.success("Research written to Notion.")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to write to Notion. Check NOTION_TOKEN and page access.")
+                            st.success("Saved to DB." + (" Drive failed." if not ok_drive else " Notion failed."))
+                        st.rerun()
+                with delete_col:
+                    if st.button("🗑️ Delete deep research", key=f"delete_research_{cache_key}", use_container_width=True, help="Clear deep research from Command Center (DB)"):
+                        if is_advisor:
+                            merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                        else:
+                            merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                        st.session_state.auto_brief_text = None
+                        if cache_key in st.session_state.get("research_cache", {}):
+                            del st.session_state.research_cache[cache_key]
+                        st.success("Deep research deleted.")
+                        st.rerun()
 
                 st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
                 st.markdown(sh_small("Deep research — generate or extend"), unsafe_allow_html=True)
@@ -1193,7 +1249,8 @@ with tabs[2]:  # INTELLIGENCE
                 if st.session_state.get("research_command_result_cid") == cache_key and st.session_state.get("research_command_result"):
                     cmd_result = st.session_state["research_command_result"]
                     with st.expander("AI result — Replace or Append", expanded=True):
-                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
+                        _cmd_display = cmd_result[:25000] + ("…" if len(cmd_result) > 25000 else "")
+                        st.markdown(f"<div class='markdown-rendered' style='max-height:300px;overflow-y:auto;'>{markdown_to_html(_cmd_display)}</div>", unsafe_allow_html=True)
                         app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
                         with app_col1:
                             if st.button("Replace document", key=f"cmd_replace_{cache_key}", use_container_width=True):
@@ -1243,35 +1300,45 @@ with tabs[2]:  # INTELLIGENCE
                     email_match = re.search(r"[\w.-]+@[\w.-]+\.\w+", raw)
                     if linkedin_match:
                         url = linkedin_match.group(0).strip().rstrip(".,;:)")
-                        lead = None
-                        with st.spinner("Checking Notion..."):
-                            lead = lookup_lead_in_notion(url)
-                        st.session_state.intel_lookup_lead = lead if lead else {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
+                        web_snippet = None
+                        with st.spinner("Searching the web for this person..."):
+                            web_snippet = search_web_for_person(linkedin_url=url, company_domain=comp.get("domain"))
+                        st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
                         with st.spinner("Running AI research on this person..."):
-                            brief = research_person_for_company(
-                                comp, rn,
-                                linkedin_url=url,
-                                notion_lead=lead,
-                            )
+                            brief = research_person_for_company(comp=comp, research_notes=rn, linkedin_url=url, web_search_results=web_snippet)
                         st.session_state.intel_person_brief = brief
                         st.session_state.intel_suggestion = None
                         st.rerun()
                     elif email_match:
                         em = email_match.group(0).strip()
+                        web_snippet = None
+                        with st.spinner("Searching the web for this person..."):
+                            web_snippet = search_web_for_person(email=em, company_domain=comp.get("domain"))
                         st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
                         with st.spinner("Running AI research on this person..."):
-                            brief = research_person_for_company(comp, rn, email=em)
+                            brief = research_person_for_company(comp=comp, research_notes=rn, email=em, web_search_results=web_snippet)
                         st.session_state.intel_person_brief = brief
                         st.session_state.intel_suggestion = None
                         st.rerun()
                     else:
-                        with st.spinner("Asking AI for suggestion..."):
-                            suggestion = intelligence_request(comp, rn, raw)
-                        st.session_state.intel_suggestion = suggestion
-                        st.session_state.intel_suggestion_raw = raw
-                        st.session_state.intel_lookup_lead = None
-                        st.session_state.intel_person_brief = None
-                        st.rerun()
+                        web_snippet = None
+                        with st.spinner("Searching the web for this person..."):
+                            web_snippet = search_web_for_person_by_name(raw, comp.get("domain"))
+                        if web_snippet:
+                            with st.spinner("Running AI research on this person..."):
+                                brief = research_person_for_company(comp=comp, research_notes=rn, person_name=raw, web_search_results=web_snippet)
+                            st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
+                            st.session_state.intel_person_brief = brief
+                            st.session_state.intel_suggestion = None
+                            st.rerun()
+                        else:
+                            with st.spinner("Asking AI for suggestion..."):
+                                suggestion = intelligence_request(comp, rn, raw)
+                            st.session_state.intel_suggestion = suggestion
+                            st.session_state.intel_suggestion_raw = raw
+                            st.session_state.intel_lookup_lead = None
+                            st.session_state.intel_person_brief = None
+                            st.rerun()
 
             if st.session_state.get("intel_lookup_lead") or st.session_state.get("intel_person_brief"):
                 lead = st.session_state.get("intel_lookup_lead") or {}
@@ -1279,9 +1346,9 @@ with tabs[2]:  # INTELLIGENCE
                 label = (lead.get("name") or lead.get("email") or "Contact").strip() or "Person"
                 st.markdown(sh_small(f"Research — {label}"), unsafe_allow_html=True)
                 if brief:
-                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{brief}</div></div>", unsafe_allow_html=True)
-                if lead.get("domain") and lead.get("name"):
-                    st.caption(f"Found in Notion: {lead.get('name')} @ {lead.get('domain')}. You can add them to this company’s contacts and sync to Notion below.")
+                    st.markdown(render_brief_card_html(brief), unsafe_allow_html=True)
+                if lead.get("domain") or lead.get("linkedin") or lead.get("email"):
+                    st.caption("You can add this person to this company's contacts and optionally sync to Notion below.")
                 with st.form("add_contact_from_intel"):
                     name = st.text_input("Name", value=lead.get("name") or "", key="intel_add_name")
                     role = st.text_input("Role", value=lead.get("role") or "Contact", key="intel_add_role")
@@ -1333,7 +1400,7 @@ with tabs[2]:  # INTELLIGENCE
 
             if st.session_state.get("intel_suggestion"):
                 st.markdown(sh_small("Suggestion — save as override?"), unsafe_allow_html=True)
-                st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.intel_suggestion}</div></div>", unsafe_allow_html=True)
+                st.markdown(render_brief_card_html(st.session_state.intel_suggestion or ""), unsafe_allow_html=True)
                 section_options = [n.get("title", "Untitled") for n in rn] if rn else []
                 section_options.append("New section")
                 apply_to = st.selectbox("Apply to section", options=section_options, key="intel_apply_section")
@@ -1362,7 +1429,7 @@ with tabs[2]:  # INTELLIGENCE
                     st.session_state.research_summary_cache = {}
                 if cid in st.session_state.research_summary_cache:
                     st.markdown(sh_small("Company context (short)"), unsafe_allow_html=True)
-                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.research_summary_cache[cid]}</div></div>", unsafe_allow_html=True)
+                    st.markdown(render_brief_card_html(st.session_state.research_summary_cache.get(cid) or ""), unsafe_allow_html=True)
                 elif st.button("Get short context summary", key="intel_summary_btn"):
                     with st.spinner("Summarizing..."):
                         summary = summarize_research_to_context(comp, rn)
@@ -1386,10 +1453,8 @@ with tabs[2]:  # INTELLIGENCE
                             f"Source: Notion</div>",
                             unsafe_allow_html=True,
                         )
-                        st.markdown(
-                            f"<div style='font-size:13px;white-space:pre-wrap;font-family:monospace;'>{(note.get('content') or '')[:6000]}</div>",
-                            unsafe_allow_html=True,
-                        )
+                        _note_content = (note.get("content") or "")[:6000]
+                        st.markdown(markdown_to_html(_note_content), unsafe_allow_html=True)
 
                         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
                         st.markdown(sh_small("Edit / correct (local override)"), unsafe_allow_html=True)
@@ -1943,7 +2008,7 @@ with tabs[4]:  # ACTIONS
                             if advice:
                                 st.markdown(sh("AI REPLAN RECOMMENDATION"), unsafe_allow_html=True)
                                 st.markdown(
-                                    f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{advice}</div></div>",
+                                    render_brief_card_html(advice),
                                     unsafe_allow_html=True)
 
                 st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -2261,8 +2326,8 @@ with tabs[9]:  # ADVISOR
                     prompt,
                     [{"role": m["role"], "content": m["content"]} for m in st.session_state.advisor_messages[:-1]],
                 )
-            st.markdown(reply)
-        st.session_state.advisor_messages.append({"role": "assistant", "content": reply})
+            st.markdown(reply or "No response.")
+        st.session_state.advisor_messages.append({"role": "assistant", "content": reply or ""})
         
         # Auto-save conversation after each exchange
         save_advisor_conversation(user["id"], st.session_state.advisor_messages)

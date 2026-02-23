@@ -14,7 +14,7 @@ load_dotenv("keys.env")
 load_dotenv(".env")
 
 from config import NOTION_TOKEN
-from db_advisor import upsert_advisor_company
+from db_advisor import bulk_upsert_advisor_companies
 
 
 def _clean_notion_id(raw: str) -> str:
@@ -117,14 +117,19 @@ def sync_notion_advisor_to_db():
     all_results = []
     has_more = True
     cursor = None
+    progress = st.progress(0, text="Fetching from Notion...") if st else None
 
     while has_more:
+        if progress:
+            progress.progress(0.1, text=f"Fetching from Notion... ({len(all_results)} so far)")
         body = {"page_size": 100}
         if cursor:
             body["start_cursor"] = cursor
         try:
             res = _notion_post(f"databases/{NOTION_DATABASE_ID_2}/query", body)
         except Exception as e:
+            if progress:
+                progress.empty()
             return {"companies": 0, "error": str(e)}
         batch = res.get("results", [])
         all_results.extend(batch)
@@ -132,25 +137,33 @@ def sync_notion_advisor_to_db():
         cursor = res.get("next_cursor")
 
     if not all_results:
+        if progress:
+            progress.empty()
         return {"companies": 0}
 
-    cc = 0
-    progress = st.progress(0, text="Syncing Advisor DB...") if st else None
+    if progress:
+        progress.progress(0.3, text="Parsing pages...")
+    parsed = []
+    n = len(all_results)
     for i, page in enumerate(all_results):
-        if progress:
-            progress.progress((i + 1) / len(all_results), text=f"Syncing {i + 1}/{len(all_results)}...")
+        if progress and i > 0 and i % 50 == 0:
+            progress.progress(0.3 + 0.3 * (i / n), text=f"Parsing {i + 1}/{n}...")
         data = _parse_advisor_page(page)
-        if not data:
-            continue
-        try:
-            upsert_advisor_company(
-                domain=data["domain"],
-                parent_name=data["parent_name"],
-                notion_page_id=data.get("page_id"),
-            )
-            cc += 1
-        except Exception as e:
-            log.error("Failed to upsert advisor company %s: %s", data.get("domain"), e)
+        if data:
+            parsed.append({
+                "domain": data["domain"],
+                "parent_name": data["parent_name"],
+                "notion_page_id": data.get("page_id"),
+            })
+    if progress:
+        progress.progress(0.7, text=f"Saving {len(parsed)} companies...")
+    try:
+        cc = bulk_upsert_advisor_companies(parsed)
+    except Exception as e:
+        log.error("Bulk upsert advisor companies failed: %s", e)
+        if progress:
+            progress.empty()
+        return {"companies": 0, "error": str(e)}
     if progress:
         progress.empty()
     return {"companies": cc}

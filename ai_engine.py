@@ -107,8 +107,8 @@ def compute_lead_score(comp, ct=None):
 
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
-def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
-    """Build the full context system prompt."""
+def _build_system_prompt(comp, ct, uid, sid, research_notes=None, contact_web_context=None, company_spocs_web_context=None):
+    """Build the full context system prompt. contact_web_context = web-scraped person data; company_spocs_web_context = power-scraped SPOCs for the company (never Notion)."""
     summary, _ = get_session_summary(sid)
     summary_block = f"\n{summary}" if summary else "(None yet.)"
 
@@ -178,6 +178,15 @@ Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('r
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
 LinkedIn: {ct.get('linkedin','N/A')} | Location: {ct.get('city','')}, {ct.get('state','')} {ct.get('country','')}
 Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','not_contacted')}
+{f'''
+== CONTACT (web-verified — use this for CONTACT ASSESSMENT; do not say "Unknown contact" or infer from domain/WHOIS) ==
+{contact_web_context[:8000]}
+''' if contact_web_context and contact_web_context.strip() else ''}
+{f'''
+== COMPANY SPOCs (web-sourced, C-level only: CEO/CFO/COO/founder/board — no editors; do not use Notion) ==
+Use the names and LinkedIn URLs below explicitly in CONTACT ASSESSMENT and recommendations; do not summarize vaguely.
+{company_spocs_web_context[:10000]}
+''' if company_spocs_web_context and company_spocs_web_context.strip() else ''}
 
 == SESSION SUMMARY ==
 {summary_block}
@@ -210,19 +219,29 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
 
 # ── Auto-Brief (triggered on contact select) ──────────────────
 
-def auto_brief(comp, ct, uid, sid, research_notes=None):
+def auto_brief(comp, ct, uid, sid, research_notes=None, contact_web_context=None, company_spocs_web_context=None):
     """
     Generate an instant strategic brief when a contact is selected.
+    contact_web_context: optional web-scraped info about this person (from web search).
+    company_spocs_web_context: optional power-scraped SPOCs for this company (from web; never Notion).
+    When provided, CONTACT ASSESSMENT and power mapping must use web-sourced data only.
     Returns a concise analysis with recommended next steps.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(
+        comp, ct, uid, sid, research_notes,
+        contact_web_context=contact_web_context,
+        company_spocs_web_context=company_spocs_web_context,
+    )
 
+    contact_instruction = ""
+    if contact_web_context and contact_web_context.strip():
+        contact_instruction = " Base CONTACT ASSESSMENT on the web-verified contact context above (role, authority, public statements). Do not output generic or speculative lines like 'Unknown contact' or 'domain registration traces to'."
     prompt = f"""Produce a strategic outreach brief for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
 
 Use this exact structure — each section on its own line:
 
 SITUATION: [2-3 sentences. What does this company do, why are they an LH2 target, and what's their current state based on research?]
-CONTACT ASSESSMENT: [1-2 sentences. What is this person's role, decision-making authority, and why are they the right entry point?]
+CONTACT ASSESSMENT: [1-2 sentences. What is this person's role, decision-making authority, and why are they the right entry point?]{contact_instruction}
 RECOMMENDED NEXT MOVE: [One specific action. State: channel (LinkedIn/Email), exact timing with their timezone, and the angle/hook to use.]
 KEY TALKING POINT: [One concrete, research-backed hook. Not generic — cite a specific finding that would resonate with this person's role.]
 RISK: [One specific obstacle: e.g. gatekeeper, competitor relationship, bad timing, missing info.]"""
@@ -367,11 +386,11 @@ User request:
 
 Respond based on the request type:
 
-A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible.
+A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible. For leads or contacts, suggest only C-level/executive (CEO, CFO, COO, founder, president, board); do not suggest editors (editor in chief, managing editor). Use only web search / LinkedIn / company pages; do not reference the user's Notion or existing contact lists.
 
-B) "Research this topic/person" (no URL provided) → Draft a 1-2 paragraph research section based on what you can infer from context. Flag what you're inferring vs. what needs verification.
+B) "Research this topic/person" (no URL provided) → Draft a 1-2 paragraph research section based on what you can infer from context. Flag what you're inferring vs. what needs verification. For person/lead suggestions, recommend only C-level/executive (CEO, CFO, etc.); not editors. Base on publicly findable information (web, LinkedIn), not Notion or contacts.
 
-C) Pasted email address only → Output: "Contact to add: [email] — look up name, title, and role on LinkedIn before adding to SPOC list."
+C) Pasted email address only → Output: "Contact to add: [email] — look up name, title, and role via web/LinkedIn search before adding to SPOC list."
 
 If the request is ambiguous, ask one specific clarifying question. No preamble."""}],
         )
@@ -407,15 +426,15 @@ Start directly with the summary. No preamble or labels.
         return None
 
 
-def research_person_for_company(comp, research_notes, linkedin_url=None, email=None, notion_lead=None):
+def research_person_for_company(comp, research_notes, linkedin_url=None, email=None, person_name=None, web_search_results=None):
     """
     Run AI research on a person (SPOC) in the context of this company.
-    Uses company research notes (shortened to context), optional Notion lead data, and/or LinkedIn/email.
-    Returns a short markdown SPOC brief (2–4 paragraphs) to present alongside company notes.
+    Person lookup is always from the web: pass web_search_results from search_web_for_person
+    or search_web_for_person_by_name. Do not pass Notion or contact DB data for who the person is.
+    Returns a short markdown SPOC brief: role, public statements/inclinations, relevance to LH2.
     """
     domain = comp.get("domain") or "this company"
     company_line = f"Company: {domain} | {comp.get('publisher_type') or '—'} | {comp.get('content_type') or '—'}"
-    # Shortened company context from notes (cap total so we leave room for response)
     ctx_parts = [company_line]
     if research_notes:
         for n in research_notes[:6]:
@@ -425,17 +444,30 @@ def research_person_for_company(comp, research_notes, linkedin_url=None, email=N
                 ctx_parts.append(f"\n--- {title} ---\n{content}")
     company_context = "\n".join(ctx_parts) if len(ctx_parts) > 1 else company_line + "\n(No detailed research notes yet.)"
 
+    # Contact identifier only (no Notion). Prefer web_search_results as the source of truth.
     person_desc = []
-    if notion_lead:
-        person_desc.append(f"Notion record: {notion_lead.get('name') or '—'} | {notion_lead.get('email') or '—'} | {notion_lead.get('role') or '—'} | LinkedIn: {notion_lead.get('linkedin') or '—'} | {notion_lead.get('city') or ''}, {notion_lead.get('state') or ''} {notion_lead.get('country') or ''}.")
     if linkedin_url:
         person_desc.append(f"LinkedIn URL: {linkedin_url}")
     if email:
         person_desc.append(f"Email: {email}")
+    if person_name and person_name.strip():
+        person_desc.append(f"Person/role to research: {person_name.strip()}")
     if not person_desc:
-        person_desc.append("No contact identifier provided. Produce a generic key-contact brief for this company.")
+        person_desc.append("No contact identifier (LinkedIn, email, or name) provided.")
 
     person_block = " ".join(person_desc)
+    web_block = ""
+    if web_search_results and web_search_results.strip():
+        web_block = f"""
+WEB SEARCH RESULTS (primary source — use for role, job title, company, public statements, inclinations):
+{web_search_results[:8000]}
+"""
+    web_instruction = (
+        " Base your brief ONLY on the contact identifier above and the WEB SEARCH RESULTS. "
+        "Do not use or refer to the user's Notion or contact database. "
+        "Do not output generic or speculative contact assessments (e.g. 'Unknown contact', 'no SPOC identified', 'domain registration traces to...'). "
+        "If web results are thin, state what was found and what is still missing; do not invent role or authority from domain/WHOIS."
+    )
     lh2_knowledge = get_lh2_knowledge_context()
     lh2_block = ""
     if lh2_knowledge:
@@ -450,6 +482,8 @@ COMPANY CONTEXT:
 
 CONTACT DATA:
 {person_block}
+{web_block}
+{web_instruction}
 
 Write 2-4 short paragraphs:
 
@@ -461,7 +495,8 @@ Paragraph 3 — APPROACH: One specific outreach angle and one concrete talking p
 
 Paragraph 4 (only if data is thin) — GAPS: What we need to find (name, title, recent posts/activity) and where to look (LinkedIn, company about page, recent press).
 
-Tone: institutional, factual. No filler. Output only the brief."""
+Include: job role at the company, any public statements or inclinations (quotes, posts, interviews), and relevance to LH2 outreach.
+Tone: institutional, factual. No filler. No generic lines like 'Unknown contact' or 'domain registration traces to'. Output only the brief."""
 
     try:
         r = _ai().messages.create(
@@ -472,6 +507,72 @@ Tone: institutional, factual. No filler. Output only the brief."""
         return (r.content[0].text or "").strip()
     except Exception as e:
         log.error("research_person_for_company failed: %s", e)
+        return None
+
+
+def company_brief_with_power_mapping(comp, research_notes=None, company_spocs_web_context=None):
+    """
+    Generate a company-level comprehensive brief with power mapping and SPOCs table.
+    Caller should pass company_spocs_web_context from power_scrape_company_spocs(comp.get("domain")).
+    Output: brief summary, power mapping, and a table of at least 3 SPOCs (or 1-2 for very small companies)
+    with Name | Title | LinkedIn URL | Why they matter. Uses streaming to avoid long-request timeout.
+    """
+    domain = comp.get("domain") or "this company"
+    company_line = f"Company: {domain} | {comp.get('publisher_type') or '—'} | {comp.get('content_type') or '—'}"
+    ctx_parts = [company_line]
+    if research_notes:
+        for n in research_notes[:6]:
+            title = n.get("title") or "Section"
+            content = (n.get("content") or "")[:2000]
+            if content.strip():
+                ctx_parts.append(f"\n--- {title} ---\n{content}")
+    extra = comp.get("extra_data") or {}
+    if extra.get("research_full"):
+        ctx_parts.append("\n--- Research (excerpt) ---\n" + (extra.get("research_full") or "")[:6000])
+    company_context = "\n".join(ctx_parts)
+    spocs_block = ""
+    if company_spocs_web_context and company_spocs_web_context.strip():
+        spocs_block = f"""
+WEB-SOURCED SPOCs (C-level only; use for names, titles, LinkedIn URLs — do not invent):
+{company_spocs_web_context[:8000]}
+"""
+    lh2 = get_lh2_knowledge_context()
+    lh2_block = f"\nLH2 OFFERINGS (for relevance):\n{lh2[:6000]}" if lh2 else ""
+    prompt = f"""Produce a company-level brief and power mapping for {domain}.
+
+{company_context}
+{spocs_block}
+{lh2_block}
+
+Output exactly these sections in order. Use the WEB-SOURCED SPOCs above for real names and LinkedIn URLs.
+
+1. COMPREHENSIVE BRIEF (2-3 paragraphs)
+   Company overview, strategic fit for LH2, key structural signals, and recommended approach. Institutional tone.
+
+2. POWER MAPPING
+   Who has economic authority vs editorial/operational authority. Decision-making structure. Who to approach first and why. One short paragraph plus 2-4 bullets.
+
+3. SPOCs TABLE
+   Provide a pipe-formatted table with columns: Priority | Name | Title | LinkedIn URL | Why they matter
+   - Include at least 3 SPOCs when the company is substantive; for very small companies 1-2 is acceptable.
+   - Use only C-level/executive (CEO, CFO, COO, founder, president, board). No editors.
+   - Pull names and LinkedIn URLs from the WEB-SOURCED SPOCs block above; if a URL is present, include it in the table.
+   - If web data has fewer than 3 people, list what was found and note "Additional C-level contacts to identify via LinkedIn."
+
+Output only the three sections. No preamble. No markdown bold. Use pipe tables."""
+
+    try:
+        collected = []
+        with _ai().messages.stream(
+            model=AI_MODEL,
+            max_tokens=12000,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                collected.append(text)
+        return ("".join(collected)).strip()
+    except Exception as e:
+        log.error("company_brief_with_power_mapping failed: %s", e)
         return None
 
 
@@ -512,23 +613,35 @@ Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent',
 
 def advisor_chat(uid, user_message, history):
     """
-    One turn of Advisor chat. history is list of {"role": "user"|"assistant", "content": str}.
+    One turn of Advisor chat (non-streaming). Prefer advisor_chat_stream for long replies.
+    history is list of {"role": "user"|"assistant", "content": str}.
     Returns assistant reply text.
     """
-    system = get_advisor_system_prompt(uid)
-    messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
-    messages.append({"role": "user", "content": user_message})
+    chunks = list(advisor_chat_stream(uid, user_message, history))
+    return "".join(chunks).strip() if chunks else ""
+
+
+def advisor_chat_stream(uid, user_message, history):
+    """
+    Streaming Advisor chat. Yields text chunks; use for long-running requests
+    (e.g. person lookup) to avoid Anthropic's 10-minute non-streaming limit.
+    """
     try:
-        r = _ai().messages.create(
+        system = get_advisor_system_prompt(uid)
+        messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
+        messages.append({"role": "user", "content": user_message})
+        with _ai().messages.stream(
             model=AI_MODEL,
             max_tokens=25000,
             system=system,
             messages=messages,
-        )
-        return (r.content[0].text or "").strip()
+        ) as stream:
+            for text in stream.text_stream:
+                if text is not None:
+                    yield text if isinstance(text, str) else str(text)
     except Exception as e:
-        log.error("advisor_chat failed: %s", e)
-        return f"Sorry, I couldn't process that: {e}"
+        log.error("advisor_chat_stream failed: %s", e)
+        yield f"Sorry, I couldn't process that: {e}"
 
 
 

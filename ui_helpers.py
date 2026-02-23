@@ -56,7 +56,8 @@ button[kind="header"]{display:none!important}
 section[data-testid="stSidebar"]{min-width:21rem!important;max-width:21rem!important;transform:none!important;background:var(--surface)!important;border-right:1px solid var(--border)!important}
 section[data-testid="stSidebar"] > div{width:21rem!important;padding-top:16px!important}
 section[data-testid="stSidebar"][aria-expanded="false"]{transform:translateX(0)!important}
-[data-testid="stSidebarNav"]{display:block!important}
+/* Hide default Streamlit multipage nav (apps / page list) so only custom sidebar content shows */
+[data-testid="stSidebarNav"]{display:none!important}
 
 /* ── Tabs: transparent, 1px bottom border, active 2px accent ── */
 .stTabs [data-baseweb="tab-list"]{
@@ -235,8 +236,14 @@ div[data-testid="stFormSubmitButton"]>button:hover{background:#1d4ed8!important}
 .streamlit-expanderContent p{font-size:13px!important;line-height:1.5!important}
 
 /* ── Brief card ── */
-.brief-card{background:var(--surface);border:1px solid var(--border);border-left:2px solid var(--accent);padding:14px 18px;margin-bottom:12px;border-radius:var(--radius)}
+.brief-card{background:var(--surface);border:1px solid var(--border);border-left:2px solid var(--accent);padding:14px 18px;margin-bottom:8px;border-radius:var(--radius)}
+.brief-card.brief-card--compact{margin-bottom:6px;padding:12px 16px}
 .brief-card .brief-line{font-size:13px;line-height:1.6;color:var(--text)!important;margin-bottom:4px}
+.brief-card table,.markdown-rendered table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+.brief-card th,.brief-card td,.markdown-rendered th,.markdown-rendered td{border:1px solid var(--border);padding:8px 10px;text-align:left}
+.brief-card th,.markdown-rendered th{background:var(--surface-2);font-weight:600}
+.brief-card p,.markdown-rendered p{margin:0 0 8px 0;line-height:1.5}
+.brief-card p:last-child,.markdown-rendered p:last-child{margin-bottom:0}
 
 /* ── Companies tab: company rows + expanded contact block ── */
 .company-row{background:var(--surface);border:1px solid #e2e8f0;padding:12px 16px;border-radius:var(--radius)}
@@ -293,6 +300,31 @@ a:hover{text-decoration:underline!important}
 .sequence-step-divider{height:1px;background:#e2e8f0;margin:12px 0}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Markdown (tables) rendering ─────────────────────────────
+
+def markdown_to_html(text, max_length=None):
+    """Convert markdown (including pipe tables) to HTML. Safe for embedding in card divs."""
+    if not (text or "").strip():
+        return ""
+    s = (text or "").strip()
+    if max_length and len(s) > max_length:
+        s = s[:max_length] + "\n\n…"
+    try:
+        import markdown
+        return markdown.markdown(s, extensions=["tables"])
+    except Exception:
+        return (s or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
+
+def render_brief_card_html(text, compact=True):
+    """Return HTML for a brief card with markdown (and tables) rendered. Use with st.markdown(..., unsafe_allow_html=True)."""
+    if not (text or "").strip():
+        return "<div class='brief-card brief-card--compact' style='color:var(--text-2);'>(No content)</div>"
+    inner = markdown_to_html(text)
+    cls = "brief-card brief-card--compact" if compact else "brief-card"
+    return f"<div class='{cls}'>{inner}</div>"
 
 
 # ── Component Helpers ─────────────────────────────────────────

@@ -27,6 +27,8 @@ MAIN_FOLDER_ID = (os.getenv("MAIN_FOLDER_ID") or "").strip()  # Parent folder fo
 SIGNALHIRE_API_KEY = os.getenv("SIGNALHIRE_API_KEY", "")
 # Optional: base URL for your server that receives SignalHire callback (e.g. https://yourdomain.com)
 SIGNALHIRE_CALLBACK_BASE_URL = os.getenv("SIGNALHIRE_CALLBACK_BASE_URL", "").rstrip("/")
+# Optional: Tavily API for web search (person lookup, lead research). If set, person lookup uses web search instead of Notion.
+TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY") or "").strip()
 
 # ── Notion DB ID (sanitized) ─────────────────────────────────
 def _clean_notion_id(raw: str) -> str:

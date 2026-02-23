@@ -63,7 +63,15 @@ def _get_writable_sqlite_path():
     )
 
 
+def get_local_db_directory():
+    """Return the directory used for local SQLite DBs (same as main app). Advisor DB uses this so both DBs stay in one place."""
+    return _get_writable_sqlite_path()[0]
+
+
 # ── Engine + Session Factory ──────────────────────────────────
+
+_engine = None  # Set by init_db(); use get_engine() for code that needs the engine
+
 
 def _create_sqlite_engine():
     _db_dir, db_path = _get_writable_sqlite_path()
@@ -110,7 +118,15 @@ def init_db():
                 log.warning("Migration %s: %s", col, e)
     db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
     print(f"DB connected successfully ({db_type})")
+    global _engine
+    _engine = engine
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def get_engine():
+    """Return the shared engine. Calls init_db() to ensure it exists."""
+    init_db()
+    return _engine
 
 
 SessionFactory = init_db()

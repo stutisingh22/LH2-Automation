@@ -1,25 +1,52 @@
 """
 db_advisor.py — Database ops for Advisor (NOTION_DATABASE_ID_2) companies only.
 When DATABASE_URL is set (Supabase), uses the main DB so all data is in Supabase.
-Otherwise uses a separate SQLite file lh2_advisor.db.
+Otherwise uses lh2_advisor.db in the same directory as the main app's SQLite so both persist in one place.
 """
 
+import logging
 import os
+import shutil
 from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import StaticPool
 
-_DB_DIR = os.path.dirname(os.path.abspath(__file__))
-_ADVISOR_SQLITE_PATH = os.path.join(_DB_DIR, "lh2_advisor.db")
+log = logging.getLogger(__name__)
 
-# When using main DB (Supabase), we use models.AdvisorCompany; else models_advisor.AdvisorCompany
-_AdvisorModel = None
+_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+_OLD_ADVISOR_SQLITE_PATH = os.path.join(_DB_DIR, "lh2_advisor.db")
+
+# (session_factory, model_class, backend) so session and model always match the same backend
+_advisor_factory_and_model = None
+
+
+def _advisor_sqlite_path():
+    """Canonical path for lh2_advisor.db: same directory as main app SQLite so data stays in one place."""
+    from db_ops import get_local_db_directory
+    return os.path.join(get_local_db_directory(), "lh2_advisor.db")
+
+
+def _migrate_advisor_db_if_needed(canonical_path):
+    """If user had lh2_advisor.db next to this file, copy it to canonical path once so data is not lost."""
+    if canonical_path == _OLD_ADVISOR_SQLITE_PATH:
+        return
+    if os.path.exists(canonical_path):
+        return
+    if not os.path.exists(_OLD_ADVISOR_SQLITE_PATH) or os.path.getsize(_OLD_ADVISOR_SQLITE_PATH) == 0:
+        return
+    try:
+        shutil.copy2(_OLD_ADVISOR_SQLITE_PATH, canonical_path)
+        log.info("Migrated lh2_advisor.db to canonical path: %s", canonical_path)
+    except Exception as e:
+        log.warning("Could not migrate lh2_advisor.db: %s", e)
 
 
 def _advisor_engine():
+    path = _advisor_sqlite_path()
+    _migrate_advisor_db_if_needed(path)
     return create_engine(
-        f"sqlite:///{_ADVISOR_SQLITE_PATH}",
+        f"sqlite:///{path}",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -34,46 +61,53 @@ def init_db_advisor():
     yield engine
 
 
-# Lazy session factory (created on first use)
-_advisor_session_factory = None
+# Lazy (factory, model) pair; invalidated when backend (sqlite vs supabase) changes
+_advisor_factory_and_model = None
 
 
-def _get_advisor_session_factory():
-    global _advisor_session_factory, _AdvisorModel
-    if _advisor_session_factory is not None:
-        return _advisor_session_factory
+def _get_advisor_factory_and_model():
+    """Return (session_factory, model_class) for the current backend. Session and model always match."""
+    global _advisor_factory_and_model
     from config import DATABASE_URL
+    now_using = "supabase" if (DATABASE_URL and str(DATABASE_URL).strip()) else "sqlite"
+    if _advisor_factory_and_model is not None and _advisor_factory_and_model[2] == now_using:
+        return _advisor_factory_and_model[0], _advisor_factory_and_model[1]
+    _advisor_factory_and_model = None
     if DATABASE_URL:
-        from db_ops import init_db
+        from db_ops import get_engine
         from models import AdvisorCompany as MainAdvisorCompany
-        # Use same engine as main app so advisor_companies table lives in Supabase
-        _advisor_session_factory = sessionmaker(bind=init_db().bind, expire_on_commit=False)
-        _AdvisorModel = MainAdvisorCompany
+        factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
+        _advisor_factory_and_model = (factory, MainAdvisorCompany, "supabase")
     else:
         from models_advisor import BaseAdvisor, AdvisorCompany as SqliteAdvisorCompany
         from sqlalchemy import text
         engine = _advisor_engine()
         BaseAdvisor.metadata.create_all(engine)
-        # Add extra_data column if missing (existing SQLite DBs)
         try:
             with engine.connect() as conn:
                 conn.execute(text("ALTER TABLE advisor_companies ADD COLUMN extra_data TEXT"))
                 conn.commit()
         except Exception:
-            pass  # column already exists
-        _advisor_session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-        _AdvisorModel = SqliteAdvisorCompany
-    return _advisor_session_factory
+            pass
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+        _advisor_factory_and_model = (factory, SqliteAdvisorCompany, "sqlite")
+    return _advisor_factory_and_model[0], _advisor_factory_and_model[1]
+
+
+def _get_advisor_session_factory():
+    f, _ = _get_advisor_factory_and_model()
+    return f
 
 
 def _model():
-    _get_advisor_session_factory()
-    return _AdvisorModel
+    _, m = _get_advisor_factory_and_model()
+    return m
 
 
 @contextmanager
 def db_advisor():
-    session = scoped_session(_get_advisor_session_factory())
+    factory, _ = _get_advisor_factory_and_model()
+    session = scoped_session(factory)
     try:
         yield session
         session.commit()
@@ -117,6 +151,34 @@ def upsert_advisor_company(domain, parent_name, notion_page_id=None):
         s.add(row)
         s.flush()
         return row.id
+
+
+def bulk_upsert_advisor_companies(companies_list):
+    """
+    Upsert many companies in a single transaction. Much faster than calling
+    upsert_advisor_company() per row when syncing from Notion.
+    companies_list: list of dicts with keys domain, parent_name, notion_page_id (optional).
+    Returns number of companies upserted.
+    """
+    if not companies_list:
+        return 0
+    AdvisorCompany = _model()
+    with db_advisor() as s:
+        for data in companies_list:
+            domain = (data.get("domain") or "").strip()
+            parent_name = (data.get("parent_name") or "").strip() or "(No parent)"
+            notion_page_id = data.get("notion_page_id")
+            row = s.query(AdvisorCompany).filter_by(domain=domain, parent_name=parent_name).first()
+            if row:
+                if notion_page_id is not None:
+                    row.notion_page_id = notion_page_id
+            else:
+                s.add(AdvisorCompany(
+                    domain=domain,
+                    parent_name=parent_name,
+                    notion_page_id=notion_page_id,
+                ))
+        return len(companies_list)
 
 
 def get_advisor_company(advisor_id):
