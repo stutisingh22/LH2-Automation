@@ -198,18 +198,12 @@ def create_doc_in_drive(display_name, content):
     """
     Create a new Google Doc in the configured Drive folder (MAIN_FOLDER_ID) with the given content.
     display_name: used as the document title (e.g. "CompanyName - Brief" or "CompanyName - Research").
-    content: plain text or HTML body (HTML is stripped to plain text for the Docs API).
+    content: plain text or HTML. If HTML, upload as HTML and let Drive convert to Doc (preserves tables/formatting).
     Returns (file_id, webViewLink, error_message). On success error_message is None.
     """
     if not content and content is not None:
         content = ""
     content = (content or "").strip()
-    try:
-        from ui_helpers import is_html_content, html_to_plain_text
-        if is_html_content(content):
-            content = html_to_plain_text(content)
-    except Exception:
-        pass
     name = _sanitize_doc_name(display_name)
     if not name:
         name = "Document"
@@ -235,22 +229,43 @@ def create_doc_in_drive(display_name, content):
             "1) OAuth: Put credentials.json in the project folder, then run:  python drive_auth.py  (browser will open to sign in).\n\n"
             "2) Service account: Set GOOGLE_SERVICE_ACCOUNT_JSON in keys.env and share MAIN_FOLDER_ID with that account."
         )
-    docs_svc = _docs()
-    if not docs_svc:
-        log.warning("Docs service not available for create_doc_in_drive")
-        return None, None, "Google Docs service could not be initialized. Check your Drive credentials."
     try:
-        body = {"name": name, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
-        meta = svc.files().create(body=body, fields="id,webViewLink").execute()
+        from ui_helpers import is_html_content, html_to_plain_text
+        is_html = is_html_content(content)
+    except Exception:
+        is_html = False
+    try:
+        if is_html and content:
+            # Upload HTML and let Drive convert to Google Doc (preserves tables, headings, etc.)
+            from googleapiclient.http import MediaIoBaseUpload
+            if not content.strip().lower().startswith("<!doctype") and not content.strip().lower().startswith("<html"):
+                content = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>\n" + content + "\n</body></html>"
+            file_metadata = {"name": name, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
+            media = MediaIoBaseUpload(
+                io.BytesIO(content.encode("utf-8")),
+                mimetype="text/html",
+                resumable=False,
+            )
+            meta = svc.files().create(body=file_metadata, media_body=media, fields="id,webViewLink").execute()
+        else:
+            # Plain text: create empty Doc and insert text
+            docs_svc = _docs()
+            if not docs_svc:
+                return None, None, "Google Docs service could not be initialized. Check your Drive credentials."
+            body = {"name": name, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
+            meta = svc.files().create(body=body, fields="id,webViewLink").execute()
+            file_id = meta.get("id")
+            if not file_id:
+                return None, None, "Drive did not return a file ID."
+            text_to_insert = (html_to_plain_text(content) if is_html else content) or ""
+            if text_to_insert:
+                docs_svc.documents().batchUpdate(
+                    documentId=file_id,
+                    body={"requests": [{"insertText": {"location": {"index": 1}, "text": text_to_insert}}]},
+                ).execute()
         file_id = meta.get("id")
         if not file_id:
             return None, None, "Drive did not return a file ID."
-        if content:
-            # Google Docs: index 1 is the start of the document body
-            docs_svc.documents().batchUpdate(
-                documentId=file_id,
-                body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
-            ).execute()
         log.info("Created Drive doc: %s (id=%s)", name, file_id)
         return file_id, meta.get("webViewLink"), None
     except Exception as e:

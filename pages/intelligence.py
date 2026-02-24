@@ -8,7 +8,7 @@ import streamlit as st
 from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON
 from db_ops import get_company, get_contact, get_contacts, merge_company_extra_data, upsert_contact
 from notion_sync import create_notion_contact_page
-from research import fetch_research_from_notion, write_research_to_notion, write_brief_to_notion, run_research, research_command_ai
+from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
 from ai_engine import (
     auto_brief,
     research_person_for_company,
@@ -17,7 +17,7 @@ from ai_engine import (
     get_local_time,
 )
 from drive_sync import list_drive_files, create_doc_in_drive
-from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html
+from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 from app_helpers import select_contact, get_current_notion_database_id
 
 
@@ -72,12 +72,10 @@ def render():
                                 merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
                                 _doc_name = comp.get("domain") or comp.get("name", "Company")
                                 fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
-                                if page_id:
-                                    write_brief_to_notion(page_id, _brief, comp.get("domain", ""))
                                 if fid:
-                                    st.toast("Brief saved to DB, Notion, and Drive.")
+                                    st.toast("Brief saved to DB and Drive.")
                                 else:
-                                    st.toast("Brief saved to DB" + (" and Notion." if page_id else ".") + (" Drive: " + (err_drive or "failed") if err_drive else ""))
+                                    st.toast("Brief saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
                                 st.rerun()
 
             st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
@@ -123,20 +121,48 @@ def render():
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             else:
-                st.caption("Edit as HTML below; Save writes to DB, Notion, and Drive. Use the AI command to generate or extend.")
+                st.caption("Edit in place (or by section below); Save writes to DB and Drive only.")
                 editor_html = research_display_to_editor_html(research_full_display)
-                st.markdown("<div class='research-doc-view'>" + (editor_html or "(No content)") + "</div>", unsafe_allow_html=True)
-                with st.expander("Edit as HTML", expanded=False):
-                    html_edited = st.text_area(
-                        "HTML source",
-                        value=editor_html or "",
-                        height=min(400, 200 + (editor_html or "").count("\n") * 12),
-                        key=f"research_html_edit_{cid}",
-                        label_visibility="collapsed",
-                        placeholder="<p>Paste or edit HTML here. Save to write to DB, Notion, and Drive.</p>",
-                    )
-                current_research_text = (html_edited or "").strip() or research_full_display
-                if st.button("💾 Save", key=f"save_research_all_{cid}", use_container_width=True, help="Save research to DB, Notion, and Drive"):
+                use_wysiwyg = False
+                try:
+                    from streamlit_iframe_event import st_iframe_event
+                    use_wysiwyg = len(editor_html or "") < 150000
+                except Exception:
+                    pass
+                wysiwyg_key = f"research_wysiwyg_html_{cid}"
+                if use_wysiwyg:
+                    initial_for_editor = st.session_state.get(wysiwyg_key) or editor_html or ""
+                    editor_page = wysiwyg_editor_html_page(initial_for_editor)
+                    import urllib.parse
+                    data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(editor_page)
+                    event_value = st_iframe_event(data_url, key=f"wysiwyg_editor_{cid}", default_width="100%")
+                    if event_value is not None:
+                        st.session_state[wysiwyg_key] = event_value
+                        st.rerun()
+                    current_research_text = (st.session_state.get(wysiwyg_key) or editor_html or "").strip() or research_full_display
+                    st.caption("Edit above, then click **Done editing** in the frame. Use **Save** below to write to DB and Drive.")
+                else:
+                    plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
+                    sections = split_research_into_sections(plain_for_split)
+                    section_edits = []
+                    for i, (sec_title, body) in enumerate(sections):
+                        section_html = research_display_to_editor_html(body) if body else ""
+                        with st.expander(sec_title, expanded=(i == 0)):
+                            st.markdown("<div class='research-doc-view'>" + (section_html or "(No content)") + "</div>", unsafe_allow_html=True)
+                            with st.expander("Edit as HTML", expanded=False):
+                                edited = st.text_area(
+                                    "HTML",
+                                    value=section_html or "",
+                                    height=min(220, 120 + (section_html or "").count("\n") * 12),
+                                    key=f"research_sec_{cid}_{i}",
+                                    label_visibility="collapsed",
+                                    placeholder="<p>Edit HTML for this section.</p>",
+                                )
+                            section_edits.append((edited or "").strip() or section_html or "")
+                    current_research_text = "\n\n".join(
+                        f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
+                    ).strip() if section_edits else research_full_display
+                if st.button("💾 Save", key=f"save_research_all_{cid}", use_container_width=True, help="Save research to DB and Drive (proper format with tables)"):
                     _research = (current_research_text or "").strip()
                     if not _research:
                         st.warning("No research to save.")
@@ -144,17 +170,14 @@ def render():
                         merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
                         _doc_name = comp.get("domain") or comp.get("name", "Company")
                         fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _research)
-                        ok_notion = True
-                        if page_id and len(_research) >= 500:
-                            with st.spinner("Writing to Notion…"):
-                                ok_notion = write_research_to_notion(page_id, _research, comp.get("domain", ""))
-                            if ok_notion and cid in st.session_state.get("research_cache", {}):
-                                del st.session_state.research_cache[cid]
+                        if cid in st.session_state.get("research_cache", {}):
+                            del st.session_state.research_cache[cid]
                         st.session_state.auto_brief_text = None
-                        if fid and ok_notion:
-                            st.toast("Research saved to DB, Notion, and Drive.")
+                        st.session_state.pop(wysiwyg_key, None)
+                        if fid:
+                            st.toast("Research saved to DB and Drive (with tables and formatting).")
                         else:
-                            st.toast("Research saved to DB" + (", Notion" if ok_notion else "") + (", Drive" if fid else "") + ".")
+                            st.toast("Research saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
                         st.rerun()
 
                 st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
@@ -192,6 +215,7 @@ def render():
                             to_save = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
                             merge_company_extra_data(cid, {"research_full": to_save, "research_full_updated_at": datetime.utcnow().isoformat()})
                             st.session_state.auto_brief_text = None
+                            st.session_state.pop(wysiwyg_key, None)
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
                             st.success("Document replaced.")
@@ -203,6 +227,7 @@ def render():
                             merged = f"{current}\n\n{append_html}" if current else (append_html or current)
                             merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                             st.session_state.auto_brief_text = None
+                            st.session_state.pop(wysiwyg_key, None)
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
                             st.success("Appended.")

@@ -440,6 +440,57 @@ def research_display_to_editor_html(text):
     return markdown_to_html(s)
 
 
+def wysiwyg_editor_html_page(initial_html):
+    """
+    Build a self-contained HTML page for WYSIWYG editing (contenteditable).
+    When the user clicks "Done editing", the page posts the editable div's innerHTML
+    to the parent via postMessage, which streamlit-iframe-event can capture.
+    Returns full document as string. initial_html is base64-encoded in the page to avoid escaping issues.
+    """
+    import base64
+    payload = base64.b64encode((initial_html or "").encode("utf-8")).decode("ascii")
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 12px; background: #fff; color: #1a1a1a; font-size: 14px; line-height: 1.5; }
+  #ed { min-height: 320px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
+  #ed:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
+  #ed table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  #ed th, #ed td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
+  #ed th { background: #f1f5f9; font-weight: 600; }
+  #ed h1, #ed h2, #ed h3 { margin: 12px 0 6px; }
+  .done { margin-top: 12px; padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  .done:hover { background: #1d4ed8; }
+</style></head>
+<body>
+  <div id="ed" contenteditable="true"></div>
+  <button class="done" id="btn">Done editing</button>
+  <div id="p" data-c="%s" style="display:none"></div>
+  <script>
+    (function() {
+      var p = document.getElementById("p");
+      var data = p.getAttribute("data-c") || "";
+      try {
+        if (data) {
+          var raw = atob(data);
+          var bytes = new Uint8Array([].map.call(raw, function(c) { return c.charCodeAt(0); }));
+          var dec = (typeof TextDecoder !== "undefined")
+            ? new TextDecoder().decode(bytes)
+            : decodeURIComponent(escape(raw));
+          document.getElementById("ed").innerHTML = dec;
+        } else { document.getElementById("ed").innerHTML = "<p>(No content)</p>"; }
+      } catch (e) { document.getElementById("ed").innerHTML = "<p>(No content)</p>"; }
+      document.getElementById("btn").onclick = function() {
+        var html = document.getElementById("ed").innerHTML;
+        if (window.parent && window.parent !== window)
+          window.parent.postMessage(html, "*");
+      };
+    })();
+  </script>
+</body></html>""" % payload
+
+
 # ── Markdown (tables) rendering ─────────────────────────────
 
 def markdown_to_html(text, max_length=None):
