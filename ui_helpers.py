@@ -239,9 +239,11 @@ div[data-testid="stFormSubmitButton"]>button:hover{background:#1d4ed8!important}
 .brief-card{background:var(--surface);border:1px solid var(--border);border-left:2px solid var(--accent);padding:14px 18px;margin-bottom:8px;border-radius:var(--radius)}
 .brief-card.brief-card--compact{margin-bottom:6px;padding:12px 16px}
 .brief-card .brief-line{font-size:13px;line-height:1.6;color:var(--text)!important;margin-bottom:4px}
-.brief-card table,.markdown-rendered table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
-.brief-card th,.brief-card td,.markdown-rendered th,.markdown-rendered td{border:1px solid var(--border);padding:8px 10px;text-align:left}
-.brief-card th,.markdown-rendered th{background:var(--surface-2);font-weight:600}
+.brief-card table,.markdown-rendered table,.research-table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}
+.brief-card th,.brief-card td,.markdown-rendered th,.markdown-rendered td,.research-table th,.research-table td{border:1px solid var(--border);padding:8px 12px;text-align:left;vertical-align:top}
+.brief-card th,.markdown-rendered th,.research-table th{background:var(--surface-2);font-weight:600;color:var(--text)!important}
+.research-table thead tr{border-bottom:2px solid var(--border-strong)}
+.research-table tbody tr:nth-child(even){background:var(--surface-2)}
 .brief-card p,.markdown-rendered p{margin:0 0 8px 0;line-height:1.5}
 .brief-card p:last-child,.markdown-rendered p:last-child{margin-bottom:0}
 
@@ -300,6 +302,142 @@ a:hover{text-decoration:underline!important}
 .sequence-step-divider{height:1px;background:#e2e8f0;margin:12px 0}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Markdown tables → proper HTML (no separator row) ─────────
+
+def _parse_md_table_line(line):
+    """Split a pipe table line into cells. Line must start and end with |."""
+    line = (line or "").strip()
+    if not line or not line.startswith("|") or not line.endswith("|"):
+        return None
+    parts = [p.strip() for p in line[1:-1].split("|")]
+    return parts
+
+
+def _is_separator_line(line):
+    """True if line looks like |---||---| (markdown table separator)."""
+    if not line or not line.strip().startswith("|"):
+        return False
+    inner = line.strip()[1:-1].replace(" ", "")
+    return len(inner) > 0 and all(c in "-:" for c in inner)
+
+
+def markdown_tables_to_html(text):
+    """
+    Replace markdown pipe tables in text with proper HTML <table> (thead + tbody).
+    No separator row in output — professional tables only.
+    Returns the string with table blocks replaced by HTML. Use with st.markdown(..., unsafe_allow_html=True).
+    """
+    import re
+    if not (text or "").strip():
+        return text or ""
+    lines = (text or "").split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Start of a potential table: line looks like | a | b | c |
+        if re.match(r"^\s*\|.+\|\s*$", line):
+            table_lines = []
+            j = i
+            while j < len(lines) and re.match(r"^\s*\|.+\|\s*$", lines[j]):
+                table_lines.append(lines[j])
+                j += 1
+            # Parse: first line = header, next line if separator skip, rest = body
+            if len(table_lines) >= 2:
+                header_cells = _parse_md_table_line(table_lines[0])
+                if header_cells:
+                    body_start = 1
+                    if len(table_lines) > 1 and _is_separator_line(table_lines[1]):
+                        body_start = 2
+                    body_rows = []
+                    for r in range(body_start, len(table_lines)):
+                        cells = _parse_md_table_line(table_lines[r])
+                        if cells and len(cells) == len(header_cells):
+                            body_rows.append(cells)
+                    if body_rows or body_start == 2:
+                        def esc(s):
+                            return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+                        html = ['<table class="research-table">']
+                        html.append("<thead><tr>")
+                        for c in header_cells:
+                            html.append(f"<th>{esc(c)}</th>")
+                        html.append("</tr></thead>")
+                        if body_rows:
+                            html.append("<tbody>")
+                            for row in body_rows:
+                                html.append("<tr>")
+                                for c in row:
+                                    html.append(f"<td>{esc(c)}</td>")
+                                html.append("</tr>")
+                            html.append("</tbody>")
+                        html.append("</table>")
+                        out.append("".join(html))
+                        i = j
+                        continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def render_research_with_proper_tables(text):
+    """
+    Convert markdown tables in text to HTML tables, then return the result
+    for use with st.markdown(..., unsafe_allow_html=True). Rest of text stays as-is
+    (Streamlit will render markdown around the HTML).
+    """
+    if not (text or "").strip():
+        return "(No content)"
+    return markdown_tables_to_html(text)
+
+
+# ── Option B: HTML as stored format ─────────────────────────────
+
+def is_html_content(s):
+    """Return True if s looks like HTML (e.g. stored research_full from Option B)."""
+    if not (s or "").strip():
+        return False
+    s = (s or "").strip()
+    return s.lstrip().startswith("<") and ("</" in s or "/>" in s)
+
+
+def html_to_plain_text(html, max_length=None):
+    """
+    Strip HTML to plain text for Drive Docs API, AI context, etc.
+    Preserves newlines for block structure (e.g. after </p>, </tr>, </li>).
+    """
+    if not (html or "").strip():
+        return ""
+    import re
+    text = (html or "").strip()
+    # Block elements → newline
+    text = re.sub(r"</(p|div|tr|li|h[1-6]|br)\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    # Remove all remaining tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode common entities
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    # Normalize whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    text = text.strip()
+    if max_length and len(text) > max_length:
+        text = text[:max_length] + "\n\n…"
+    return text
+
+
+def research_display_to_editor_html(text):
+    """
+    Convert research_full from DB to HTML for the main (editable) view.
+    If already HTML, return as-is. Else treat as markdown and convert to full HTML.
+    """
+    if not (text or "").strip():
+        return ""
+    s = (text or "").strip()
+    if is_html_content(s):
+        return s
+    return markdown_to_html(s)
 
 
 # ── Markdown (tables) rendering ─────────────────────────────

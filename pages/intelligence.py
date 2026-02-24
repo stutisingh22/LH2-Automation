@@ -8,7 +8,7 @@ import streamlit as st
 from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON
 from db_ops import get_company, get_contact, get_contacts, merge_company_extra_data, upsert_contact
 from notion_sync import create_notion_contact_page
-from research import fetch_research_from_notion, write_research_to_notion, write_brief_to_notion, run_research, split_research_into_sections, research_command_ai
+from research import fetch_research_from_notion, write_research_to_notion, write_brief_to_notion, run_research, research_command_ai
 from ai_engine import (
     auto_brief,
     research_person_for_company,
@@ -17,7 +17,7 @@ from ai_engine import (
     get_local_time,
 )
 from drive_sync import list_drive_files, create_doc_in_drive
-from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm
+from ui_helpers import sh_small, crd, fmt_v, bdg, has_perm, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html
 from app_helpers import select_contact, get_current_notion_database_id
 
 
@@ -57,9 +57,7 @@ def render():
                         with st.spinner("Generating brief..."):
                             brief = auto_brief(comp, ct, user.get("id"), st.session_state.session_id, rn)
                             st.session_state.auto_brief_text = brief or "Could not generate brief."
-                    st.markdown("<div class='brief-card'>", unsafe_allow_html=True)
-                    st.markdown(st.session_state.auto_brief_text or "")
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(st.session_state.auto_brief_text or "") + "</div>", unsafe_allow_html=True)
                     brief_btn1, brief_btn2 = st.columns(2)
                     with brief_btn1:
                         if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
@@ -105,7 +103,7 @@ def render():
                 research_full_display = research_full_db
 
             if not research_full_display and not rn:
-                st.caption("No research yet. Use **Run deep research** below (same prompt as the Notion research bot). Saves to Command Center and optionally to Notion.")
+                st.caption("No research yet. Use **Run deep research** below (same prompt as the Notion research bot). Saves to Command Center only until you click **Save** (DB + Notion + Drive).")
                 if has_perm("can_use_strategist") and st.button("🔬 Run deep research", key="run_res_doc", type="primary"):
                     err_msg = None
                     result = None
@@ -118,32 +116,26 @@ def render():
                         err_msg = str(e)
                     if result:
                         merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
-                        if page_id:
-                            with st.spinner("Writing to Notion…"):
-                                write_research_to_notion(page_id, result, comp.get("domain", ""))
                         if cid in st.session_state.get("research_cache", {}):
                             del st.session_state.research_cache[cid]
-                        st.success("Research saved. Edit below and Save to store in Command Center.")
+                        st.success("Research saved to Command Center. Edit below if needed, then click **Save** to write to DB, Notion, and Drive.")
                         st.rerun()
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             else:
-                st.caption("Edit by section (same structure as Notion) and click Save to store in DB. Use the AI command below to generate or extend.")
-                sections = split_research_into_sections(research_full_display)
-                section_bodies = []
-                for i, (sec_title, body) in enumerate(sections):
-                    with st.expander(sec_title, expanded=(i == 0)):
-                        edited = st.text_area(
-                            "Content",
-                            value=body,
-                            height=min(180, 120 + body.count("\n") * 18),
-                            key=f"research_sec_{cid}_{i}",
-                            label_visibility="collapsed",
-                            placeholder="(No content for this section.)",
-                        )
-                        section_bodies.append(edited)
-                # Current full document = concatenation of section edits (for AI command and Save)
-                current_research_text = "\n\n".join(section_bodies).strip() if section_bodies else research_full_display
+                st.caption("Edit as HTML below; Save writes to DB, Notion, and Drive. Use the AI command to generate or extend.")
+                editor_html = research_display_to_editor_html(research_full_display)
+                st.markdown("<div class='research-doc-view'>" + (editor_html or "(No content)") + "</div>", unsafe_allow_html=True)
+                with st.expander("Edit as HTML", expanded=False):
+                    html_edited = st.text_area(
+                        "HTML source",
+                        value=editor_html or "",
+                        height=min(400, 200 + (editor_html or "").count("\n") * 12),
+                        key=f"research_html_edit_{cid}",
+                        label_visibility="collapsed",
+                        placeholder="<p>Paste or edit HTML here. Save to write to DB, Notion, and Drive.</p>",
+                    )
+                current_research_text = (html_edited or "").strip() or research_full_display
                 if st.button("💾 Save", key=f"save_research_all_{cid}", use_container_width=True, help="Save research to DB, Notion, and Drive"):
                     _research = (current_research_text or "").strip()
                     if not _research:
@@ -180,7 +172,8 @@ def render():
                     run_cmd = st.button("Run", key=f"research_cmd_run_{cid}", type="primary", use_container_width=True)
                 if run_cmd and (research_cmd or "").strip():
                     with st.spinner("Running command…"):
-                        cmd_result = research_command_ai(comp.get("domain", ""), current_research_text or research_full_display, research_cmd.strip())
+                        current_for_ai = (html_to_plain_text(current_research_text) if is_html_content(current_research_text) else current_research_text) or research_full_display
+                        cmd_result = research_command_ai(comp.get("domain", ""), current_for_ai, research_cmd.strip())
                     if cmd_result:
                         st.session_state["research_command_result"] = cmd_result
                         st.session_state["research_command_result_cid"] = cid
@@ -196,7 +189,8 @@ def render():
                     app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
                     with app_col1:
                         if st.button("Replace document", key=f"cmd_replace_{cid}", use_container_width=True):
-                            merge_company_extra_data(cid, {"research_full": cmd_result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            to_save = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
+                            merge_company_extra_data(cid, {"research_full": to_save, "research_full_updated_at": datetime.utcnow().isoformat()})
                             st.session_state.auto_brief_text = None
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
@@ -205,7 +199,8 @@ def render():
                     with app_col2:
                         if st.button("Append to document", key=f"cmd_append_{cid}", use_container_width=True):
                             current = (current_research_text or research_full_display or "").strip()
-                            merged = f"{current}\n\n{cmd_result}" if current else cmd_result
+                            append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
+                            merged = f"{current}\n\n{append_html}" if current else (append_html or current)
                             merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                             st.session_state.auto_brief_text = None
                             st.session_state.pop("research_command_result", None)

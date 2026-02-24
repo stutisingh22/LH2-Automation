@@ -198,12 +198,18 @@ def create_doc_in_drive(display_name, content):
     """
     Create a new Google Doc in the configured Drive folder (MAIN_FOLDER_ID) with the given content.
     display_name: used as the document title (e.g. "CompanyName - Brief" or "CompanyName - Research").
-    content: plain text body.
+    content: plain text or HTML body (HTML is stripped to plain text for the Docs API).
     Returns (file_id, webViewLink, error_message). On success error_message is None.
     """
     if not content and content is not None:
         content = ""
     content = (content or "").strip()
+    try:
+        from ui_helpers import is_html_content, html_to_plain_text
+        if is_html_content(content):
+            content = html_to_plain_text(content)
+    except Exception:
+        pass
     name = _sanitize_doc_name(display_name)
     if not name:
         name = "Document"

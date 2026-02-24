@@ -170,7 +170,7 @@ def claim_task(page_id):
 def build_prompt(domain, context):
     return f"""{context}
 
-You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. This research is produced by you (Claude) only — no external search APIs. Completely ignore any contact details or SPOC data stored in Notion; do not use or reference the user's Notion database or contact lists. Use only your knowledge of publicly available information about the company and its stakeholders.
+You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. Produce the full research from scratch — do not extract or use any existing research content from Notion or elsewhere. This research is produced by you (Claude) only, using only the target domain and the guidelines below. No external search APIs. Completely ignore any contact details or SPOC data stored in Notion. Use only your knowledge of publicly available information about the company and its stakeholders.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
 It must demonstrate analytical rigor, structural clarity, economic reasoning, and decisive judgment.
 This is not descriptive research.
@@ -209,7 +209,7 @@ Formatting Rules (MANDATORY):
 
 Use section dividers exactly as written below (the === and --- lines).
 Use proper paragraph spacing between all sections and subsections.
-Tables MUST be proper Markdown: (1) header row with pipe-separated column names, (2) immediately on the next line a separator row with dashes (e.g. |---||---||---|), (3) then one data row per item. Never output a table without the separator row.
+TABLES — Every table in the document must be a proper Markdown table: (1) header row with pipe-separated column names, (2) immediately on the next line a separator row with dashes (e.g. |-----------|------------|-----------|), (3) then one data row per item. This applies to ALL tables: Eligibility (0), Business Model (1C), Output Metrics (2B), Content Mix (2C), Stakeholder Table (3C), and any other. Never output a table without the separator row.
 No markdown bold (no ** or __).
 No emojis.
 No decorative commentary.
@@ -220,16 +220,17 @@ Keep bullet points tight. Each bullet should deliver one discrete insight. No ru
 Target Domain: {domain}
 
 ============================================================
-0. ELIGIBILITY CHECK
+0. ELIGIBILITY CHECK (MANDATORY GATE)
 ============================================================
 
-Provide a proper Markdown table (header row, then separator row |---||---||---|, then one row per criterion):
+Provide a proper Markdown table — header row, then separator row (|---|---|), then exactly one data row per criterion:
+
 | Criterion | Assessment | Pass/Fail |
 |-----------|------------|-----------|
-| Paywall exposure | ... | Pass/Fail |
-| Content structure | ... | Pass/Fail |
-| Category alignment | ... | Pass/Fail |
-| Pod revenue plausibility | ... | Pass/Fail |
+| Content behind a paywall or subscription meter? | [Your assessment] | Pass/Fail |
+| Content style: factual, attribution-led, POV-light? | [Your assessment] | Pass/Fail |
+| Category alignment with LH2's supported universe? | [Your assessment] | Pass/Fail |
+| Can a 5–15 person pod plausibly move revenue? | [Your assessment] | Pass/Fail |
 
 Evaluate these four criteria:
 
@@ -268,8 +269,10 @@ Revenue concentration risks
 Platform dependency exposure
 
 1C. Business Model Breakdown
-Provide a properly formatted table:
+Provide a proper Markdown table (header, separator row, then data rows):
 | Revenue Stream | Est. Weight | Mechanics | Margin Profile | Structural Risk |
+|----------------|-------------|-----------|----------------|-----------------|
+| [row] | ... | ... | ... | ... |
 After the table, provide one paragraph (3-5 sentences) explaining the critical nuance for Accelerate.
 
 1D. Operational Pressure Points
@@ -299,8 +302,8 @@ Then provide 2-3 paragraphs of synthesis.
 ============================================================
 
 2A. Methodology (3-4 sentences)
-2B. Output Metrics table: | Metric | Estimate | Confidence |
-2C. Content Mix table: | Section | Volume Share | Content Type | Templated? | Pod-Compatible? |
+2B. Output Metrics table — proper Markdown (header, separator row, data rows): | Metric | Estimate | Confidence |
+2C. Content Mix table — proper Markdown (header, separator row, data rows): | Section | Volume Share | Content Type | Templated? | Pod-Compatible? |
 2D. Execution Gap Diagnosis with subsections:
 Under-covered Categories (3-5 bullets)
 Throughput Constraints (3-4 bullets)
@@ -313,11 +316,11 @@ Single Biggest Bottleneck (one sentence)
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-Identify leads and stakeholders using only your knowledge of publicly available information (LinkedIn, company pages, press, job postings). Completely ignore any contact details or SPOC data stored in Notion — do not use or reference the user's Notion database or contact lists. Recommend the most appropriate leads based on role, authority, and relevance.
+Conduct proper SPOC research using your knowledge of publicly available information (LinkedIn, company pages, press, executive profiles, job postings). Completely ignore any contact details or SPOC data stored in Notion. This section must be highly aligned to the company context: ownership structure, content type, strategic signal, and execution gaps already identified in this research. Do not use generic placeholders — name real individuals where knowable, with titles and roles that match this specific company's structure. The stakeholder table must reflect who actually holds economic and editorial authority at this target, based on your knowledge of the web.
 
 3A. Organizational Reality bullets
 3B. Identified Power Center (1-2 paragraphs)
-3C. Ranked Stakeholder Table: | Priority | Name | Title | Economic Authority | Why They Matter | Core Incentive |
+3C. Ranked Stakeholder Table — proper Markdown (header, separator row, data rows): | Priority | Name | Title | Economic Authority | Why They Matter | Core Incentive |. Each row must be a real SPOC aligned to this company's context.
 3D. Contact Logic bullets including Who to Avoid
 
 ============================================================

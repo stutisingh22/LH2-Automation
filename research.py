@@ -145,13 +145,14 @@ def _fetch_table_text(table_id):
 # ══════════════════════════════════════════════════════════════
 
 def write_research_to_notion(page_id, research_text, domain):
-    """Write research output as child pages in Notion."""
+    """Write research output as child pages in Notion. Accepts plain text or HTML (normalized to text for sectioning)."""
     if not research_text or len(research_text.strip()) < 500:
         log.error("Research too short to write for %s", domain)
         _set_research_status(page_id, "Failed")
         return False
-
-    notes = _split_research(research_text)
+    from ui_helpers import is_html_content, html_to_plain_text
+    body_for_split = html_to_plain_text(research_text) if is_html_content(research_text) else research_text
+    notes = _split_research(body_for_split)
     log.info("Writing %d research notes for %s", len(notes), domain)
 
     created = 0
@@ -204,9 +205,10 @@ def _set_research_status(page_id, status):
 
 
 def write_brief_to_notion(page_id, brief_text, domain):
-    """Append the brief as blocks to the company page in Notion."""
+    """Append the brief as blocks to the company page in Notion. Accepts plain text or HTML."""
     if not page_id or not NOTION_TOKEN or not (brief_text or "").strip():
         return False
+    from ui_helpers import is_html_content
     try:
         blocks = [
             {
@@ -215,7 +217,8 @@ def write_brief_to_notion(page_id, brief_text, domain):
                 "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Brief"}}]},
             },
         ]
-        blocks.extend(_text_to_blocks((brief_text or "").strip()))
+        bt = (brief_text or "").strip()
+        blocks.extend(_html_to_blocks(bt) if is_html_content(bt) else _text_to_blocks(bt))
         for i in range(0, len(blocks), NOTION_BATCH_LIMIT):
             batch = blocks[i : i + NOTION_BATCH_LIMIT]
             r = requests.patch(
@@ -250,15 +253,116 @@ def _text_to_blocks(text):
     return blocks
 
 
+def _html_to_blocks(html):
+    """
+    Convert HTML to Notion blocks (paragraph, heading_1/2/3, bulleted_list_item).
+    Tables are emitted as one paragraph per row (pipe-separated cells).
+    """
+    from html.parser import HTMLParser
+    import re
+
+    class _BlockParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.blocks = []
+            self._current = []
+            self._tag = None
+            self._in_table = False
+            self._row_cells = []
+            self._cell_text = []
+            self._last_tag = None
+
+        def _flush_text(self):
+            if not self._current:
+                return
+            text = "".join(self._current).strip()
+            self._current = []
+            if not text or not text.strip():
+                return
+            text = re.sub(r"\s+", " ", text).strip()
+            level = self._tag or "paragraph"
+            if len(text) > NOTION_TEXT_LIMIT:
+                for i in range(0, len(text), NOTION_TEXT_LIMIT):
+                    self.blocks.append((level, text[i:i + NOTION_TEXT_LIMIT]))
+            else:
+                self.blocks.append((level, text))
+
+        def handle_starttag(self, tag, attrs):
+            self._last_tag = tag
+            if tag in ("p", "div", "h1", "h2", "h3", "li"):
+                self._flush_text()
+                self._tag = {"h1": "heading_1", "h2": "heading_2", "h3": "heading_3", "li": "bulleted_list_item"}.get(tag, "paragraph")
+            elif tag == "tr":
+                self._flush_text()
+                self._tag = None
+                self._in_table = True
+                self._row_cells = []
+                self._cell_text = []
+            elif tag in ("td", "th") and self._in_table:
+                self._cell_text = []
+            elif tag == "br":
+                self._current.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in ("p", "div", "h1", "h2", "h3"):
+                self._flush_text()
+                self._tag = None
+            elif tag == "li":
+                self._flush_text()
+                self._tag = None
+            elif tag == "tr" and self._in_table:
+                row_text = " | ".join(c.strip() for c in self._row_cells if c.strip())
+                if row_text:
+                    self.blocks.append(("paragraph", row_text))
+                self._row_cells = []
+            elif tag in ("td", "th") and self._in_table:
+                cell = "".join(self._cell_text).strip()
+                self._row_cells.append(cell)
+            elif tag == "table":
+                self._in_table = False
+
+        def handle_data(self, data):
+            if self._in_table and (self._last_tag in ("td", "th")):
+                self._cell_text.append(data)
+            else:
+                self._current.append(data)
+
+    try:
+        p = _BlockParser()
+        p.feed(html)
+        p._flush_text()
+    except Exception as e:
+        log.warning("_html_to_blocks parse failed, falling back to text: %s", e)
+        from ui_helpers import html_to_plain_text
+        return _text_to_blocks(html_to_plain_text(html))
+
+    out = []
+    for block_type, content in p.blocks:
+        if not (content or "").strip():
+            continue
+        content = (content or "").strip()[:NOTION_TEXT_LIMIT]
+        if block_type == "heading_1":
+            out.append({"object": "block", "type": "heading_1", "heading_1": {"rich_text": [{"type": "text", "text": {"content": content}}]}})
+        elif block_type == "heading_2":
+            out.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": content}}]}})
+        elif block_type == "heading_3":
+            out.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": content}}]}})
+        elif block_type == "bulleted_list_item":
+            out.append({"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": content}}]}})
+        else:
+            out.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": content}}]}})
+    return out
+
+
 # ══════════════════════════════════════════════════════════════
 # RESEARCH PROMPT
 # ══════════════════════════════════════════════════════════════
 
 def build_research_prompt(domain, context=""):
-    """The full institutional-grade research prompt."""
+    """The full institutional-grade research prompt. Research is produced from scratch by Claude; no extraction from Notion."""
     return f"""{context}
 
-You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. This research is produced by you (Claude) only — no external search APIs. Completely ignore any contact details or SPOC data stored in Notion; do not use or reference the user's Notion database or contact lists. Use only your knowledge of publicly available information about the company and its stakeholders.
+You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. Produce the full research from scratch — do not extract or use any existing research content from Notion or elsewhere. This research is produced by you (Claude) only, using only the target domain and the guidelines below. No external search APIs. Completely ignore any contact details or SPOC data stored in Notion. Use only your knowledge of publicly available information about the company and its stakeholders.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
 It must demonstrate analytical rigor, structural clarity, economic reasoning, and decisive judgment.
 This is not descriptive research.
@@ -297,7 +401,11 @@ Formatting Rules (MANDATORY):
 
 Use section dividers exactly as written below (the === and --- lines).
 Use proper paragraph spacing between all sections and subsections.
-Tables MUST be proper Markdown: (1) header row with pipe-separated column names, (2) immediately on the next line a separator row with dashes (e.g. |---||---||---|), (3) then one data row per item. Never output a table without the separator row.
+TABLES — Every table in the document must be a proper Markdown table so it renders correctly:
+  - Line 1: header row with pipe-separated column names (e.g. | Criterion | Assessment | Pass/Fail |)
+  - Line 2: separator row with dashes under each column (e.g. |-----------|------------|-----------|)
+  - Line 3+: one data row per item, same pipe format. No table may omit the separator row.
+This applies to ALL tables: Eligibility (0), Business Model (1C), Output Metrics (2B), Content Mix (2C), Stakeholder Table (3C), and any other table. Output only proper Markdown tables.
 No markdown bold (no ** or __).
 No emojis.
 No decorative commentary.
@@ -308,16 +416,17 @@ Keep bullet points tight. Each bullet should deliver one discrete insight. No ru
 Target Domain: {domain}
 
 ============================================================
-0. ELIGIBILITY CHECK
+0. ELIGIBILITY CHECK (MANDATORY GATE)
 ============================================================
 
-Provide a proper Markdown table (header row, then separator row |---||---||---|, then one row per criterion):
+Provide a proper Markdown table — header row, then separator row (|---|---|), then exactly one data row per criterion. Example format:
+
 | Criterion | Assessment | Pass/Fail |
 |-----------|------------|-----------|
-| Paywall exposure | ... | Pass/Fail |
-| Content structure | ... | Pass/Fail |
-| Category alignment | ... | Pass/Fail |
-| Pod revenue plausibility | ... | Pass/Fail |
+| Content behind a paywall or subscription meter? | [Your assessment] | Pass/Fail |
+| Content style: factual, attribution-led, POV-light? | [Your assessment] | Pass/Fail |
+| Category alignment with LH2's supported universe? | [Your assessment] | Pass/Fail |
+| Can a 5–15 person pod plausibly move revenue? | [Your assessment] | Pass/Fail |
 
 Evaluate these four criteria:
 
@@ -326,9 +435,9 @@ Content structure: Is the content factual, attribution-led, and POV-light? Or is
 Category alignment with LH2 doctrine: Does the domain's primary content category fall within LH2's supported universe? Be specific about which category.
 Pod revenue plausibility: Can a 5-15 person deployment plausibly move revenue? Consider the revenue model (programmatic vs. lead-gen vs. affiliate vs. subscription) and whether more content = more revenue in a roughly linear way.
 
-After the table:
+After the table, on a new line:
 Eligibility Verdict: Proceed / Proceed with Caveats / Stop
-Provide one short paragraph (3-5 sentences) explaining structural caveats. If the revenue model is not purely programmatic, explain how this changes the Accelerate framing. If the content carries elevated accuracy requirements (legal, medical, financial), note the operational implications.
+Then provide one short paragraph (3-5 sentences) explaining structural caveats. If the revenue model is not purely programmatic, explain how this changes the Accelerate framing. If the content carries elevated accuracy requirements (legal, medical, financial), note the operational implications.
 If Verdict = Stop, note the disqualifying factor but COMPLETE THE FULL ANALYSIS REGARDLESS. LH2 needs the research for internal records even if the target is not a fit.
 
 ============================================================
@@ -337,7 +446,7 @@ If Verdict = Stop, note the disqualifying factor but COMPLETE THE FULL ANALYSIS 
 
 1A. Ownership & Structure
 1B. Scale Indicators
-1C. Business Model Breakdown
+1C. Business Model Breakdown — use a proper Markdown table (header, separator row |---|, then data rows): Revenue Stream, Est. Weight, Mechanics, etc.
 1D. Operational Pressure Points
 
 ------------------------------------------------------------
@@ -351,19 +460,19 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 ============================================================
 
 2A. Methodology
-2B. Output Metrics table
-2C. Content Mix table
+2B. Output Metrics — proper Markdown table (header, separator row, data rows)
+2C. Content Mix — proper Markdown table (header, separator row, data rows)
 2D. Execution Gap Diagnosis
 
 ============================================================
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-Identify leads and stakeholders using only your knowledge of publicly available information (LinkedIn, company pages, press, job postings). Completely ignore any contact details or SPOC data stored in Notion — do not use or reference the user's Notion database or contact lists. Recommend the most appropriate leads based on role, authority, and relevance.
+Conduct proper SPOC research using your knowledge of publicly available information (LinkedIn, company pages, press, executive profiles, job postings). Completely ignore any contact details or SPOC data stored in Notion. This section must be highly aligned to the company context: ownership structure, content type, strategic signal, and execution gaps already identified in this research. Do not use generic placeholders — name real individuals where knowable, with titles and roles that match this specific company's structure. The stakeholder table must reflect who actually holds economic and editorial authority at this target, based on your knowledge of the web.
 
 3A. Organizational Reality
 3B. Identified Power Center
-3C. Ranked Stakeholder Table
+3C. Ranked Stakeholder Table — proper Markdown table (header, separator row, data rows). Each row must be a real SPOC: name, exact title, economic authority, why they matter, aligned to this company's context.
 3D. Contact Logic
 
 ============================================================

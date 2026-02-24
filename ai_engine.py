@@ -130,7 +130,14 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
     research_context = ""
     extra = comp.get("extra_data") or {}
     if extra.get("research_full"):
-        research_context = "\n--- Research Document ---\n" + ((extra["research_full"] or "")[:18000])
+        raw = (extra["research_full"] or "")[:18000]
+        try:
+            from ui_helpers import is_html_content, html_to_plain_text
+            if is_html_content(raw):
+                raw = html_to_plain_text(raw, max_length=18000)
+        except Exception:
+            pass
+        research_context = "\n--- Research Document ---\n" + raw
     if not research_context:
         overrides = extra.get("research_overrides") or {}
         if research_notes:
