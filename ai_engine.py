@@ -185,6 +185,8 @@ Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('r
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
 LinkedIn: {ct.get('linkedin','N/A')} | Location: {ct.get('city','')}, {ct.get('state','')} {ct.get('country','')}
 Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','not_contacted')}
+{f'''== CHILD COMPANY RULE ==
+This target is a child company/brand. Stick to the leadership of THIS child company (the target domain). Prioritize decision-makers at the child; do not default to parent-company leadership. All outreach and strategy must focus on the child's leadership.''' if comp.get('_child_company_focus') else ''}
 
 == SESSION SUMMARY ==
 {summary_block}
