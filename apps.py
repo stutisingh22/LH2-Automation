@@ -74,6 +74,7 @@ from research import fetch_research_from_notion, run_research, research_command_
 from linkedin_lookup import (
     extract_contacts_from_brief_research,
     run_linkedin_lookup_for_contacts,
+    get_linkedin_url_for_contact,
 )
 from contact_timeline import build_contact_timeline
 from signalhire_enrichment import (
@@ -1639,6 +1640,13 @@ with tabs[3]:  # STRATEGIST
             # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
             st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
             linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
+
+            def _persist_linkedin_results(lst):
+                if is_advisor_strategist and _aid_s:
+                    merge_advisor_company_extra_data(_aid_s, {"linkedin_lookup_results": lst})
+                else:
+                    merge_company_extra_data(cid, {"linkedin_lookup_results": lst})
+
             do_linkedin_lookup = st.button(
                 "🔗 Extract contacts & find LinkedIn URLs",
                 key="btn_linkedin_lookup",
@@ -1673,19 +1681,100 @@ with tabs[3]:  # STRATEGIST
                     results = run_linkedin_lookup_for_contacts(contacts, progress_callback=_prog)
                     progress.empty()
                     st.session_state[linkedin_results_key] = results
+                    _persist_linkedin_results(results)
                     st.success(f"Found {sum(1 for r in results if r.get('linkedin_url'))} LinkedIn URLs for {len(results)} contacts.")
                     st.rerun()
+
+            _saved_list = None
+            if is_advisor_strategist and _aid_s:
+                _adv = get_advisor_company(_aid_s)
+                _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
+            else:
+                _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
+            if _saved_list and isinstance(_saved_list, list) and linkedin_results_key not in st.session_state:
+                st.session_state[linkedin_results_key] = _saved_list
+
             if linkedin_results_key in st.session_state:
                 results_list = st.session_state[linkedin_results_key]
                 with st.expander(f"Contacts with LinkedIn URLs ({len(results_list)})", expanded=True):
                     if is_advisor_strategist:
                         st.caption("Add to company saves under the selected **child** (this company).")
+                    add_input_key = f"linkedin_add_input_{research_cache_key}"
+                    add_val = st.text_input(
+                        "Add or recheck",
+                        placeholder="Add: Jane Smith | Jane — CEO. Re-check URL: recheck Jane Smith",
+                        key=add_input_key,
+                        label_visibility="collapsed",
+                    )
+                    add_btn = st.button("Add to list & find LinkedIn", key=f"linkedin_add_btn_{research_cache_key}", use_container_width=False)
+                    if add_btn and (add_val or "").strip():
+                        raw = (add_val or "").strip()
+                        raw_lower = raw.lower()
+                        default_company = (comp.get("domain") or comp.get("name") or "")
+
+                        recheck_match = re.search(r"(?:recheck|re-check|find again)\s+(.+)", raw_lower, re.IGNORECASE)
+                        if recheck_match:
+                            name_asked = recheck_match.group(1).strip()
+                            for idx, entry in enumerate(results_list):
+                                entry_name = (entry.get("name") or "").strip()
+                                if name_asked in entry_name or entry_name.lower() == name_asked.lower():
+                                    with st.spinner(f"Re-checking LinkedIn for {entry_name}…"):
+                                        new_url = get_linkedin_url_for_contact(entry_name, entry.get("company") or default_company)
+                                    new_list = list(results_list)
+                                    new_list[idx] = {**new_list[idx], "linkedin_url": new_url or ""}
+                                    st.session_state[linkedin_results_key] = new_list
+                                    _persist_linkedin_results(new_list)
+                                    st.success(f"Updated LinkedIn for **{entry_name}**." if new_url else "No new URL found.")
+                                    st.rerun()
+                            st.warning(f"No contact named \"{name_asked}\" in the list.")
+                        else:
+                            to_add = []
+                            if " and " in raw:
+                                for part in raw.split(" and "):
+                                    part = part.strip()
+                                    if not part:
+                                        continue
+                                    if " — " in part:
+                                        nm, rest = part.split(" — ", 1)
+                                        to_add.append((nm.strip(), rest.strip(), default_company))
+                                    elif ", " in part:
+                                        p = re.split(r"\s*,\s*", part, 1)
+                                        to_add.append((p[0].strip(), "", default_company if len(p) <= 1 else (p[1] or "").strip()))
+                                    else:
+                                        to_add.append((part, "", default_company))
+                            else:
+                                if " — " in raw:
+                                    nm, rest = raw.split(" — ", 1)
+                                    to_add.append((nm.strip(), rest.strip(), default_company))
+                                elif ", " in raw:
+                                    p = re.split(r"\s*,\s*", raw, 1)
+                                    nm = (p[0] or "").strip()
+                                    company = (p[1] or "").strip() if len(p) > 1 else default_company
+                                    to_add.append((nm, "", company))
+                                else:
+                                    to_add.append((raw, "", default_company))
+
+                            new_list = list(results_list)
+                            for name, role, company in to_add:
+                                name = (name or "").strip()
+                                if not name:
+                                    continue
+                                with st.spinner(f"Finding LinkedIn for {name}…"):
+                                    new_url = get_linkedin_url_for_contact(name, company)
+                                new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
+                            if new_list != results_list:
+                                st.session_state[linkedin_results_key] = new_list
+                                _persist_linkedin_results(new_list)
+                                st.success(f"Added {len(to_add)} contact(s).")
+                                st.rerun()
+                    st.caption("Add: name, or \"Name — Role\", or \"Name, Company\". Re-check: **recheck** or **find again** + name.")
+                    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
                     for i, r in enumerate(results_list):
                         name = (r.get("name") or "").strip() or "—"
                         role = (r.get("role") or "").strip()
                         company_display = r.get("company") or "—"
                         url = (r.get("linkedin_url") or "").strip()
-                        row_col1, row_col2 = st.columns([3, 1])
+                        row_col1, row_col2, row_col3, row_col4 = st.columns([2, 0.8, 0.8, 0.4])
                         with row_col1:
                             if url:
                                 link_html = f"<a href='{url}' target='_blank' rel='noopener' style='font-size:12px;'>Profile</a>"
@@ -1698,17 +1787,31 @@ with tabs[3]:  # STRATEGIST
                                 f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div></div>",
                                 unsafe_allow_html=True)
                         with row_col2:
+                            if name != "—":
+                                if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", use_container_width=True, help="Re-run search for this person"):
+                                    with st.spinner(f"Searching again for {name}…"):
+                                        new_url = get_linkedin_url_for_contact(name, r.get("company") or comp.get("domain") or "")
+                                    new_list = list(results_list)
+                                    new_list[i] = {**new_list[i], "linkedin_url": new_url or ""}
+                                    st.session_state[linkedin_results_key] = new_list
+                                    _persist_linkedin_results(new_list)
+                                    st.success("Updated." if new_url else "No new URL found.")
+                                    st.rerun()
+                        with row_col3:
                             if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
-                                upsert_contact(
-                                    cid,
-                                    name,
-                                    role=role or None,
-                                    linkedin=url or None,
-                                )
+                                upsert_contact(cid, name, role=role or None, linkedin=url or None)
                                 st.success(f"Added **{name}** to company.")
+                                st.rerun()
+                        with row_col4:
+                            if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
+                                new_list = [x for j, x in enumerate(results_list) if j != i]
+                                st.session_state[linkedin_results_key] = new_list
+                                _persist_linkedin_results(new_list)
+                                st.success("Removed from list.")
                                 st.rerun()
                 if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=False):
                     st.session_state.pop(linkedin_results_key, None)
+                    _persist_linkedin_results([])
                     st.rerun()
 
             if run_enrich:
