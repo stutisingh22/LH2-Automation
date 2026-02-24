@@ -427,16 +427,19 @@ Provide a proper Markdown table — header row, then separator row (|---|---|), 
 | Content style: factual, attribution-led, POV-light? | [Your assessment] | Pass/Fail |
 | Category alignment with LH2's supported universe? | [Your assessment] | Pass/Fail |
 | Can a 5–15 person pod plausibly move revenue? | [Your assessment] | Pass/Fail |
+| Content type: Evergreen (search-based) vs Everyday (news, latest updates)? | [Your assessment] | Pass/Fail |
 
-Evaluate these four criteria:
+Evaluate these five criteria:
 
 Paywall exposure: Is content free and open, or gated behind subscription/registration?
 Content structure: Is the content factual, attribution-led, and POV-light? Or is it opinion-driven, editorial, personality-dependent?
 Category alignment with LH2 doctrine: Does the domain's primary content category fall within LH2's supported universe? Be specific about which category.
 Pod revenue plausibility: Can a 5-15 person deployment plausibly move revenue? Consider the revenue model (programmatic vs. lead-gen vs. affiliate vs. subscription) and whether more content = more revenue in a roughly linear way.
+Content type: Is the site primarily Evergreen (search-driven, evergreens, how-to, reference) or Everyday (news, latest updates, breaking, time-sensitive)? Pass = Everyday. Fail = Evergreen. Base this on the type of content they actually publish.
 
 After the table, on a new line:
 Eligibility Verdict: Proceed / Proceed with Caveats / Stop
+Verdict must be Proceed or Proceed with Caveats only when the content type is Everyday. If the site is primarily Evergreen (search-based), Verdict = Stop.
 Then provide one short paragraph (3-5 sentences) explaining structural caveats. If the revenue model is not purely programmatic, explain how this changes the Accelerate framing. If the content carries elevated accuracy requirements (legal, medical, financial), note the operational implications.
 If Verdict = Stop, note the disqualifying factor but COMPLETE THE FULL ANALYSIS REGARDLESS. LH2 needs the research for internal records even if the target is not a fit.
 

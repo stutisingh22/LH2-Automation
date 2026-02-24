@@ -264,8 +264,6 @@ def render():
                         plan = generate_outreach_plan(comp, ct, user["id"], sid, sender_name, rn)
                         if plan:
                             st.session_state.pending_plan = plan
-                        else:
-                            st.error("Could not generate plan.")
 
             # ── Pending plan preview ──
             if st.session_state.pending_plan:

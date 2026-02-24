@@ -287,44 +287,86 @@ def merge_company_extra_data(company_id: int, patch: dict):
         return True
 
 
-def get_all_companies():
+def get_all_companies(exclude_advisor_shadows=True):
+    """Return all companies. When exclude_advisor_shadows=True (default), exclude companies that are shadows for Media Houses children."""
     with db() as s:
-        return [_comp_dict(c) for c in s.query(Company).order_by(Company.name).all()]
+        rows = s.query(Company).order_by(Company.name).all()
+        out = [_comp_dict(c) for c in rows]
+    if exclude_advisor_shadows:
+        out = [c for c in out if not (c.get("extra_data") or {}).get("source_advisor_company_id")]
+    return out
 
 
-def search_companies(q):
+def get_or_create_shadow_company_for_advisor(advisor_company_id):
+    """
+    Get or create a (company_id, contact_id) in the main DB that represents this Media Houses child,
+    so Strategist/Actions/Timeline can run the same as for Independent contacts.
+    Returns (company_id, contact_id) or (None, None) if advisor company not found.
+    """
+    from db_advisor import get_advisor_company
+    adv = get_advisor_company(advisor_company_id)
+    if not adv:
+        return None, None
+    aid = int(advisor_company_id)
+    with db() as s:
+        for c in s.query(Company).all():
+            ed = c.extra_data if isinstance(c.extra_data, dict) else {}
+            if ed.get("source_advisor_company_id") == aid:
+                company_id = c.id
+                ct = s.query(Contact).filter_by(company_id=company_id, name="Leadership").first()
+                if ct:
+                    return company_id, ct.id
+                ct = Contact(company_id=company_id, name="Leadership", role="Leadership")
+                s.add(ct)
+                s.flush()
+                return company_id, ct.id
+        domain = f"__advisor_{aid}"
+        name = (adv.get("domain") or adv.get("parent_name") or "Child").strip() or "Child"
+        c = Company(domain=domain, name=name, extra_data={"source_advisor_company_id": aid})
+        s.add(c)
+        s.flush()
+        company_id = c.id
+        ct = Contact(company_id=company_id, name="Leadership", role="Leadership")
+        s.add(ct)
+        s.flush()
+        return company_id, ct.id
+
+
+def search_companies(q, exclude_advisor_shadows=True):
     """
     Fuzzy search: matches partial domains, names, and strips TLD suffixes.
-    Searching "nofilmschool" will find "nofilmschool.com".
+    When exclude_advisor_shadows=True (default), excludes Media Houses shadow companies.
     """
     with db() as s:
         q = q.strip()
         if not q:
-            return [_comp_dict(c) for c in s.query(Company).order_by(Company.name).all()]
-
-        like = f"%{q}%"
-        # Also try without common TLDs in case user types "site.com" but stored as "site"
-        q_no_tld = q
-        for tld in (".com", ".in", ".org", ".net", ".co", ".io", ".us", ".uk"):
-            if q.lower().endswith(tld):
-                q_no_tld = q[:-len(tld)]
-                break
-        like2 = f"%{q_no_tld}%"
-
-        return [
-            _comp_dict(c)
-            for c in s.query(Company)
-            .filter(
-                or_(
-                    Company.domain.ilike(like),
-                    Company.name.ilike(like),
-                    Company.domain.ilike(like2),
-                    Company.name.ilike(like2),
+            rows = s.query(Company).order_by(Company.name).all()
+            out = [_comp_dict(c) for c in rows]
+        else:
+            like = f"%{q}%"
+            q_no_tld = q
+            for tld in (".com", ".in", ".org", ".net", ".co", ".io", ".us", ".uk"):
+                if q.lower().endswith(tld):
+                    q_no_tld = q[:-len(tld)]
+                    break
+            like2 = f"%{q_no_tld}%"
+            out = [
+                _comp_dict(c)
+                for c in s.query(Company)
+                .filter(
+                    or_(
+                        Company.domain.ilike(like),
+                        Company.name.ilike(like),
+                        Company.domain.ilike(like2),
+                        Company.name.ilike(like2),
+                    )
                 )
-            )
-            .order_by(Company.name)
-            .all()
-        ]
+                .order_by(Company.name)
+                .all()
+            ]
+        if exclude_advisor_shadows:
+            out = [c for c in out if not (c.get("extra_data") or {}).get("source_advisor_company_id")]
+        return out
 
 
 # ── Contacts ──────────────────────────────────────────────────
@@ -567,6 +609,9 @@ def get_user_sessions(user_id):
             if comp:
                 d["company_domain"] = comp.domain
                 d["company_name"] = comp.name
+                ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                if ed:
+                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
             if ct:
                 d["contact_name"] = ct.name
                 d["contact_role"] = ct.role
@@ -744,6 +789,8 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
                 comp = s.get(Company, sess.company_id)
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
                 if sess.contact_id:
                     ct = s.get(Contact, sess.contact_id)
                     if ct:

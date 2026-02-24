@@ -40,6 +40,7 @@ from config import (
 from db_ops import (
     create_user, authenticate, get_user, get_all_users,
     get_company, get_all_companies, search_companies,
+    get_or_create_shadow_company_for_advisor,
     upsert_company, upsert_contact,
     get_contacts, get_contact, update_contact_status, update_contact,
     get_or_create_session, get_session, get_sessions_for_company,
@@ -571,7 +572,12 @@ with st.sidebar:
         "text-transform:uppercase;color:var(--text-3);margin:12px 0 10px;'>Recent</div>",
         unsafe_allow_html=True)
 
-    sessions = get_user_sessions(user["id"])
+    _sessions_all = get_user_sessions(user["id"])
+    if st.session_state.get("notion_companies_source") == "Media Houses":
+        _sessions_all = [s for s in _sessions_all if s.get("source_advisor_company_id")]
+    else:
+        _sessions_all = [s for s in _sessions_all if not s.get("source_advisor_company_id")]
+    sessions = _sessions_all
     for sx in sessions[:15]:
         is_active = st.session_state.session_id == sx["id"]
         mc2 = get_message_count(sx["id"])
@@ -613,7 +619,7 @@ with st.sidebar:
                 st.session_state.sel_company = sx["company_id"]
                 st.session_state.sel_contact = sx["contact_id"]
                 st.session_state.session_id = sx["id"]
-                st.session_state.sel_advisor_company_id = None
+                st.session_state.sel_advisor_company_id = sx.get("source_advisor_company_id")
                 st.session_state.chat_messages = load_messages(sx["id"])
                 st.session_state.auto_brief_text = None
                 st.session_state.pending_plan = None
@@ -811,11 +817,17 @@ with tabs[1]:  # COMPANIES
                                 unsafe_allow_html=True)
                         with row_col2:
                             if st.button("→", key=f"adv_go_{ch['id']}", type="secondary" if is_sel_adv else "primary", use_container_width=True):
-                                st.session_state.sel_company = None
-                                st.session_state.sel_contact = None
-                                st.session_state.session_id = None
                                 st.session_state.sel_advisor_company_id = ch["id"]
-                                st.session_state.chat_messages = []
+                                shadow_cid, shadow_ctid = get_or_create_shadow_company_for_advisor(ch["id"])
+                                if shadow_cid and shadow_ctid:
+                                    st.session_state.sel_company = shadow_cid
+                                    st.session_state.sel_contact = shadow_ctid
+                                    st.session_state.session_id = get_or_create_session(shadow_cid, shadow_ctid, user["id"])
+                                else:
+                                    st.session_state.sel_company = None
+                                    st.session_state.sel_contact = None
+                                    st.session_state.session_id = None
+                                st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
                                 st.session_state.auto_brief_text = None
                                 st.session_state.pending_plan = None
                                 st.session_state.current_tab = "INTELLIGENCE"
@@ -1482,14 +1494,8 @@ with tabs[3]:  # STRATEGIST
     sid = st.session_state.session_id
     _src_s = st.session_state.get("notion_companies_source", "Independent")
     _aid_s = st.session_state.get("sel_advisor_company_id")
-    if _src_s == "Media Houses" and _aid_s:
-        st.markdown(
-            "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
-            "<div style='font-size:24px;opacity:.2;margin-bottom:12px;'>◆</div>"
-            "<div style='font-size:14px;font-weight:500;'>Strategist is contact-based</div>"
-            "<div style='font-size:13px;margin-top:6px;'>You have a Media House child selected. For strategy and outreach plans, switch to <b>Independent</b> companies, add this domain and contacts, then select a contact.</div></div>",
-            unsafe_allow_html=True)
-    elif not cid or not ctid or not sid:
+    is_advisor_strategist = (_src_s == "Media Houses" and _aid_s and cid and ctid and sid)
+    if not cid or not ctid or not sid:
         st.markdown(
             "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
             "<div style='font-size:24px;opacity:.2;margin-bottom:12px;'>◆</div>"
@@ -1499,11 +1505,19 @@ with tabs[3]:  # STRATEGIST
     elif not has_perm("can_use_strategist"):
         st.warning("Strategist access required.")
     else:
-        comp = get_company(cid)
-        ct = get_contact(ctid)
+        if is_advisor_strategist:
+            adv_comp = get_advisor_company(_aid_s)
+            comp = {"id": cid, "domain": adv_comp.get("domain", "—"), "name": adv_comp.get("domain") or "—", "publisher_type": adv_comp.get("parent_name") or "—", "content_type": "—", "monthly_visits": None, "research_status": "—", "notion_page_id": adv_comp.get("notion_page_id"), "extra_data": adv_comp.get("extra_data") or {}} if adv_comp else None
+            ct = get_contact(ctid)
+            comp["_child_company_focus"] = True
+        else:
+            comp = get_company(cid)
+            ct = get_contact(ctid)
         if not comp or not ct:
             st.error("Not found.")
         else:
+            # Research cache: Intelligence uses advisor_{id} for Media Houses, cid for Independent
+            research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
             # ── FROM / TO selectors ──
             sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
             with sel1:
@@ -1711,12 +1725,10 @@ with tabs[3]:  # STRATEGIST
             with q5:
                 if st.button("🎯 Full Plan", key="gen_plan", use_container_width=True):
                     with st.spinner("Building outreach plan..."):
-                        rn = st.session_state.research_cache.get(cid, [])
+                        rn = st.session_state.research_cache.get(research_cache_key, [])
                         plan = generate_outreach_plan(comp, ct, user["id"], sid, sender_name, rn)
                         if plan:
                             st.session_state.pending_plan = plan
-                        else:
-                            st.error("Could not generate plan.")
 
             # ── Pending plan preview ──
             if st.session_state.pending_plan:
@@ -1809,7 +1821,7 @@ with tabs[3]:  # STRATEGIST
                     st.markdown(prompt)
                 save_message(sid, "user", prompt)
                 st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
-                rn = st.session_state.research_cache.get(cid, [])
+                rn = st.session_state.research_cache.get(research_cache_key, [])
                 with st.chat_message("assistant"):
                     chunks = []
                     ph = st.empty()
@@ -1843,12 +1855,14 @@ with tabs[4]:  # ACTIONS
     ctid = st.session_state.sel_contact
     _src_a = st.session_state.get("notion_companies_source", "Independent")
     _aid_a = st.session_state.get("sel_advisor_company_id")
-    if _src_a == "Media Houses" and _aid_a:
-        st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Actions are contact-based. Switch to <b>Independent</b> companies and select a company + contact to log and plan actions.</div>", unsafe_allow_html=True)
-    elif not sid:
+    if not sid:
         st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Select a company and contact first.</div>", unsafe_allow_html=True)
     else:
-        comp = get_company(cid) or {}
+        if _src_a == "Media Houses" and _aid_a:
+            adv_a = get_advisor_company(_aid_a) or {}
+            comp = {"domain": adv_a.get("domain", "—"), "name": adv_a.get("domain") or "—", "extra_data": adv_a.get("extra_data") or {}}
+        else:
+            comp = get_company(cid) or {}
         ct = get_contact(ctid) or {}
         st.markdown(sh(f"ACTIONS — {comp.get('domain','')} / {ct.get('name','')}"), unsafe_allow_html=True)
 
@@ -1958,7 +1972,7 @@ with tabs[4]:  # ACTIONS
                     remaining = [s for s in seq["steps"] if s["status"] in ("planned", "scheduled", "drafted")]
                     if trigger_action and remaining:
                         with st.spinner("AI replanning remaining steps..."):
-                            rn = st.session_state.research_cache.get(cid, [])
+                            rn = st.session_state.research_cache.get(research_cache_key, [])
                             advice = replan_on_response(
                                 comp, ct, user["id"], sid, trigger_action,
                                 trigger_action.get("response_content", ""), remaining, rn)
@@ -2039,9 +2053,7 @@ with tabs[5]:  # TIMELINE
     cid = st.session_state.sel_company
     _src_t = st.session_state.get("notion_companies_source", "Independent")
     _aid_t = st.session_state.get("sel_advisor_company_id")
-    if _src_t == "Media Houses" and _aid_t:
-        st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Timeline is for Independent company/contact actions. Switch to Independent and select a company + contact.</div>", unsafe_allow_html=True)
-    elif not cid:
+    if not cid:
         st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Select a company first.</div>", unsafe_allow_html=True)
     else:
         comp = get_company(cid) or {}
@@ -2068,8 +2080,12 @@ with tabs[5]:  # TIMELINE
 
 with tabs[6]:  # CALENDAR
     st.markdown(sh("UPCOMING ACTIONS"), unsafe_allow_html=True)
-    # Always show all scheduled events (not scoped to selected company/contact)
     tl = get_timeline_actions(limit=2000)
+    _cal_src = st.session_state.get("notion_companies_source", "Independent")
+    if _cal_src == "Media Houses":
+        tl = [a for a in tl if a.get("source_advisor_company_id")]
+    else:
+        tl = [a for a in tl if not a.get("source_advisor_company_id")]
 
     upcoming = []
     from datetime import datetime, timedelta
