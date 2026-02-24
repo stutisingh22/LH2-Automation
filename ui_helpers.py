@@ -456,7 +456,7 @@ def wysiwyg_editor_html_page(initial_html):
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 12px; background: #fff; color: #1a1a1a; font-size: 14px; line-height: 1.5; }
   #ed { min-height: 320px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
   #ed:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
-  #ed table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  #ed table { border-collapse: collapse; width: 100%%; margin: 8px 0; }
   #ed th, #ed td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
   #ed th { background: #f1f5f9; font-weight: 600; }
   #ed h1, #ed h2, #ed h3 { margin: 12px 0 6px; }
