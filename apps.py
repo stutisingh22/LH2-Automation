@@ -71,6 +71,10 @@ from ai_engine import (
     advisor_chat, refine_email_draft,
 )
 from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
+from linkedin_lookup import (
+    extract_contacts_from_brief_research,
+    run_linkedin_lookup_for_contacts,
+)
 from contact_timeline import build_contact_timeline
 from signalhire_enrichment import (
     get_credits as get_signalhire_credits,
@@ -1631,6 +1635,82 @@ with tabs[3]:  # STRATEGIST
                     st.caption(f"SignalHire credits: {credits}")
                 else:
                     st.caption("Enrichment uses mock data when no API/callback")
+
+            # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
+            st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
+            linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
+            do_linkedin_lookup = st.button(
+                "🔗 Extract contacts & find LinkedIn URLs",
+                key="btn_linkedin_lookup",
+                type="secondary",
+                use_container_width=True,
+                help="Parse brief and research for people, then find their LinkedIn profiles via search.",
+            )
+            if do_linkedin_lookup:
+                rn = st.session_state.research_cache.get(research_cache_key, [])
+                if not rn and comp.get("notion_page_id"):
+                    with st.spinner("Loading research from Notion…"):
+                        rn = fetch_research_from_notion(comp["notion_page_id"])
+                        if rn:
+                            st.session_state.research_cache[research_cache_key] = rn
+                with st.spinner("Generating brief…"):
+                    brief_text = auto_brief(comp, ct, user["id"], sid, rn) or ""
+                research_full = (comp.get("extra_data") or {}).get("research_full") or ""
+                research_notes_text = "\n\n".join(
+                    f"{(n.get('title') or 'Section')}\n{(n.get('content') or '').strip()}"
+                    for n in (rn or [])
+                ).strip()
+                research_combined = (research_full or research_notes_text or "").strip()
+                company_name = comp.get("domain") or comp.get("name") or "this company"
+                with st.spinner("Extracting contacts…"):
+                    contacts = extract_contacts_from_brief_research(brief_text, research_combined, company_name)
+                if not contacts:
+                    st.info("No contacts found in brief or research. Add SPOCs in the brief or run deep research first.")
+                else:
+                    progress = st.progress(0, text=f"Finding LinkedIn URLs (0/{len(contacts)})…")
+                    def _prog(i, total, name):
+                        progress.progress((i + 1) / max(1, total), text=f"Finding LinkedIn URLs ({i + 1}/{total}): {name[:30]}…")
+                    results = run_linkedin_lookup_for_contacts(contacts, progress_callback=_prog)
+                    progress.empty()
+                    st.session_state[linkedin_results_key] = results
+                    st.success(f"Found {sum(1 for r in results if r.get('linkedin_url'))} LinkedIn URLs for {len(results)} contacts.")
+                    st.rerun()
+            if linkedin_results_key in st.session_state:
+                results_list = st.session_state[linkedin_results_key]
+                with st.expander(f"Contacts with LinkedIn URLs ({len(results_list)})", expanded=True):
+                    if is_advisor_strategist:
+                        st.caption("Add to company saves under the selected **child** (this company).")
+                    for i, r in enumerate(results_list):
+                        name = (r.get("name") or "").strip() or "—"
+                        role = (r.get("role") or "").strip()
+                        company_display = r.get("company") or "—"
+                        url = (r.get("linkedin_url") or "").strip()
+                        row_col1, row_col2 = st.columns([3, 1])
+                        with row_col1:
+                            if url:
+                                link_html = f"<a href='{url}' target='_blank' rel='noopener' style='font-size:12px;'>Profile</a>"
+                            else:
+                                link_html = "<span style='font-size:12px;color:var(--text-3);'>—</span>"
+                            st.markdown(
+                                f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
+                                f"<div style='font-weight:500;'>{name}</div>"
+                                f"<div style='font-size:12px;color:var(--text-2);'>{role or '—'} · {company_display}</div>"
+                                f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div></div>",
+                                unsafe_allow_html=True)
+                        with row_col2:
+                            if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
+                                upsert_contact(
+                                    cid,
+                                    name,
+                                    role=role or None,
+                                    linkedin=url or None,
+                                )
+                                st.success(f"Added **{name}** to company.")
+                                st.rerun()
+                if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=False):
+                    st.session_state.pop(linkedin_results_key, None)
+                    st.rerun()
+
             if run_enrich:
                 if not lookup_identifier:
                     st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
