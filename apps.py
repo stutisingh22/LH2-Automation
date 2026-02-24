@@ -1124,11 +1124,37 @@ with tabs[2]:  # INTELLIGENCE
                 # Same flow whether research came from Notion or DB or deep research: manual edit + AI extend + save options
                 _source_label = "Loaded from Notion" if research_source_from_notion and page_id else "Command Center"
                 st.caption(f"**{_source_label}** — Edit in place (or by section below); Save writes to DB and Drive only.")
-                if page_id and research_source_from_notion:
-                    if st.button("🔄 Refresh from Notion", key=f"refresh_notion_{cache_key}", use_container_width=False, help="Re-pull latest research from Notion"):
-                        if cache_key in st.session_state.get("research_cache", {}):
-                            del st.session_state.research_cache[cache_key]
-                        st.rerun()
+                ref_col1, ref_col2 = st.columns([1, 1])
+                with ref_col1:
+                    if page_id and research_source_from_notion:
+                        if st.button("🔄 Refresh from Notion", key=f"refresh_notion_{cache_key}", use_container_width=False, help="Re-pull latest research from Notion"):
+                            if cache_key in st.session_state.get("research_cache", {}):
+                                del st.session_state.research_cache[cache_key]
+                            st.rerun()
+                with ref_col2:
+                    if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
+                        err_msg = None
+                        result = None
+                        try:
+                            pb = st.progress(0, text="Re-running deep research…")
+                            def _prog(c, e):
+                                pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                            result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                        except Exception as e:
+                            err_msg = str(e)
+                        if result:
+                            if is_advisor:
+                                merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            else:
+                                merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            if cache_key in st.session_state.get("research_cache", {}):
+                                del st.session_state.research_cache[cache_key]
+                            st.session_state.auto_brief_text = None
+                            st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
+                            st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB, Notion, and Drive.")
+                            st.rerun()
+                        else:
+                            st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
                 # WYSIWYG when streamlit-iframe-event is available and content size ok; else sectioned + Edit as HTML
                 editor_html = research_display_to_editor_html(research_full_display)
                 use_wysiwyg = False

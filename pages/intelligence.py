@@ -122,6 +122,26 @@ def render():
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             else:
                 st.caption("Edit in place (or by section below); Save writes to DB and Drive only.")
+                if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cid}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
+                    err_msg = None
+                    result = None
+                    try:
+                        pb = st.progress(0, text="Re-running deep research…")
+                        def _prog(c, e):
+                            pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                        result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                    except Exception as e:
+                        err_msg = str(e)
+                    if result:
+                        merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        if cid in st.session_state.get("research_cache", {}):
+                            del st.session_state.research_cache[cid]
+                        st.session_state.auto_brief_text = None
+                        st.session_state.pop(f"research_wysiwyg_html_{cid}", None)
+                        st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB and Drive.")
+                        st.rerun()
+                    else:
+                        st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
                 editor_html = research_display_to_editor_html(research_full_display)
                 use_wysiwyg = False
                 try:
