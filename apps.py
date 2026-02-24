@@ -1157,15 +1157,9 @@ with tabs[2]:  # INTELLIGENCE
                             st.rerun()
                         else:
                             st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
-                # WYSIWYG when streamlit-iframe-event is available and content size ok; else sectioned + Edit as HTML
+                # Always use expandable sections for deep research (format we use for pipeline / Command Center)
                 editor_html = research_display_to_editor_html(research_full_display)
-                use_wysiwyg = False
-                try:
-                    from streamlit_iframe_event import st_iframe_event
-                    _wysiwyg_max = 150000
-                    use_wysiwyg = len(editor_html or "") < _wysiwyg_max
-                except Exception:
-                    pass
+                use_wysiwyg = False  # Sectioned expanders only; WYSIWYG iframe skipped for consistent expandable format
                 wysiwyg_key = f"research_wysiwyg_html_{cache_key}"
                 if use_wysiwyg:
                     initial_for_editor = st.session_state.get(wysiwyg_key) or editor_html or ""

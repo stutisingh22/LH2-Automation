@@ -66,7 +66,9 @@ _advisor_factory_and_model = None
 
 
 def _get_advisor_factory_and_model():
-    """Return (session_factory, model_class) for the current backend. Session and model always match."""
+    """Return (session_factory, model_class) for the current backend. Session and model always match.
+    When DATABASE_URL is set, factory is None and callers must use db_advisor() which delegates to db_ops.db().
+    """
     global _advisor_factory_and_model
     from config import DATABASE_URL
     now_using = "supabase" if (DATABASE_URL and str(DATABASE_URL).strip()) else "sqlite"
@@ -74,10 +76,8 @@ def _get_advisor_factory_and_model():
         return _advisor_factory_and_model[0], _advisor_factory_and_model[1]
     _advisor_factory_and_model = None
     if DATABASE_URL:
-        from db_ops import get_engine
         from models import AdvisorCompany as MainAdvisorCompany
-        factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
-        _advisor_factory_and_model = (factory, MainAdvisorCompany, "supabase")
+        _advisor_factory_and_model = (None, MainAdvisorCompany, "supabase")
     else:
         from models_advisor import BaseAdvisor, AdvisorCompany as SqliteAdvisorCompany
         from sqlalchemy import text
@@ -106,16 +106,22 @@ def _model():
 
 @contextmanager
 def db_advisor():
+    """Yield a session bound to the advisor backend. When DATABASE_URL is set, uses main db_ops.db()."""
     factory, _ = _get_advisor_factory_and_model()
-    session = scoped_session(factory)
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.remove()
+    if factory is None:
+        from db_ops import db
+        with db() as session:
+            yield session
+    else:
+        session = scoped_session(factory)
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.remove()
 
 
 def _advisor_comp_dict(c):
