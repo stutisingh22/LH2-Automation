@@ -34,6 +34,7 @@ SESSION_DIR.mkdir(exist_ok=True)
 
 from config import (
     CONTACT_STATUSES, CONTACT_STATUS_LABELS, CONTACT_STATUS_LABELS_STRIP, CONTACT_STATUS_COLORS,
+    normalize_contact_status,
     ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS,
     GOOGLE_SERVICE_ACCOUNT_JSON,
 )
@@ -703,7 +704,7 @@ with tabs[0]:  # DASHBOARD
     _companies_count = len(get_all_advisor_companies()) if st.session_state.get("notion_companies_source") == "Media Houses" else len(get_all_companies())
     kpi_items = [
         (_companies_count, "Companies"),
-        (stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"),
+        (stats.get("outreach_sent", 0), "Active Outreach"),
         (stats.get("meeting_booked", 0), "Meetings"),
         (stats.get("partnership_active", 0), "Partnerships"),
     ]
@@ -964,15 +965,16 @@ with tabs[1]:  # COMPANIES
                         for ct in cts:
                             cols = st.columns([2.5, 1.2, 0.4, 0.4])
                             with cols[0]:
-                                scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
-                                slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
+                                _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                                scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
+                                slabel = CONTACT_STATUS_LABELS.get(_norm, "")
                                 st.markdown(
                                     f"<b>{ct['name']}</b> <span style='font-size:11px;color:var(--text-3);'>"
                                     f"{ct.get('role','')}</span> {bdg(slabel, scolor)}",
                                     unsafe_allow_html=True)
                             with cols[1]:
                                 ns = st.selectbox("s", CONTACT_STATUSES,
-                                    index=CONTACT_STATUSES.index(ct.get("status", "not_contacted")) if ct.get("status") in CONTACT_STATUSES else 0,
+                                    index=CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0,
                                     format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
                                     key=f"qs_{ct['id']}", label_visibility="collapsed")
                                 if ns != ct.get("status"):
@@ -1494,8 +1496,9 @@ with tabs[2]:  # INTELLIGENCE
             for ct in get_contacts(cid):
                 ct1, ct2 = st.columns([3, 0.5])
                 with ct1:
-                    scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
-                    slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
+                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                    scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
+                    slabel = CONTACT_STATUS_LABELS.get(_norm, "")
                     lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
                     active = ctid == ct["id"]
                     bdr = "border-left:3px solid var(--accent);" if active else ""
@@ -2158,32 +2161,88 @@ with tabs[6]:  # CALENDAR
 # ════════════════════ PIPELINE ════════════════════
 
 with tabs[7]:  # PIPELINE
-    # === UI REFACTOR START ===
-    st.markdown(lh2_section_header("CONTACT PIPELINE"), unsafe_allow_html=True)
-    all_comp = get_all_companies()
-    pipeline = {s: [] for s in CONTACT_STATUSES}
-    for cd in all_comp:
-        for ctd in get_contacts(cd["id"]):
-            status = ctd.get("status", "not_contacted")
-            if status in pipeline:
-                pipeline[status].append({"contact": ctd, "company": cd})
+    _src_p = st.session_state.get("notion_companies_source", "Independent")
+    if _src_p == "Media Houses":
+        # Media Houses pipeline: expandable parent cards; each child has status change
+        st.markdown(lh2_section_header("MEDIA HOUSES PIPELINE"), unsafe_allow_html=True)
+        parents_with_children = get_advisor_parents_with_children()
+        # Enrich each child once (shadow, spoc, score, status) and count by status for KPI
+        pipeline_advisor = {s: [] for s in CONTACT_STATUSES}
+        groups_enriched = []
+        for group in parents_with_children:
+            parent_name = group["parent_name"]
+            display_parent = (parent_name or "(No parent)").strip()
+            enriched = []
+            for ch in group["children"]:
+                status = normalize_contact_status((ch.get("extra_data") or {}).get("pipeline_status", "not_contacted"))
+                shadow_cid, shadow_ctid = get_or_create_shadow_company_for_advisor(ch["id"])
+                spoc_name = "—"
+                score = 0
+                if shadow_ctid:
+                    ct = get_contact(shadow_ctid)
+                    if ct:
+                        spoc_name = ct.get("name") or "Leadership"
+                        comp_for_score = {"domain": ch.get("domain"), "monthly_visits": None}
+                        score = compute_lead_score(comp_for_score, ct)
+                if status in pipeline_advisor:
+                    pipeline_advisor[status].append(1)
+                enriched.append({"child": ch, "spoc_name": spoc_name, "score": score, "status": status})
+            groups_enriched.append({"parent_name": display_parent, "children": enriched})
+        kpi_pipeline = [(len(pipeline_advisor[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
+        st.markdown(
+            "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, lbl) for n, lbl in kpi_pipeline) + "</div>",
+            unsafe_allow_html=True)
+        # Expandable parent cards (collapsed by default); each child row with status
+        for grp in groups_enriched:
+            parent_name = grp["parent_name"]
+            children = grp["children"]
+            if not children:
+                continue
+            with st.expander(f"**{parent_name}** — {len(children)} companies", expanded=False):
+                for item in children:
+                    ch = item["child"]
+                    spoc_name = item["spoc_name"]
+                    score = item["score"]
+                    status = item["status"]
+                    domain_line = ch.get("domain", "—") + (" · " + parent_name if parent_name != "(No parent)" else "")
+                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
+                    st.markdown(lh2_pipeline_row(spoc_name, domain_line, f"{si} {score}/100"), unsafe_allow_html=True)
+                    new_status = st.selectbox(
+                        "Status",
+                        CONTACT_STATUSES,
+                        index=CONTACT_STATUSES.index(status) if status in CONTACT_STATUSES else 0,
+                        format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                        key=f"pipeline_advisor_{ch['id']}",
+                    )
+                    if new_status != status:
+                        merge_advisor_company_extra_data(ch["id"], {"pipeline_status": new_status})
+                        st.rerun()
+    else:
+        # Independent pipeline (unchanged)
+        st.markdown(lh2_section_header("CONTACT PIPELINE"), unsafe_allow_html=True)
+        all_comp = get_all_companies()
+        pipeline = {s: [] for s in CONTACT_STATUSES}
+        for cd in all_comp:
+            for ctd in get_contacts(cd["id"]):
+                status = normalize_contact_status(ctd.get("status", "not_contacted"))
+                if status in pipeline:
+                    pipeline[status].append({"contact": ctd, "company": cd})
 
-    kpi_pipeline = [(len(pipeline[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
-    st.markdown(
-        "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, lbl) for n, lbl in kpi_pipeline) + "</div>",
-        unsafe_allow_html=True)
+        kpi_pipeline = [(len(pipeline[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
+        st.markdown(
+            "<div class='lh2-kpi-strip'>" + "".join(lh2_kpi_cell(n, lbl) for n, lbl in kpi_pipeline) + "</div>",
+            unsafe_allow_html=True)
 
-    bcols = st.columns(len(CONTACT_STATUSES))
-    for i, s in enumerate(CONTACT_STATUSES):
-        with bcols[i]:
-            for item in pipeline[s]:
-                ctd, cd = item["contact"], item["company"]
-                score = compute_lead_score(cd, ctd)
-                si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], f"{si} {score}/100"), unsafe_allow_html=True)
-            if not pipeline[s]:
-                st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>", unsafe_allow_html=True)
-    # === UI REFACTOR END ===
+        bcols = st.columns(len(CONTACT_STATUSES))
+        for i, s in enumerate(CONTACT_STATUSES):
+            with bcols[i]:
+                for item in pipeline[s]:
+                    ctd, cd = item["contact"], item["company"]
+                    score = compute_lead_score(cd, ctd)
+                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
+                    st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], f"{si} {score}/100"), unsafe_allow_html=True)
+                if not pipeline[s]:
+                    st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>", unsafe_allow_html=True)
 
 
 # ════════════════════ HISTORY ════════════════════

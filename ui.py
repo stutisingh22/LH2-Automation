@@ -96,21 +96,27 @@ MAX_CONTEXT_MESSAGES = 20
 MAX_DRIVE_TOKENS = 6000
 
 CONTACT_STATUSES = [
-    "not_contacted", "outreach_sent", "awaiting_reply",
-    "replied_positive", "replied_negative", "meeting_booked",
+    "not_contacted", "outreach_sent",
+    "replied_positive", "meeting_booked",
     "partnership_active", "closed_lost",
 ]
 CONTACT_STATUS_LABELS = {
     "not_contacted": "Not Contacted", "outreach_sent": "Outreach Sent",
-    "awaiting_reply": "Awaiting Reply", "replied_positive": "Replied Positive",
-    "replied_negative": "Replied Negative", "meeting_booked": "Meeting Booked",
+    "replied_positive": "Replied Positive", "meeting_booked": "Meeting Booked",
     "partnership_active": "Partnership Active", "closed_lost": "Closed Lost",
 }
 CONTACT_STATUS_COLORS = {
-    "not_contacted": "gray", "outreach_sent": "blue", "awaiting_reply": "yellow",
-    "replied_positive": "green", "replied_negative": "red", "meeting_booked": "green",
+    "not_contacted": "gray", "outreach_sent": "blue",
+    "replied_positive": "green", "meeting_booked": "green",
     "partnership_active": "green", "closed_lost": "red",
 }
+
+
+def normalize_contact_status(status):
+    """Map legacy statuses into outreach_sent until user takes an action."""
+    if status in ("awaiting_reply", "replied_negative"):
+        return "outreach_sent"
+    return status
 ACTION_TYPES = ["Outreach", "Follow-up", "Meeting", "Note", "Research", "Other"]
 ACTION_CHANNELS = ["LinkedIn", "Email", "Phone", "In-Person", "Other"]
 ACTION_STATUSES = [
@@ -692,8 +698,17 @@ def save_session_summary(sid, summary, msg_count):
 # ---- Pipeline Stats ----
 
 def get_pipeline_stats():
+    """Counts by pipeline status. 'outreach_sent' includes legacy awaiting_reply/replied_negative."""
     with db() as s:
-        return {status: s.query(Contact).filter_by(status=status).count() for status in CONTACT_STATUSES}
+        counts = {}
+        for status in CONTACT_STATUSES:
+            if status == "outreach_sent":
+                counts[status] = s.query(Contact).filter(
+                    Contact.status.in_(["outreach_sent", "awaiting_reply", "replied_negative"])
+                ).count()
+            else:
+                counts[status] = s.query(Contact).filter_by(status=status).count()
+        return counts
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -1221,7 +1236,7 @@ with tab_dash:
     stats = get_pipeline_stats()
     mc = st.columns(4)
     with mc[0]: st.markdown(mcard(len(get_all_companies()), "Companies"), unsafe_allow_html=True)
-    with mc[1]: st.markdown(mcard(stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"), unsafe_allow_html=True)
+    with mc[1]: st.markdown(mcard(stats.get("outreach_sent", 0), "Active Outreach"), unsafe_allow_html=True)
     with mc[2]: st.markdown(mcard(stats.get("meeting_booked", 0), "Meetings Booked"), unsafe_allow_html=True)
     with mc[3]: st.markdown(mcard(stats.get("partnership_active", 0), "Partnerships"), unsafe_allow_html=True)
 
@@ -1325,8 +1340,9 @@ with tab_intel:
             for ct in contacts:
                 ct1, ct2, ct3 = st.columns([2.5, 1.5, 0.5])
                 with ct1:
-                    scolor = CONTACT_STATUS_COLORS.get(ct.get("status","not_contacted"),"gray")
-                    slabel = CONTACT_STATUS_LABELS.get(ct.get("status","not_contacted"), ct.get("status",""))
+                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                    scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
+                    slabel = CONTACT_STATUS_LABELS.get(_norm, _norm)
                     lt, _ = get_local_time(ct.get("country",""), ct.get("state",""))
                     st.markdown(f"<div class='c' style='padding:10px 14px;'><div style='display:flex;justify-content:space-between;'><span style='font-size:14px;font-weight:500;'>{ct['name']}</span>{bdg(slabel,scolor)}</div><div style='font-size:12px;color:var(--text-3);margin-top:3px;'>{ct.get('role','')} · {ct.get('email','')} · {lt}</div></div>", unsafe_allow_html=True)
                 with ct2:
@@ -1344,10 +1360,11 @@ with tab_intel:
                     st.markdown(sh(f"ACTIVE WORKSPACE — {ct['name']}"), unsafe_allow_html=True)
                     r2 = st.columns(5)
                     score = compute_lead_score(comp, ct)
-                    for col, (l, v) in zip(r2, [("Lead Score", f"{'🟢' if score>=60 else '🟡' if score>=35 else '🔴'} {score}/100"), ("Email", ct.get("email")), ("Location", ", ".join(filter(None, [ct.get("city"), ct.get("state"), ct.get("country")]))), ("Local Time", get_local_time(ct.get("country",""), ct.get("state",""))[0]), ("Status", CONTACT_STATUS_LABELS.get(ct.get("status","not_contacted"), ct.get("status","")))]):
+                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                    for col, (l, v) in zip(r2, [("Lead Score", f"{'🟢' if score>=60 else '🟡' if score>=35 else '🔴'} {score}/100"), ("Email", ct.get("email")), ("Location", ", ".join(filter(None, [ct.get("city"), ct.get("state"), ct.get("country")]))), ("Local Time", get_local_time(ct.get("country",""), ct.get("state",""))[0]), ("Status", CONTACT_STATUS_LABELS.get(_norm, _norm))]):
                         with col: st.markdown(crd(l, v), unsafe_allow_html=True)
 
-                    ns = st.selectbox("Update Contact Status", CONTACT_STATUSES, index=CONTACT_STATUSES.index(ct.get("status","not_contacted")) if ct.get("status") in CONTACT_STATUSES else 0, format_func=lambda x: CONTACT_STATUS_LABELS.get(x,x), key="ctss")
+                    ns = st.selectbox("Update Contact Status", CONTACT_STATUSES, index=CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0, format_func=lambda x: CONTACT_STATUS_LABELS.get(x,x), key="ctss")
                     if ns != ct.get("status"): update_contact_status(ctid, ns); st.rerun()
 
                     all_sess = get_sessions_for_company(cid)
@@ -1519,7 +1536,7 @@ with tab_pipe:
     pipeline = {s: [] for s in CONTACT_STATUSES}
     for cd in all_comp:
         for ctd in get_contacts(cd["id"]):
-            status = ctd.get("status", "not_contacted")
+            status = normalize_contact_status(ctd.get("status", "not_contacted"))
             if status in pipeline: pipeline[status].append({"contact": ctd, "company": cd})
 
     mcols = st.columns(len(CONTACT_STATUSES))

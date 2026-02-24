@@ -308,19 +308,19 @@ def get_or_create_shadow_company_for_advisor(advisor_company_id):
     if not adv:
         return None, None
     aid = int(advisor_company_id)
+    domain = f"__advisor_{aid}"
     with db() as s:
-        for c in s.query(Company).all():
-            ed = c.extra_data if isinstance(c.extra_data, dict) else {}
-            if ed.get("source_advisor_company_id") == aid:
-                company_id = c.id
-                ct = s.query(Contact).filter_by(company_id=company_id, name="Leadership").first()
-                if ct:
-                    return company_id, ct.id
-                ct = Contact(company_id=company_id, name="Leadership", role="Leadership")
-                s.add(ct)
-                s.flush()
+        # Look up by domain first (unique); avoids duplicate INSERT when extra_data is stored as string or missing
+        c = s.query(Company).filter_by(domain=domain).first()
+        if c:
+            company_id = c.id
+            ct = s.query(Contact).filter_by(company_id=company_id, name="Leadership").first()
+            if ct:
                 return company_id, ct.id
-        domain = f"__advisor_{aid}"
+            ct = Contact(company_id=company_id, name="Leadership", role="Leadership")
+            s.add(ct)
+            s.flush()
+            return company_id, ct.id
         name = (adv.get("domain") or adv.get("parent_name") or "Child").strip() or "Child"
         c = Company(domain=domain, name=name, extra_data={"source_advisor_company_id": aid})
         s.add(c)
@@ -1067,11 +1067,17 @@ def get_active_sequences(sid):
 # ── Pipeline Stats ────────────────────────────────────────────
 
 def get_pipeline_stats():
+    """Counts by pipeline status. 'outreach_sent' includes legacy awaiting_reply/replied_negative."""
     with db() as s:
-        return {
-            status: s.query(Contact).filter_by(status=status).count()
-            for status in CONTACT_STATUSES
-        }
+        counts = {}
+        for status in CONTACT_STATUSES:
+            if status == "outreach_sent":
+                counts[status] = s.query(Contact).filter(
+                    or_(Contact.status == "outreach_sent", Contact.status == "awaiting_reply", Contact.status == "replied_negative")
+                ).count()
+            else:
+                counts[status] = s.query(Contact).filter_by(status=status).count()
+        return counts
 
 
 # ══════════════════════════════════════════════════════════════

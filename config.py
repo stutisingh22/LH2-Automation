@@ -55,17 +55,16 @@ MAX_CONTEXT_MESSAGES = 20
 MAX_DRIVE_TOKENS = 6000
 
 # ── Contact Pipeline ─────────────────────────────────────────
+# "Awaiting Reply" and "Replied Negative" folded into "Outreach Sent" until action is taken
 CONTACT_STATUSES = [
-    "not_contacted", "outreach_sent", "awaiting_reply",
-    "replied_positive", "replied_negative", "meeting_booked",
+    "not_contacted", "outreach_sent",
+    "replied_positive", "meeting_booked",
     "partnership_active", "closed_lost",
 ]
 CONTACT_STATUS_LABELS = {
     "not_contacted": "Not Contacted",
     "outreach_sent": "Outreach Sent",
-    "awaiting_reply": "Awaiting Reply",
     "replied_positive": "Replied Positive",
-    "replied_negative": "Replied Negative",
     "meeting_booked": "Meeting Booked",
     "partnership_active": "Partnership Active",
     "closed_lost": "Closed Lost",
@@ -74,9 +73,7 @@ CONTACT_STATUS_LABELS = {
 CONTACT_STATUS_LABELS_STRIP = {
     "not_contacted": "Not Contacted",
     "outreach_sent": "Outreach Sent",
-    "awaiting_reply": "Awaiting Reply",
     "replied_positive": "Replied",
-    "replied_negative": "Not Replied",
     "meeting_booked": "Meeting Booked",
     "partnership_active": "Partnership",
     "closed_lost": "Closed Lost",
@@ -84,13 +81,18 @@ CONTACT_STATUS_LABELS_STRIP = {
 CONTACT_STATUS_COLORS = {
     "not_contacted": "gray",
     "outreach_sent": "blue",
-    "awaiting_reply": "yellow",
     "replied_positive": "green",
-    "replied_negative": "red",
     "meeting_booked": "green",
     "partnership_active": "green",
     "closed_lost": "red",
 }
+
+
+def normalize_contact_status(status):
+    """Map legacy statuses into outreach_sent until user takes an action."""
+    if status in ("awaiting_reply", "replied_negative"):
+        return "outreach_sent"
+    return status
 
 # ── Actions ───────────────────────────────────────────────────
 ACTION_TYPES = ["Outreach", "Follow-up", "Meeting", "Note", "Research", "Other"]

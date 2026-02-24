@@ -38,7 +38,7 @@ def render():
     stats = get_pipeline_stats()
     kpi_items = [
         (len(get_all_companies()), "Companies"),
-        (stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"),
+        (stats.get("outreach_sent", 0), "Active Outreach"),
         (stats.get("meeting_booked", 0), "Meetings"),
         (stats.get("partnership_active", 0), "Partnerships"),
     ]

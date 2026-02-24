@@ -535,7 +535,7 @@ def get_advisor_system_prompt(uid):
 {lh2[:14000] if lh2 else '(No Drive context loaded. Tell them to link a Drive folder with LH2/Accelerate materials.)'}
 
 == PIPELINE ==
-Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent', 0) + stats.get('awaiting_reply', 0)} | Meetings booked: {stats.get('meeting_booked', 0)} | Active partnerships: {stats.get('partnership_active', 0)}
+Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent', 0)} | Meetings booked: {stats.get('meeting_booked', 0)} | Active partnerships: {stats.get('partnership_active', 0)}
 
 == COMPANIES ==
 {companies_blob}

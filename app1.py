@@ -38,6 +38,11 @@ from lh2_platform.core.config import (
     ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS,
     ROLE_PERMISSIONS,
 )
+try:
+    from lh2_platform.core.config import normalize_contact_status
+except ImportError:
+    def normalize_contact_status(s):
+        return "outreach_sent" if s in ("awaiting_reply", "replied_negative") else s
 from lh2_platform.core.models import init_database
 from lh2_platform.core.database import (
     create_user, authenticate_user, get_all_users, update_user_role,
@@ -227,7 +232,7 @@ with tab_dash:
     with mcols[0]:
         st.markdown(metric_card(total_companies, "Companies"), unsafe_allow_html=True)
     with mcols[1]:
-        st.markdown(metric_card(stats.get("outreach_sent", 0) + stats.get("awaiting_reply", 0), "Active Outreach"), unsafe_allow_html=True)
+        st.markdown(metric_card(stats.get("outreach_sent", 0), "Active Outreach"), unsafe_allow_html=True)
     with mcols[2]:
         st.markdown(metric_card(stats.get("meeting_booked", 0), "Meetings Booked"), unsafe_allow_html=True)
     with mcols[3]:
@@ -501,10 +506,11 @@ with tab_intel:
                             st.markdown(card(lbl, val), unsafe_allow_html=True)
 
                     # Contact status update
+                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
                     new_status = st.selectbox(
                         "Update Contact Status",
                         CONTACT_STATUSES,
-                        index=CONTACT_STATUSES.index(ct.get("status", "not_contacted")) if ct.get("status") in CONTACT_STATUSES else 0,
+                        index=CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0,
                         format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
                         key="ct_status_sel",
                     )
@@ -803,7 +809,7 @@ with tab_pipeline:
     for comp_data in all_companies:
         contacts = get_contacts_for_company(comp_data["id"])
         for ct_data in contacts:
-            status = ct_data.get("status", "not_contacted")
+            status = normalize_contact_status(ct_data.get("status", "not_contacted"))
             if status in pipeline:
                 pipeline[status].append({
                     "contact": ct_data,

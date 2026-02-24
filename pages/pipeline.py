@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from config import CONTACT_STATUSES, CONTACT_STATUS_LABELS_STRIP
+from config import CONTACT_STATUSES, CONTACT_STATUS_LABELS_STRIP, normalize_contact_status
 from db_ops import get_all_companies, get_contacts
 from ai_engine import compute_lead_score
 from ui_helpers import lh2_section_header, lh2_kpi_cell, lh2_pipeline_row
@@ -14,7 +14,7 @@ def render():
     pipeline = {s: [] for s in CONTACT_STATUSES}
     for cd in all_comp:
         for ctd in get_contacts(cd["id"]):
-            status = ctd.get("status", "not_contacted")
+            status = normalize_contact_status(ctd.get("status", "not_contacted"))
             if status in pipeline:
                 pipeline[status].append({"contact": ctd, "company": cd})
 

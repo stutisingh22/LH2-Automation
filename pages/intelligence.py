@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 import streamlit as st
 
-from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON
+from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON, normalize_contact_status
 from db_ops import get_company, get_contact, get_contacts, merge_company_extra_data, upsert_contact
 from notion_sync import create_notion_contact_page
 from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
@@ -471,8 +471,9 @@ def render():
             for ct in get_contacts(cid):
                 ct1, ct2 = st.columns([3, 0.5])
                 with ct1:
-                    scolor = CONTACT_STATUS_COLORS.get(ct.get("status", "not_contacted"), "gray")
-                    slabel = CONTACT_STATUS_LABELS.get(ct.get("status", "not_contacted"), "")
+                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                    scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
+                    slabel = CONTACT_STATUS_LABELS.get(_norm, "")
                     lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
                     active = ctid == ct["id"]
                     bdr = "border-left:3px solid var(--accent);" if active else ""
