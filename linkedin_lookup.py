@@ -182,6 +182,56 @@ def get_linkedin_url_for_contact(name: str, company: str) -> str | None:
     return _search_and_pick(query_name_only)
 
 
+def _strip_html_cell(s: str) -> str:
+    """Remove HTML tags from a cell and normalize whitespace."""
+    if not s:
+        return ""
+    s = re.sub(r"<[^>]+>", "", (s or ""))
+    s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _parse_html_table_rows(html: str) -> list[tuple[list[str], list[list[str]]]]:
+    """
+    Find HTML <table> elements and return (header_cells, data_rows) per table.
+    Only includes tables that have a name/stakeholder/spoc-like header column.
+    """
+    if not (html or "").strip() or "<table" not in html.lower():
+        return []
+    tables = []
+    # Split by <table to find table starts; then find matching </table>
+    rest = html
+    while True:
+        start = rest.lower().find("<table")
+        if start == -1:
+            break
+        rest = rest[start:]
+        end = rest.lower().find("</table>")
+        if end == -1:
+            break
+        table_html = rest[: end + len("</table>")]
+        rest = rest[end + len("</table>") :]
+        rows = []
+        tr_pat = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+        for m in tr_pat.finditer(table_html):
+            row_html = m.group(1)
+            cells = []
+            for tag in ("th", "td"):
+                cell_pat = re.compile(r"<" + tag + r"[^>]*>(.*?)</" + tag + r">", re.DOTALL | re.IGNORECASE)
+                for cm in cell_pat.finditer(row_html):
+                    cells.append(_strip_html_cell(cm.group(1)))
+            if cells:
+                rows.append(cells)
+        if len(rows) >= 1:
+            header = rows[0]
+            data_rows = rows[1:]
+            if header and any(
+                x in (h or "").lower() for h in header for x in ("name", "stakeholder", "spoc")
+            ):
+                tables.append((header, data_rows))
+    return tables
+
+
 def _parse_markdown_table_rows(text: str) -> list[tuple[list[str], list[list[str]]]]:
     """
     Find markdown tables in text and return (header_cells, data_rows) per table.
@@ -224,15 +274,18 @@ def extract_spoc_table_contacts(
     company_name: str,
 ) -> list[dict]:
     """
-    Extract (name, role) only from SPOC/stakeholder markdown tables in brief and research.
-    Uses the exact names from those tables; company is set to company_name for all (current target).
-    Returns list of {"name", "role", "company"} for LinkedIn lookup. No AI extraction.
+    Extract (name, role) only from SPOC/stakeholder tables in brief and research.
+    Supports both markdown pipe tables and HTML <table> (e.g. from saved deep research).
+    Company is set to company_name for all (current target only). No AI extraction.
+    Returns list of {"name", "role", "company"} for LinkedIn lookup.
     """
     combined = f"{(brief_text or '').strip()}\n\n{(research_text or '').strip()}"
     if not combined.strip():
         return []
     company_name = (company_name or "this company").strip()
     tables = _parse_markdown_table_rows(combined)
+    if "<table" in combined.lower():
+        tables = tables + _parse_html_table_rows(combined)
     seen_names = set()
     out = []
     for header, data_rows in tables:

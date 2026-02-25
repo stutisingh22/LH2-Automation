@@ -4,6 +4,7 @@ When DATABASE_URL is set (Supabase), uses the main DB so all data is in Supabase
 Otherwise uses lh2_advisor.db in the same directory as the main app's SQLite so both persist in one place.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -133,7 +134,16 @@ def _advisor_comp_dict(c):
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
     if hasattr(c, "extra_data") and c.extra_data is not None:
-        out["extra_data"] = c.extra_data if isinstance(c.extra_data, dict) else {}
+        ed = c.extra_data
+        if isinstance(ed, dict):
+            out["extra_data"] = ed
+        elif isinstance(ed, str) and (ed or "").strip():
+            try:
+                out["extra_data"] = json.loads(ed)
+            except Exception:
+                out["extra_data"] = {}
+        else:
+            out["extra_data"] = {}
     else:
         out["extra_data"] = {}
     return out
@@ -206,7 +216,19 @@ def merge_advisor_company_extra_data(advisor_id, patch):
         row = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
         if not row:
             return
-        current = row.extra_data if hasattr(row, "extra_data") and isinstance(row.extra_data, dict) else {}
+        if hasattr(row, "extra_data") and row.extra_data is not None:
+            ed = row.extra_data
+            if isinstance(ed, dict):
+                current = ed
+            elif isinstance(ed, str) and (ed or "").strip():
+                try:
+                    current = json.loads(ed)
+                except Exception:
+                    current = {}
+            else:
+                current = {}
+        else:
+            current = {}
         row.extra_data = {**(current or {}), **patch}
         s.flush()
 

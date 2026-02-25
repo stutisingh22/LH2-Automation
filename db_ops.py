@@ -6,6 +6,7 @@ FIX LOG:
   - Search does fuzzy matching: strips TLDs and matches partial domain names
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -156,13 +157,27 @@ def db():
 
 # ── Serializers ───────────────────────────────────────────────
 
+def _normalize_extra_data(ed):
+    """Return extra_data as a dict; parse JSON string if needed so research_full etc. persist after refresh."""
+    if ed is None:
+        return {}
+    if isinstance(ed, dict):
+        return ed
+    if isinstance(ed, str) and (ed or "").strip():
+        try:
+            return json.loads(ed)
+        except Exception:
+            return {}
+    return {}
+
+
 def _comp_dict(c):
     return {
         "id": c.id, "name": c.name, "domain": c.domain,
         "publisher_type": c.publisher_type, "content_type": c.content_type,
         "monthly_visits": c.monthly_visits, "notion_page_id": c.notion_page_id,
         "research_status": c.research_status, "gmail_thread": c.gmail_thread,
-        "extra_data": c.extra_data or {},
+        "extra_data": _normalize_extra_data(c.extra_data),
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -279,7 +294,7 @@ def merge_company_extra_data(company_id: int, patch: dict):
         c = s.get(Company, company_id)
         if not c:
             return False
-        base = c.extra_data or {}
+        base = _normalize_extra_data(c.extra_data)
         base.update(patch)
         c.extra_data = base
         c.updated_at = datetime.utcnow()

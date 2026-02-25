@@ -8,6 +8,7 @@ from db_ops import (
     get_company,
     get_contact,
     get_contacts,
+    get_spoc_contacts_by_company,
     get_all_companies,
     get_all_users,
     save_message,
@@ -77,9 +78,30 @@ def render():
 
             with sel2:
                 contacts = get_contacts(cid)
-                contacts_with_email = [c for c in contacts if (c.get("email") or "").strip()]
+                spoc_contacts = get_spoc_contacts_by_company(cid)
+                spoc_email_by_name = {}
+                spoc_email_by_parent_id = {}
+                for sc in (spoc_contacts or []):
+                    em = (sc.get("email") or "").strip()
+                    if em:
+                        nm = (sc.get("name") or "").strip()
+                        if nm and nm not in spoc_email_by_name:
+                            spoc_email_by_name[nm] = em
+                        pid = sc.get("spoc_contact_id")
+                        if pid and pid not in spoc_email_by_parent_id:
+                            spoc_email_by_parent_id[pid] = em
+                def _recipient_display(c):
+                    em = (c.get("email") or "").strip()
+                    if not em:
+                        em = spoc_email_by_name.get((c.get("name") or "").strip(), "")
+                    if not em:
+                        em = spoc_email_by_parent_id.get(c["id"], "")
+                    return em or f"{c.get('name', '?')} (no email)"
+                def _has_email(c):
+                    return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
+                contacts_with_email = [c for c in contacts if _has_email(c)]
                 to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
-                ct_display = {c["id"]: (c.get("email") or "").strip() or f"{c.get('name', '?')} (no email)" for c in contacts}
+                ct_display = {c["id"]: _recipient_display(c) for c in contacts}
                 to_index = to_options.index(ctid) if ctid in to_options else 0
                 to_id = st.selectbox(
                     "TO (recipient)",

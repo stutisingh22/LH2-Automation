@@ -45,7 +45,7 @@ from db_ops import (
     get_company, get_all_companies, search_companies,
     get_or_create_shadow_company_for_advisor,
     upsert_company, upsert_contact,
-    upsert_spoc_contact, get_spoc_contacts_by_spoc,
+    upsert_spoc_contact, get_spoc_contacts_by_spoc, get_spoc_contacts_by_company,
     get_contacts, get_contact, update_contact_status, update_contact,
     get_or_create_session, get_session, get_sessions_for_company,
     get_user_sessions, delete_session,
@@ -1047,6 +1047,14 @@ with tabs[2]:  # INTELLIGENCE
             if ctid and st.session_state.session_id:
                 ct = get_contact(ctid)
                 if ct:
+                    if is_advisor and aid:
+                        _fa = get_advisor_company(aid)
+                        if _fa:
+                            comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
+                    elif cid:
+                        _fc = get_company(cid)
+                        if _fc:
+                            comp = _fc
                     brief_key = f"brief_text_{cache_key}_{ctid}"
                     if st.session_state.get(brief_key) is None:
                         saved_brief = (comp.get("extra_data") or {}).get("brief") or ""
@@ -1090,63 +1098,86 @@ with tabs[2]:  # INTELLIGENCE
                                     st.toast("Brief saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
                                 st.rerun()
 
-            st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
-            r1 = st.columns(5)
-            for col, (l, v) in zip(r1, [
-                ("Domain", comp.get("domain")), ("Publisher", comp.get("publisher_type")),
-                ("Content", comp.get("content_type")), ("Visits", fmt_v(comp.get("monthly_visits"))),
-                ("Research", comp.get("research_status")),
-            ]):
-                with col:
-                    st.markdown(crd(l, v), unsafe_allow_html=True)
+        st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
+        r1 = st.columns(5)
+        for col, (l, v) in zip(r1, [
+            ("Domain", comp.get("domain")), ("Publisher", comp.get("publisher_type")),
+            ("Content", comp.get("content_type")), ("Visits", fmt_v(comp.get("monthly_visits"))),
+            ("Research", comp.get("research_status")),
+        ]):
+            with col:
+                st.markdown(crd(l, v), unsafe_allow_html=True)
 
-            # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
-            # Re-fetch comp so extra_data (research_full) is fresh after save/run
-            if is_advisor and aid:
-                _fresh_adv = get_advisor_company(aid)
-                if _fresh_adv:
-                    _ed = _fresh_adv.get("extra_data")
-                    if isinstance(_ed, str) and (_ed or "").strip():
-                        try:
-                            _ed = json.loads(_ed)
-                        except Exception:
-                            _ed = {}
-                    comp = {**comp, "extra_data": _ed if isinstance(_ed, dict) else {}}
-            elif cid:
-                _fresh_comp = get_company(cid)
-                if _fresh_comp:
-                    comp = _fresh_comp
-            st.markdown(sh_small("Research document"), unsafe_allow_html=True)
-            _raw_extra = comp.get("extra_data")
-            if isinstance(_raw_extra, str):
+        # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
+        # Re-fetch comp so extra_data (research_full) is fresh after save/run
+        if is_advisor and aid:
+            _fresh_adv = get_advisor_company(aid)
+            if _fresh_adv:
+                _ed = _fresh_adv.get("extra_data")
+                if isinstance(_ed, str) and (_ed or "").strip():
+                    try:
+                        _ed = json.loads(_ed)
+                    except Exception:
+                        _ed = {}
+                comp = {**comp, "extra_data": _ed if isinstance(_ed, dict) else {}}
+        elif cid:
+            _fresh_comp = get_company(cid)
+            if _fresh_comp:
+                comp = _fresh_comp
+        st.markdown(sh_small("Research document"), unsafe_allow_html=True)
+        _raw_extra = comp.get("extra_data")
+        if isinstance(_raw_extra, str):
+            try:
+                extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
+            except Exception:
+                extra = {}
+        else:
+            extra = _raw_extra if isinstance(_raw_extra, dict) else {}
+        research_full_db = (extra.get("research_full") or "").strip()
+        _fresh_key = f"research_fresh_result_{cache_key}"
+        _from_session = (st.session_state.get(_fresh_key) or "").strip()
+        if _from_session:
+            research_full_db = _from_session
+        if research_full_db and (extra.get("research_full") or "").strip():
+            st.session_state.pop(_fresh_key, None)
+        research_full_display = research_full_db
+
+        if not research_full_display:
+            st.caption("No research yet. Run **deep research** below (same prompt as the Notion research bot). Saves to Command Center only until you click **Save** (DB + Notion + Drive).")
+            if has_perm("can_use_strategist") and st.button("🔬 Run deep research", key="run_res_doc", type="primary"):
+                err_msg = None
+                result = None
                 try:
-                    extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
-                except Exception:
-                    extra = {}
-            else:
-                extra = _raw_extra if isinstance(_raw_extra, dict) else {}
-            research_full_db = (extra.get("research_full") or "").strip()
-            # Use just-fetched result from session so it shows immediately after Run/Re-run (avoids read-your-writes)
-            _fresh_key = f"research_fresh_result_{cache_key}"
-            if not research_full_db and st.session_state.get(_fresh_key):
-                research_full_db = (st.session_state.pop(_fresh_key) or "").strip()
-            research_source_from_notion = False
-            if not research_full_db and rn:
-                research_full_display = "\n\n".join(
-                    f"{'='*60}\n{note.get('title') or 'Section'}\n{'='*60}\n\n{(note.get('content') or '').strip()}"
-                    for note in rn
-                ).strip()
-                research_source_from_notion = True
-            else:
-                research_full_display = research_full_db
-
-            if not research_full_display and not rn:
-                st.caption("No research yet. Run **deep research** below (same prompt as the Notion research bot). Saves to Command Center only until you click **Save** (DB + Notion + Drive).")
-                if has_perm("can_use_strategist") and st.button("🔬 Run deep research", key="run_res_doc", type="primary"):
+                    pb = st.progress(0, text="Starting…")
+                    def _prog(c, e):
+                        pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                    result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                except Exception as e:
+                    err_msg = str(e)
+                if result:
+                    if is_advisor:
+                        merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                    else:
+                        merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                    if cache_key in st.session_state.get("research_cache", {}):
+                        del st.session_state.research_cache[cache_key]
+                    st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
+                    st.session_state.pop("research_command_result", None)
+                    st.session_state.pop("research_command_result_cid", None)
+                    st.session_state[f"research_fresh_result_{cache_key}"] = result
+                    st.success("Research saved to Command Center. Edit below if needed, then click **Save** to write to DB, Notion, and Drive.")
+                    st.rerun()
+                else:
+                    st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
+        else:
+            st.caption("Edit in place (or by section below); **Save** writes to DB and Drive.")
+            ref_col1, ref_col2, ref_col3 = st.columns([1, 1, 1])
+            with ref_col1:
+                if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
                     err_msg = None
                     result = None
                     try:
-                        pb = st.progress(0, text="Starting…")
+                        pb = st.progress(0, text="Re-running deep research…")
                         def _prog(c, e):
                             pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
                         result = run_research(comp.get("domain", ""), progress_callback=_prog)
@@ -1159,402 +1190,298 @@ with tabs[2]:  # INTELLIGENCE
                             merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                         if cache_key in st.session_state.get("research_cache", {}):
                             del st.session_state.research_cache[cache_key]
+                        st.session_state.auto_brief_text = None
                         st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
                         st.session_state.pop("research_command_result", None)
                         st.session_state.pop("research_command_result_cid", None)
                         st.session_state[f"research_fresh_result_{cache_key}"] = result
-                        st.success("Research saved to Command Center. Edit below if needed, then click **Save** to write to DB, Notion, and Drive.")
+                        st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB, Notion, and Drive.")
                         st.rerun()
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
+            with ref_col2:
+                if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", use_container_width=False, help="Delete deep research (DB + session); Run deep research will be available again"):
+                    if is_advisor:
+                        merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                    else:
+                        merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                    st.session_state.pop(_fresh_key, None)
+                    st.toast("Deep research deleted.")
+                    st.rerun()
+            # Always use expandable sections for deep research (format we use for pipeline / Command Center)
+            editor_html = research_display_to_editor_html(research_full_display)
+            use_wysiwyg = False  # Sectioned expanders only; WYSIWYG iframe skipped for consistent expandable format
+            wysiwyg_key = f"research_wysiwyg_html_{cache_key}"
+            if use_wysiwyg:
+                initial_for_editor = st.session_state.get(wysiwyg_key) or editor_html or ""
+                editor_page = wysiwyg_editor_html_page(initial_for_editor)
+                import urllib.parse
+                data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(editor_page)
+                event_value = st_iframe_event(data_url, key=f"wysiwyg_editor_{cache_key}", default_width="100%")
+                if event_value is not None:
+                    st.session_state[wysiwyg_key] = event_value
+                    st.rerun()
+                current_research_text = (st.session_state.get(wysiwyg_key) or editor_html or "").strip() or research_full_display
+                st.caption("Edit above, then click **Done editing** in the frame. Use **Save** below to write to DB and Drive.")
             else:
-                # Same flow whether research came from Notion or DB or deep research: manual edit + AI extend + save options
-                _source_label = "Loaded from Notion" if research_source_from_notion and page_id else "Command Center"
-                st.caption(f"**{_source_label}** — Edit in place (or by section below); Save writes to DB and Drive only.")
-                ref_col1, ref_col2 = st.columns([1, 1])
-                with ref_col1:
-                    if page_id and research_source_from_notion:
-                        if st.button("🔄 Refresh from Notion", key=f"refresh_notion_{cache_key}", use_container_width=False, help="Re-pull latest research from Notion"):
-                            if cache_key in st.session_state.get("research_cache", {}):
-                                del st.session_state.research_cache[cache_key]
-                            st.rerun()
-                with ref_col2:
-                    if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
-                        err_msg = None
-                        result = None
-                        try:
-                            pb = st.progress(0, text="Re-running deep research…")
-                            def _prog(c, e):
-                                pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
-                            result = run_research(comp.get("domain", ""), progress_callback=_prog)
-                        except Exception as e:
-                            err_msg = str(e)
-                        if result:
+                plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
+                sections = split_research_into_sections(plain_for_split)
+                section_edits = []
+                for i, (sec_title, body) in enumerate(sections):
+                    section_html = research_display_to_editor_html(body) if body else ""
+                    with st.expander(sec_title, expanded=(i == 0)):
+                        st.markdown("<div class='research-doc-view'>" + (section_html or "(No content)") + "</div>", unsafe_allow_html=True)
+                        with st.expander("Edit as HTML", expanded=False):
+                            edited = st.text_area(
+                                "HTML",
+                                value=section_html or "",
+                                height=min(220, 120 + (section_html or "").count("\n") * 12),
+                                key=f"research_sec_{cache_key}_{i}",
+                                label_visibility="collapsed",
+                                placeholder="<p>Edit HTML for this section.</p>",
+                            )
+                        section_edits.append((edited or "").strip() or section_html or "")
+                current_research_text = "\n\n".join(
+                    f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
+                ).strip() if section_edits else research_full_display
+            if st.button("💾 Save", key=f"save_research_all_{cache_key}", use_container_width=True, help="Save research to DB and Drive (proper format with tables)"):
+                _research = (research_full_display or "").strip()
+                if not _research:
+                    _research = (current_research_text or "").strip()
+                if not _research:
+                    st.warning("No research to save.")
+                else:
+                    if is_advisor:
+                        merge_advisor_company_extra_data(aid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                    else:
+                        merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                    _doc_name = comp.get("domain") or comp.get("name", "Company")
+                    _content_for_drive = research_display_to_editor_html(_research) if _research and not is_html_content(_research) else _research
+                    fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _content_for_drive or _research)
+                    st.session_state.auto_brief_text = None
+                    st.session_state.pop(wysiwyg_key, None)
+                    st.session_state[_fresh_key] = _research
+                    if fid:
+                        st.toast("Research saved to DB and Drive (with tables and formatting).")
+                    else:
+                        st.toast("Research saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
+                    st.rerun()
+
+            st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+            st.markdown(sh_small("Deep research — generate or extend"), unsafe_allow_html=True)
+            st.caption("e.g. \"Add a section on competitor landscape\" or \"Expand the power mapping with the CFO\".")
+            cmd_col1, cmd_col2 = st.columns([3, 1])
+            with cmd_col1:
+                research_cmd = st.text_input(
+                    "Deep research command",
+                    placeholder="Describe what to add or change…",
+                    key=f"research_cmd_{cache_key}",
+                    label_visibility="collapsed",
+                )
+            with cmd_col2:
+                run_cmd = st.button("Run", key=f"research_cmd_run_{cache_key}", type="primary", use_container_width=True)
+            if run_cmd and (research_cmd or "").strip():
+                with st.spinner("Running command…"):
+                    current_for_ai = (html_to_plain_text(current_research_text) if is_html_content(current_research_text) else current_research_text) or research_full_display
+                    cmd_result = research_command_ai(comp.get("domain", ""), current_for_ai, research_cmd.strip())
+                if cmd_result:
+                    st.session_state["research_command_result"] = cmd_result
+                    st.session_state["research_command_result_cid"] = cache_key
+                    st.session_state["research_command_replace_key"] = f"research_full_edit_{cache_key}"
+                    st.rerun()
+                else:
+                    st.error("Command failed.")
+
+            if st.session_state.get("research_command_result_cid") == cache_key and st.session_state.get("research_command_result"):
+                cmd_result = st.session_state["research_command_result"]
+                with st.expander("AI result — Add to research or Dismiss", expanded=True):
+                    st.caption("This is only the new content for your query. Use **Add to research** to merge it into the full document and save.")
+                    st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
+                    app_col1, app_col2 = st.columns([1, 3])
+                    with app_col1:
+                        if st.button("Add to research", key=f"cmd_append_{cache_key}", use_container_width=True, help="Append this to the full research document and save to DB"):
+                            current = (current_research_text or research_full_display or "").strip()
+                            append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
+                            merged = f"{current}\n\n{append_html}" if current else (append_html or current)
                             if is_advisor:
-                                merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                             else:
-                                merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
-                            if cache_key in st.session_state.get("research_cache", {}):
-                                del st.session_state.research_cache[cache_key]
+                                merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            st.session_state[_fresh_key] = merged
                             st.session_state.auto_brief_text = None
-                            st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
+                            st.session_state.pop(wysiwyg_key, None)
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
-                            st.session_state[f"research_fresh_result_{cache_key}"] = result
-                            st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB, Notion, and Drive.")
+                            st.toast("Added to research and saved. Full document updated.")
                             st.rerun()
-                        else:
-                            st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
-                # Always use expandable sections for deep research (format we use for pipeline / Command Center)
-                editor_html = research_display_to_editor_html(research_full_display)
-                use_wysiwyg = False  # Sectioned expanders only; WYSIWYG iframe skipped for consistent expandable format
-                wysiwyg_key = f"research_wysiwyg_html_{cache_key}"
-                if use_wysiwyg:
-                    initial_for_editor = st.session_state.get(wysiwyg_key) or editor_html or ""
-                    editor_page = wysiwyg_editor_html_page(initial_for_editor)
-                    import urllib.parse
-                    data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(editor_page)
-                    event_value = st_iframe_event(data_url, key=f"wysiwyg_editor_{cache_key}", default_width="100%")
-                    if event_value is not None:
-                        st.session_state[wysiwyg_key] = event_value
-                        st.rerun()
-                    current_research_text = (st.session_state.get(wysiwyg_key) or editor_html or "").strip() or research_full_display
-                    st.caption("Edit above, then click **Done editing** in the frame. Use **Save** below to write to DB and Drive.")
-                else:
-                    plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
-                    sections = split_research_into_sections(plain_for_split)
-                    section_edits = []
-                    for i, (sec_title, body) in enumerate(sections):
-                        section_html = research_display_to_editor_html(body) if body else ""
-                        with st.expander(sec_title, expanded=(i == 0)):
-                            st.markdown("<div class='research-doc-view'>" + (section_html or "(No content)") + "</div>", unsafe_allow_html=True)
-                            with st.expander("Edit as HTML", expanded=False):
-                                edited = st.text_area(
-                                    "HTML",
-                                    value=section_html or "",
-                                    height=min(220, 120 + (section_html or "").count("\n") * 12),
-                                    key=f"research_sec_{cache_key}_{i}",
-                                    label_visibility="collapsed",
-                                    placeholder="<p>Edit HTML for this section.</p>",
-                                )
-                            section_edits.append((edited or "").strip() or section_html or "")
-                    current_research_text = "\n\n".join(
-                        f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
-                    ).strip() if section_edits else research_full_display
-                if st.button("💾 Save", key=f"save_research_all_{cache_key}", use_container_width=True, help="Save research to DB and Drive (proper format with tables)"):
-                    _research = (current_research_text or "").strip()
-                    if not _research:
-                        st.warning("No research to save.")
-                    else:
-                        if is_advisor:
-                            merge_advisor_company_extra_data(aid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
-                        else:
-                            merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
-                        _doc_name = comp.get("domain") or comp.get("name", "Company")
-                        fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _research)
-                        if cache_key in st.session_state.get("research_cache", {}):
-                            del st.session_state.research_cache[cache_key]
-                        st.session_state.auto_brief_text = None
-                        st.session_state.pop(wysiwyg_key, None)
-                        if fid:
-                            st.toast("Research saved to DB and Drive (with tables and formatting).")
-                        else:
-                            st.toast("Research saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
-                        st.rerun()
-
-                st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
-                st.markdown(sh_small("Deep research — generate or extend"), unsafe_allow_html=True)
-                st.caption("e.g. \"Add a section on competitor landscape\" or \"Expand the power mapping with the CFO\".")
-                cmd_col1, cmd_col2 = st.columns([3, 1])
-                with cmd_col1:
-                    research_cmd = st.text_input(
-                        "Deep research command",
-                        placeholder="Describe what to add or change…",
-                        key=f"research_cmd_{cache_key}",
-                        label_visibility="collapsed",
-                    )
-                with cmd_col2:
-                    run_cmd = st.button("Run", key=f"research_cmd_run_{cache_key}", type="primary", use_container_width=True)
-                if run_cmd and (research_cmd or "").strip():
-                    with st.spinner("Running command…"):
-                        current_for_ai = (html_to_plain_text(current_research_text) if is_html_content(current_research_text) else current_research_text) or research_full_display
-                        cmd_result = research_command_ai(comp.get("domain", ""), current_for_ai, research_cmd.strip())
-                    if cmd_result:
-                        st.session_state["research_command_result"] = cmd_result
-                        st.session_state["research_command_result_cid"] = cache_key
-                        st.session_state["research_command_replace_key"] = f"research_full_edit_{cache_key}"
-                        st.rerun()
-                    else:
-                        st.error("Command failed.")
-
-                if st.session_state.get("research_command_result_cid") == cache_key and st.session_state.get("research_command_result"):
-                    cmd_result = st.session_state["research_command_result"]
-                    with st.expander("AI result — Replace or Append", expanded=True):
-                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
-                        app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
-                        with app_col1:
-                            if st.button("Replace document", key=f"cmd_replace_{cache_key}", use_container_width=True):
-                                to_save = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
-                                if is_advisor:
-                                    merge_advisor_company_extra_data(aid, {"research_full": to_save, "research_full_updated_at": datetime.utcnow().isoformat()})
-                                else:
-                                    merge_company_extra_data(cid, {"research_full": to_save, "research_full_updated_at": datetime.utcnow().isoformat()})
-                                st.session_state.auto_brief_text = None
-                                st.session_state.pop(wysiwyg_key, None)
-                                st.session_state.pop("research_command_result", None)
-                                st.session_state.pop("research_command_result_cid", None)
-                                st.success("Document replaced.")
-                                st.rerun()
-                        with app_col2:
-                            if st.button("Append to document", key=f"cmd_append_{cache_key}", use_container_width=True):
-                                current = (current_research_text or research_full_display or "").strip()
-                                append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
-                                merged = f"{current}\n\n{append_html}" if current else (append_html or current)
-                                if is_advisor:
-                                    merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
-                                else:
-                                    merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
-                                st.session_state.auto_brief_text = None
-                                st.session_state.pop(wysiwyg_key, None)
-                                st.session_state.pop("research_command_result", None)
-                                st.session_state.pop("research_command_result_cid", None)
-                                st.success("Appended.")
-                                st.rerun()
-                        with app_col3:
-                            if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", use_container_width=True):
-                                st.session_state.pop("research_command_result", None)
-                                st.session_state.pop("research_command_result_cid", None)
-                                st.rerun()
-
-            st.markdown(sh_small("Request / suggest / look up person"), unsafe_allow_html=True)
-            st.caption("Paste a LinkedIn URL or email to run AI research on that person (in context of this company), or describe what’s missing to get a suggestion.")
-            intel_input = st.text_area(
-                "Request",
-                placeholder="E.g. paste linkedin.com/in/... or name@company.com · or 'Power mapping missing the CFO'",
-                height=88,
-                key="intel_request",
-                label_visibility="collapsed",
-            )
-            if st.button("Look up person or get suggestion", key="intel_submit", type="secondary", help="Paste LinkedIn/email to research that person, or describe what to add for an AI suggestion"):
-                raw = (intel_input or "").strip()
-                if not raw:
-                    st.warning("Enter a request, LinkedIn URL, or email.")
-                else:
-                    linkedin_match = re.search(r"https?://[^\s]*linkedin\.com[^\s]*", raw, re.IGNORECASE)
-                    email_match = re.search(r"[\w.-]+@[\w.-]+\.\w+", raw)
-                    if linkedin_match:
-                        url = linkedin_match.group(0).strip().rstrip(".,;:)")
-                        with st.spinner("Running AI research on this person..."):
-                            brief = research_person_for_company(comp=comp, research_notes=rn, linkedin_url=url)
-                        st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
-                        st.session_state.intel_person_brief = brief
-                        st.session_state.intel_suggestion = None
-                        st.rerun()
-                    elif email_match:
-                        em = email_match.group(0).strip()
-                        with st.spinner("Running AI research on this person..."):
-                            brief = research_person_for_company(comp=comp, research_notes=rn, email=em)
-                        st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
-                        st.session_state.intel_person_brief = brief
-                        st.session_state.intel_suggestion = None
-                        st.rerun()
-                    else:
-                        suggestion_phrases = ("missing", "add ", "add a", "expand", "section on", "suggest", "what's missing", "what to add")
-                        is_suggestion = any(p in raw.lower() for p in suggestion_phrases)
-                        if is_suggestion:
-                            with st.spinner("Asking AI for suggestion..."):
-                                suggestion = intelligence_request(comp, rn, raw)
-                            st.session_state.intel_suggestion = suggestion
-                            st.session_state.intel_suggestion_raw = raw
-                            st.session_state.intel_lookup_lead = None
-                            st.session_state.intel_person_brief = None
-                            st.rerun()
-                        else:
-                            with st.spinner("Running AI research on this person..."):
-                                brief = research_person_for_company(comp=comp, research_notes=rn, person_name=raw)
-                            st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
-                            st.session_state.intel_person_brief = brief
-                            st.session_state.intel_suggestion = None
+                    with app_col2:
+                        if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", use_container_width=True):
+                            st.session_state.pop("research_command_result", None)
+                            st.session_state.pop("research_command_result_cid", None)
                             st.rerun()
 
-            if st.session_state.get("intel_lookup_lead") or st.session_state.get("intel_person_brief"):
-                lead = st.session_state.get("intel_lookup_lead") or {}
-                brief = st.session_state.get("intel_person_brief") or ""
-                label = (lead.get("name") or lead.get("email") or "Contact").strip() or "Person"
-                st.markdown(sh_small(f"Research — {label}"), unsafe_allow_html=True)
-                if brief:
-                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{brief}</div></div>", unsafe_allow_html=True)
-                if lead.get("domain") or lead.get("linkedin") or lead.get("email"):
-                    st.caption("You can add this person to this company's contacts and optionally sync to Notion below.")
-                with st.form("add_contact_from_intel"):
-                    name = st.text_input("Name", value=lead.get("name") or "", key="intel_add_name")
-                    role = st.text_input("Role", value=lead.get("role") or "Contact", key="intel_add_role")
-                    email = st.text_input("Email", value=lead.get("email") or "", key="intel_add_email")
-                    linkedin = st.text_input("LinkedIn URL", value=lead.get("linkedin") or "", key="intel_add_li")
-                    city = st.text_input("City", value=lead.get("city") or "", key="intel_add_city")
-                    state = st.text_input("State", value=lead.get("state") or "", key="intel_add_state")
-                    country = st.text_input("Country", value=lead.get("country") or "", key="intel_add_country")
-                    add_notion = st.checkbox("Also create/update in Notion", value=True, key="intel_add_notion")
-                    sub1, sub2 = st.columns(2)
-                    with sub1:
-                        if st.form_submit_button("Add SPOC to database & Notion"):
-                            display_name = (name or email or "Unknown").strip()
-                            if not display_name:
-                                st.error("Name or email required.")
-                            else:
-                                notion_page_id = None
-                                if add_notion:
-                                    notion_page_id = create_notion_contact_page(
-                                        comp.get("domain", ""), display_name,
-                                        email=email.strip() or None, linkedin=linkedin.strip() or None,
-                                        role=role.strip() or None, city=city.strip() or None,
-                                        state=state.strip() or None, country=country.strip() or None,
-                                    )
-                                upsert_contact(
-                                    cid,
-                                    name=display_name,
-                                    role=role.strip() or None,
-                                    email=email.strip() or None,
-                                    linkedin=linkedin.strip() or None,
-                                    city=city.strip() or None,
-                                    state=state.strip() or None,
-                                    country=country.strip() or None,
-                                    notion_page_id=notion_page_id,
-                                )
-                                st.session_state.intel_lookup_lead = None
-                                st.session_state.intel_person_brief = None
-                                st.success("Contact added to database." + (" Synced to Notion." if notion_page_id else ""))
-                                st.rerun()
-                    with sub2:
-                        if st.form_submit_button("Dismiss"):
-                            st.session_state.intel_lookup_lead = None
-                            st.session_state.intel_person_brief = None
-                            st.rerun()
-                if st.button("Dismiss", key="intel_dismiss_lead", use_container_width=True):
-                    st.session_state.intel_lookup_lead = None
-                    st.session_state.intel_person_brief = None
-                    st.rerun()
-
-            if st.session_state.get("intel_suggestion"):
-                st.markdown(sh_small("Suggestion — save as override?"), unsafe_allow_html=True)
-                st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.intel_suggestion}</div></div>", unsafe_allow_html=True)
-                section_options = [n.get("title", "Untitled") for n in rn] if rn else []
-                section_options.append("New section")
-                apply_to = st.selectbox("Apply to section", options=section_options, key="intel_apply_section")
-                new_title = ""
-                if apply_to == "New section":
-                    new_title = st.text_input("New section title", placeholder="e.g. Competitor overview", key="intel_new_title")
-                if st.button("Save as research override", key="intel_save_override", type="primary"):
-                    overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
-                    title = (new_title or "").strip() if apply_to == "New section" else apply_to
-                    if title:
-                        overrides[title] = st.session_state.intel_suggestion
-                        merge_company_extra_data(cid, {"research_overrides": overrides})
-                        st.session_state.intel_suggestion = None
-                        st.session_state.auto_brief_text = None
-                        st.success("Saved as override. Strategist will use it.")
-                        st.rerun()
-                    else:
-                        st.warning("Enter a section title for 'New section'.")
-                if st.button("Dismiss suggestion", key="intel_dismiss_sugg"):
+        st.markdown(sh_small("Request / suggest / look up person"), unsafe_allow_html=True)
+        st.caption("Paste a LinkedIn URL or email to run AI research on that person (in context of this company), or describe what’s missing to get a suggestion.")
+        intel_input = st.text_area(
+            "Request",
+            placeholder="E.g. paste linkedin.com/in/... or name@company.com · or 'Power mapping missing the CFO'",
+            height=88,
+            key="intel_request",
+            label_visibility="collapsed",
+        )
+        if st.button("Look up person or get suggestion", key="intel_submit", type="secondary", help="Paste LinkedIn/email to research that person, or describe what to add for an AI suggestion"):
+            raw = (intel_input or "").strip()
+            if not raw:
+                st.warning("Enter a request, LinkedIn URL, or email.")
+            else:
+                linkedin_match = re.search(r"https?://[^\s]*linkedin\.com[^\s]*", raw, re.IGNORECASE)
+                email_match = re.search(r"[\w.-]+@[\w.-]+\.\w+", raw)
+                if linkedin_match:
+                    url = linkedin_match.group(0).strip().rstrip(".,;:)")
+                    with st.spinner("Running AI research on this person..."):
+                        brief = research_person_for_company(comp=comp, research_notes=rn, linkedin_url=url)
+                    st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
+                    st.session_state.intel_person_brief = brief
                     st.session_state.intel_suggestion = None
                     st.rerun()
-
-            st.markdown(sh_small("Research notes"), unsafe_allow_html=True)
-            if rn:
-                if "research_summary_cache" not in st.session_state:
-                    st.session_state.research_summary_cache = {}
-                if cid in st.session_state.research_summary_cache:
-                    st.markdown(sh_small("Company context (short)"), unsafe_allow_html=True)
-                    st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.research_summary_cache[cid]}</div></div>", unsafe_allow_html=True)
-                elif st.button("Get short context summary", key="intel_summary_btn"):
-                    with st.spinner("Summarizing..."):
-                        summary = summarize_research_to_context(comp, rn)
-                        if summary:
-                            st.session_state.research_summary_cache[cid] = summary
-                            st.rerun()
-                st.caption(f"{len(rn)} sections below. Use the request box above to research a person in this context.")
-                st.markdown(sh_small("Full sections"), unsafe_allow_html=True)
-                for idx, note in enumerate(rn):
-                    with st.expander(note["title"]):
-                        title = note.get("title", "").strip() or "Untitled"
-                        overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
-                        existing = overrides.get(title, "")
-                        has_override = isinstance(existing, str) and existing.strip()
-
-                        if has_override:
-                            st.info("Using local override for strategist (Notion unchanged).")
-
-                        st.markdown(
-                            f"<div style='font-size:12px;color:var(--text-3);margin-bottom:6px;'>"
-                            f"Source: Notion</div>",
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            f"<div style='font-size:13px;white-space:pre-wrap;font-family:monospace;'>{(note.get('content') or '')[:6000]}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-                        st.markdown(sh_small("Edit / correct (local override)"), unsafe_allow_html=True)
-                        new_txt = st.text_area(
-                            "Override",
-                            value=(existing if has_override else (note.get("content") or "")),
-                            height=220,
-                            key=f"ovr_{cid}_{idx}",
-                            label_visibility="collapsed",
-                        )
-                        b1, b2, b3 = st.columns([1, 1, 2])
-                        with b1:
-                            if st.button("💾 Save override", key=f"saveovr_{cid}_{idx}", use_container_width=True):
-                                overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
-                                overrides[title] = new_txt
-                                merge_company_extra_data(cid, {"research_overrides": overrides})
-                                st.session_state.auto_brief_text = None
-                                st.success("Saved.")
-                                st.rerun()
-                        with b2:
-                            if st.button("🧹 Clear override", key=f"clr_{cid}_{idx}", use_container_width=True):
-                                overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
-                                if title in overrides:
-                                    del overrides[title]
-                                merge_company_extra_data(cid, {"research_overrides": overrides})
-                                st.session_state.auto_brief_text = None
-                                st.success("Cleared.")
-                                st.rerun()
-                        with b3:
-                            st.caption("Overrides are stored locally (in your DB) and used by the strategist + briefs.")
-            else:
-                st.info("No research in Notion. Use **Run deep research** in the Research document section above to generate full research (same as Notion bot).")
-
-            if GOOGLE_SERVICE_ACCOUNT_JSON:
-                df = list_drive_files(company_name=comp.get("domain", ""))
-                if df:
-                    st.markdown(sh_small(f"Drive ({len(df)})"), unsafe_allow_html=True)
-                    for f in df[:10]:
-                        st.markdown(f"<div class='c' style='padding:8px 14px;'><a href='{f.get('webViewLink','#')}' target='_blank'>{f['name']}</a></div>", unsafe_allow_html=True)
-
-            st.markdown(sh_small("Contacts"), unsafe_allow_html=True)
-            for ct in get_contacts(cid):
-                ct1, ct2 = st.columns([3, 0.5])
-                with ct1:
-                    _norm = normalize_contact_status(ct.get("status", "not_contacted"))
-                    scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
-                    slabel = CONTACT_STATUS_LABELS.get(_norm, "")
-                    lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
-                    active = ctid == ct["id"]
-                    bdr = "border-left:3px solid var(--accent);" if active else ""
-                    st.markdown(
-                        f"<div class='c' style='padding:10px 14px;{bdr}'>"
-                        f"<div style='display:flex;justify-content:space-between;'>"
-                        f"<span style='font-weight:500;'>{ct['name']}</span>{bdg(slabel, scolor)}</div>"
-                        f"<div style='font-size:12px;color:var(--text-3);margin-top:3px;'>"
-                        f"{ct.get('role','')} · {ct.get('email','')} · {lt}</div></div>",
-                        unsafe_allow_html=True)
-                with ct2:
-                    if st.button("Select" if not active else "✓", key=f"sct_{ct['id']}", use_container_width=True):
-                        select_contact(cid, ct["id"])
+                elif email_match:
+                    em = email_match.group(0).strip()
+                    with st.spinner("Running AI research on this person..."):
+                        brief = research_person_for_company(comp=comp, research_notes=rn, email=em)
+                    st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
+                    st.session_state.intel_person_brief = brief
+                    st.session_state.intel_suggestion = None
+                    st.rerun()
+                else:
+                    suggestion_phrases = ("missing", "add ", "add a", "expand", "section on", "suggest", "what's missing", "what to add")
+                    is_suggestion = any(p in raw.lower() for p in suggestion_phrases)
+                    if is_suggestion:
+                        with st.spinner("Asking AI for suggestion..."):
+                            suggestion = intelligence_request(comp, rn, raw)
+                        st.session_state.intel_suggestion = suggestion
+                        st.session_state.intel_suggestion_raw = raw
+                        st.session_state.intel_lookup_lead = None
+                        st.session_state.intel_person_brief = None
                         st.rerun()
+                    else:
+                        with st.spinner("Running AI research on this person..."):
+                            brief = research_person_for_company(comp=comp, research_notes=rn, person_name=raw)
+                        st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
+                        st.session_state.intel_person_brief = brief
+                        st.session_state.intel_suggestion = None
+                        st.rerun()
+
+        if st.session_state.get("intel_lookup_lead") or st.session_state.get("intel_person_brief"):
+            lead = st.session_state.get("intel_lookup_lead") or {}
+            brief = st.session_state.get("intel_person_brief") or ""
+            label = (lead.get("name") or lead.get("email") or "Contact").strip() or "Person"
+            st.markdown(sh_small(f"Research — {label}"), unsafe_allow_html=True)
+            if brief:
+                st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{brief}</div></div>", unsafe_allow_html=True)
+            if lead.get("domain") or lead.get("linkedin") or lead.get("email"):
+                st.caption("You can add this person to this company's contacts and optionally sync to Notion below.")
+            with st.form("add_contact_from_intel"):
+                name = st.text_input("Name", value=lead.get("name") or "", key="intel_add_name")
+                role = st.text_input("Role", value=lead.get("role") or "Contact", key="intel_add_role")
+                email = st.text_input("Email", value=lead.get("email") or "", key="intel_add_email")
+                linkedin = st.text_input("LinkedIn URL", value=lead.get("linkedin") or "", key="intel_add_li")
+                city = st.text_input("City", value=lead.get("city") or "", key="intel_add_city")
+                state = st.text_input("State", value=lead.get("state") or "", key="intel_add_state")
+                country = st.text_input("Country", value=lead.get("country") or "", key="intel_add_country")
+                add_notion = st.checkbox("Also create/update in Notion", value=True, key="intel_add_notion")
+                sub1, sub2 = st.columns(2)
+                with sub1:
+                    if st.form_submit_button("Add SPOC to database & Notion"):
+                        display_name = (name or email or "Unknown").strip()
+                        if not display_name:
+                            st.error("Name or email required.")
+                        else:
+                            notion_page_id = None
+                            if add_notion:
+                                notion_page_id = create_notion_contact_page(
+                                    comp.get("domain", ""), display_name,
+                                    email=email.strip() or None, linkedin=linkedin.strip() or None,
+                                    role=role.strip() or None, city=city.strip() or None,
+                                    state=state.strip() or None, country=country.strip() or None,
+                                )
+                            upsert_contact(
+                                cid,
+                                name=display_name,
+                                role=role.strip() or None,
+                                email=email.strip() or None,
+                                linkedin=linkedin.strip() or None,
+                                city=city.strip() or None,
+                                state=state.strip() or None,
+                                country=country.strip() or None,
+                                notion_page_id=notion_page_id,
+                            )
+                            st.session_state.intel_lookup_lead = None
+                            st.session_state.intel_person_brief = None
+                            st.success("Contact added to database." + (" Synced to Notion." if notion_page_id else ""))
+                            st.rerun()
+                with sub2:
+                    if st.form_submit_button("Dismiss"):
+                        st.session_state.intel_lookup_lead = None
+                        st.session_state.intel_person_brief = None
+                        st.rerun()
+            if st.button("Dismiss", key="intel_dismiss_lead", use_container_width=True):
+                st.session_state.intel_lookup_lead = None
+                st.session_state.intel_person_brief = None
+                st.rerun()
+
+        if st.session_state.get("intel_suggestion"):
+            st.markdown(sh_small("Suggestion — save as override?"), unsafe_allow_html=True)
+            st.markdown(f"<div class='brief-card'><div style='font-size:13px;white-space:pre-wrap;'>{st.session_state.intel_suggestion}</div></div>", unsafe_allow_html=True)
+            section_options = [n.get("title", "Untitled") for n in rn] if rn else []
+            section_options.append("New section")
+            apply_to = st.selectbox("Apply to section", options=section_options, key="intel_apply_section")
+            new_title = ""
+            if apply_to == "New section":
+                new_title = st.text_input("New section title", placeholder="e.g. Competitor overview", key="intel_new_title")
+            if st.button("Save as research override", key="intel_save_override", type="primary"):
+                overrides = (comp.get("extra_data") or {}).get("research_overrides") or {}
+                title = (new_title or "").strip() if apply_to == "New section" else apply_to
+                if title:
+                    overrides[title] = st.session_state.intel_suggestion
+                    merge_company_extra_data(cid, {"research_overrides": overrides})
+                    st.session_state.intel_suggestion = None
+                    st.session_state.auto_brief_text = None
+                    st.success("Saved as override. Strategist will use it.")
+                    st.rerun()
+                else:
+                    st.warning("Enter a section title for 'New section'.")
+            if st.button("Dismiss suggestion", key="intel_dismiss_sugg"):
+                st.session_state.intel_suggestion = None
+                st.rerun()
+
+        if GOOGLE_SERVICE_ACCOUNT_JSON:
+            df = list_drive_files(company_name=comp.get("domain", ""))
+            if df:
+                st.markdown(sh_small(f"Drive ({len(df)})"), unsafe_allow_html=True)
+                for f in df[:10]:
+                    st.markdown(f"<div class='c' style='padding:8px 14px;'><a href='{f.get('webViewLink','#')}' target='_blank'>{f['name']}</a></div>", unsafe_allow_html=True)
+
+        st.markdown(sh_small("Contacts"), unsafe_allow_html=True)
+        for ct in get_contacts(cid):
+            ct1, ct2 = st.columns([3, 0.5])
+            with ct1:
+                _norm = normalize_contact_status(ct.get("status", "not_contacted"))
+                scolor = CONTACT_STATUS_COLORS.get(_norm, "gray")
+                slabel = CONTACT_STATUS_LABELS.get(_norm, "")
+                lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
+                active = ctid == ct["id"]
+                bdr = "border-left:3px solid var(--accent);" if active else ""
+                st.markdown(
+                    f"<div class='c' style='padding:10px 14px;{bdr}'>"
+                    f"<div style='display:flex;justify-content:space-between;'>"
+                    f"<span style='font-weight:500;'>{ct['name']}</span>{bdg(slabel, scolor)}</div>"
+                    f"<div style='font-size:12px;color:var(--text-3);margin-top:3px;'>"
+                    f"{ct.get('role','')} · {ct.get('email','')} · {lt}</div></div>",
+                    unsafe_allow_html=True)
+            with ct2:
+                if st.button("Select" if not active else "✓", key=f"sct_{ct['id']}", use_container_width=True):
+                    select_contact(cid, ct["id"])
+                    st.rerun()
 
 
 # ════════════════════ STRATEGIST ════════════════════
@@ -1612,9 +1539,30 @@ with tabs[3]:  # STRATEGIST
 
             with sel2:
                 contacts = get_contacts(cid)
-                contacts_with_email = [c for c in contacts if (c.get("email") or "").strip()]
+                spoc_contacts = get_spoc_contacts_by_company(cid)
+                spoc_email_by_name = {}
+                spoc_email_by_parent_id = {}
+                for sc in (spoc_contacts or []):
+                    em = (sc.get("email") or "").strip()
+                    if em:
+                        nm = (sc.get("name") or "").strip()
+                        if nm and nm not in spoc_email_by_name:
+                            spoc_email_by_name[nm] = em
+                        pid = sc.get("spoc_contact_id")
+                        if pid and pid not in spoc_email_by_parent_id:
+                            spoc_email_by_parent_id[pid] = em
+                def _recipient_display(c):
+                    em = (c.get("email") or "").strip()
+                    if not em:
+                        em = spoc_email_by_name.get((c.get("name") or "").strip(), "")
+                    if not em:
+                        em = spoc_email_by_parent_id.get(c["id"], "")
+                    return em or f"{c.get('name', '?')} (no email)"
+                def _has_email(c):
+                    return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
+                contacts_with_email = [c for c in contacts if _has_email(c)]
                 to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
-                ct_display = {c["id"]: (c.get("email") or "").strip() or f"{c.get('name', '?')} (no email)" for c in contacts}
+                ct_display = {c["id"]: _recipient_display(c) for c in contacts}
                 to_index = to_options.index(ctid) if ctid in to_options else 0
                 to_id = st.selectbox(
                     "TO (recipient)",
@@ -1664,7 +1612,14 @@ with tabs[3]:  # STRATEGIST
             # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
             st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
             linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
-
+            if is_advisor_strategist and _aid_s:
+                _fa = get_advisor_company(_aid_s)
+                if _fa:
+                    comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
+            else:
+                _fc = get_company(cid)
+                if _fc:
+                    comp = _fc
             def _persist_linkedin_results(lst):
                 if is_advisor_strategist and _aid_s:
                     merge_advisor_company_extra_data(_aid_s, {"linkedin_lookup_results": lst})
@@ -1685,8 +1640,12 @@ with tabs[3]:  # STRATEGIST
                         rn = fetch_research_from_notion(comp["notion_page_id"])
                         if rn:
                             st.session_state.research_cache[research_cache_key] = rn
-                with st.spinner("Generating brief…"):
-                    brief_text = auto_brief(comp, ct, user["id"], sid, rn) or ""
+                saved_brief_for_extract = (comp.get("extra_data") or {}).get("brief") or ""
+                if (saved_brief_for_extract or "").strip():
+                    brief_text = saved_brief_for_extract.strip()
+                else:
+                    with st.spinner("Generating brief…"):
+                        brief_text = auto_brief(comp, ct, user["id"], sid, rn) or ""
                 research_full = (comp.get("extra_data") or {}).get("research_full") or ""
                 research_notes_text = "\n\n".join(
                     f"{(n.get('title') or 'Section')}\n{(n.get('content') or '').strip()}"
@@ -1709,40 +1668,42 @@ with tabs[3]:  # STRATEGIST
                     st.success(f"Found {sum(1 for r in results if r.get('linkedin_url'))} LinkedIn URLs for {len(results)} contacts.")
                     st.rerun()
 
+            def _linkedin_result_matches_company(result_company, comp):
+                """True only if this result is for the current company. Strict: brief/deep research only; exclude other companies."""
+                if not comp:
+                    return True
+                rc = (result_company or "").strip()
+                rc_lower = rc.lower()
+                domain = (comp.get("domain") or "").strip().lower()
+                name = (comp.get("name") or "").strip().lower()
+                if not domain and not name:
+                    return True
+                # Unspecified or "this company" -> treat as current (extraction sets company_name for all)
+                if not rc or rc_lower == "this company":
+                    return True
+                identifiers = [x for x in [domain, name] if x]
+                for id in identifiers:
+                    if id and (rc_lower == id or (len(id) >= 3 and id in rc_lower) or (len(rc_lower) >= 3 and rc_lower in id)):
+                        return True
+                return False
+
             _saved_list = None
             if is_advisor_strategist and _aid_s:
                 _adv = get_advisor_company(_aid_s)
                 _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
             else:
                 _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
-            # Always rehydrate from DB when we have persisted data so SignalHire email/phone survive refresh
             if _saved_list and isinstance(_saved_list, list):
-                st.session_state[linkedin_results_key] = _saved_list
+                _raw_len = len(_saved_list)
+                _saved_list = [r for r in _saved_list if _linkedin_result_matches_company(r.get("company"), comp)]
+                _existing = st.session_state.get(linkedin_results_key)
+                if _saved_list or not (isinstance(_existing, list) and len(_existing) > 0):
+                    st.session_state[linkedin_results_key] = _saved_list
+                if _raw_len != len(_saved_list) and _saved_list:
+                    _persist_linkedin_results(_saved_list)
 
             if linkedin_results_key in st.session_state:
                 results_list = st.session_state[linkedin_results_key]
-
-                def _linkedin_result_matches_company(result_company, comp):
-                    """True if this result belongs to the current session company. Show when company matches or is unspecified; hide only when explicitly a different company (e.g. Season 4, LLC)."""
-                    if not comp:
-                        return True
-                    rc = (result_company or "").strip()
-                    rc_lower = rc.lower()
-                    domain = (comp.get("domain") or "").strip().lower()
-                    name = (comp.get("name") or "").strip().lower()
-                    # Unspecified or generic -> show for current company (extraction default)
-                    if not rc or rc_lower == "this company":
-                        return bool(domain or name)
-                    if not domain and not name:
-                        return True
-                    identifiers = [x for x in [domain, name] if x]
-                    if rc_lower in identifiers:
-                        return True
-                    for id in identifiers:
-                        if (len(id) >= 3 and id in rc_lower) or (len(rc_lower) >= 3 and rc_lower in id):
-                            return True
-                    return False
-
                 filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
 
                 # Check pending SignalHire enrichments and merge if completed

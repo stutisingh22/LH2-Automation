@@ -661,29 +661,33 @@ def run_research(domain, context="", progress_callback=None):
 def research_command_ai(domain, current_research_text, user_command):
     """
     Run an AI command on the research document: extend, add section, or revise.
-    Returns the full updated research text (to replace or append in the UI).
+    Returns ONLY the new content (the section or addition for the user's query).
+    The UI then lets the user add this to the full research and save.
     """
     if not (user_command or "").strip() or not ANTHROPIC_API_KEY:
         return None
     current = (current_research_text or "").strip()
-    prompt = f"""You are editing institutional-grade strategic research for {domain}.
+    # Send last 20k chars for context (style/structure) so we don't overload the prompt
+    context = (current[-20000:] if len(current) > 20000 else current) if current else "(No existing research.)"
+    prompt = f"""You are writing institutional-grade strategic research for {domain}.
 
-CURRENT RESEARCH DOCUMENT:
-{current[:40000] if current else '(Document is empty. Generate new research in the same format and tone as the Notion research bot.)'}
+EXISTING RESEARCH (for style/structure only — do not repeat this in your answer):
+{context}
 
-USER COMMAND:
+USER REQUEST:
 {user_command.strip()}
 
 Instructions:
-- If the user asks to add a section, extend, or research something new: add or extend the document in the same style (institutional, structured, tables where appropriate). Return the COMPLETE updated document including all existing content plus your addition.
-- If the user asks to revise or fix something: apply the change and return the COMPLETE document.
-- Use the same section structure and formatting (===, ---, pipe tables) as the existing research. No markdown bold, no emojis.
-- Output ONLY the full research document. No preamble or "Here is the updated document"."""
+- Answer ONLY the user's request: write the new section, the addition, or the revised snippet they asked for.
+- Do NOT return the full document. Do NOT repeat existing content. Output only what should be added or the revised part.
+- Use the same style: institutional, structured, pipe tables where appropriate. Same section formatting (===, ---). No markdown bold, no emojis.
+- No preamble like "Here is the section". Output only the research content."""
     try:
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        # Smaller max_tokens — we expect a section, not a full document
         r = client.messages.create(
             model=RESEARCH_MODEL,
-            max_tokens=RESEARCH_MAX_TOKENS,
+            max_tokens=8000,
             messages=[{"role": "user", "content": prompt}],
         )
         return (r.content[0].text or "").strip()
