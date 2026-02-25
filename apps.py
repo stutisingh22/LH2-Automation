@@ -1044,59 +1044,59 @@ with tabs[2]:  # INTELLIGENCE
             else:
                 rn = st.session_state.research_cache[cache_key]
 
-            if ctid and st.session_state.session_id:
-                ct = get_contact(ctid)
-                if ct:
-                    if is_advisor and aid:
-                        _fa = get_advisor_company(aid)
-                        if _fa:
-                            comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
-                    elif cid:
-                        _fc = get_company(cid)
-                        if _fc:
-                            comp = _fc
-                    brief_key = f"brief_text_{cache_key}_{ctid}"
-                    if st.session_state.get(brief_key) is None:
-                        saved_brief = (comp.get("extra_data") or {}).get("brief") or ""
-                        if (saved_brief or "").strip():
-                            st.session_state[brief_key] = saved_brief.strip()
+        if ctid and st.session_state.session_id:
+            ct = get_contact(ctid)
+            if ct:
+                if is_advisor and aid:
+                    _fa = get_advisor_company(aid)
+                    if _fa:
+                        comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
+                elif cid:
+                    _fc = get_company(cid)
+                    if _fc:
+                        comp = _fc
+                brief_key = f"brief_text_{cache_key}_{ctid}"
+                if st.session_state.get(brief_key) is None:
+                    saved_brief = (comp.get("extra_data") or {}).get("brief") or ""
+                    if (saved_brief or "").strip():
+                        st.session_state[brief_key] = saved_brief.strip()
+                    else:
+                        with st.spinner("Generating brief..."):
+                            brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
+                            st.session_state[brief_key] = brief or "Could not generate brief."
+                brief_display = st.session_state.get(brief_key) or ""
+                st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
+                st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
+                brief_entry = st.text_input(
+                    "Brief",
+                    placeholder="e.g. Focus on power mapping · or leave blank for full brief",
+                    key=f"brief_entry_{cache_key}_{ctid}",
+                    label_visibility="collapsed",
+                )
+                st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(brief_display) + "</div>", unsafe_allow_html=True)
+                brief_btn_col1, brief_btn_col2 = st.columns(2)
+                with brief_btn_col1:
+                    if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
+                        st.session_state.pop(brief_key, None)
+                        st.rerun()
+                with brief_btn_col2:
+                    if st.button("💾 Save", key="brief_save_all", help="Save brief to DB and Drive"):
+                        _brief = (brief_display or "").strip()
+                        if not _brief:
+                            st.warning("No brief to save.")
                         else:
-                            with st.spinner("Generating brief..."):
-                                brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
-                                st.session_state[brief_key] = brief or "Could not generate brief."
-                    brief_display = st.session_state.get(brief_key) or ""
-                    st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
-                    st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
-                    brief_entry = st.text_input(
-                        "Brief",
-                        placeholder="e.g. Focus on power mapping · or leave blank for full brief",
-                        key=f"brief_entry_{cache_key}_{ctid}",
-                        label_visibility="collapsed",
-                    )
-                    st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(brief_display) + "</div>", unsafe_allow_html=True)
-                    brief_btn_col1, brief_btn_col2 = st.columns(2)
-                    with brief_btn_col1:
-                        if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
-                            st.session_state.pop(brief_key, None)
-                            st.rerun()
-                    with brief_btn_col2:
-                        if st.button("💾 Save", key="brief_save_all", help="Save brief to DB, Notion, and Drive"):
-                            _brief = (brief_display or "").strip()
-                            if not _brief:
-                                st.warning("No brief to save.")
+                            _doc_name = comp.get("domain") or comp.get("name", "Company")
+                            if is_advisor:
+                                merge_advisor_company_extra_data(aid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
                             else:
-                                _doc_name = comp.get("domain") or comp.get("name", "Company")
-                                if is_advisor:
-                                    merge_advisor_company_extra_data(aid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
-                                else:
-                                    merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
-                                st.session_state[brief_key] = _brief  # keep session in sync so saved brief persists
-                                fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
-                                if fid:
-                                    st.toast("Brief saved to DB and Drive.")
-                                else:
-                                    st.toast("Brief saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
-                                st.rerun()
+                                merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
+                            st.session_state[brief_key] = _brief
+                            fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
+                            if fid:
+                                st.toast("Brief saved to DB and Drive.")
+                            else:
+                                st.toast("Brief saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
+                            st.rerun()
 
         st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
         r1 = st.columns(5)
