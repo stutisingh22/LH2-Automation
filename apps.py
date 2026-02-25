@@ -12,6 +12,7 @@ Features:
 import inspect
 import re
 import time
+import pandas as pd
 import streamlit as st
 from datetime import datetime
 import hashlib
@@ -43,6 +44,7 @@ from db_ops import (
     get_company, get_all_companies, search_companies,
     get_or_create_shadow_company_for_advisor,
     upsert_company, upsert_contact,
+    upsert_spoc_contact, get_spoc_contacts_by_spoc,
     get_contacts, get_contact, update_contact_status, update_contact,
     get_or_create_session, get_session, get_sessions_for_company,
     get_user_sessions, delete_session,
@@ -1044,6 +1046,16 @@ with tabs[2]:  # INTELLIGENCE
             if ctid and st.session_state.session_id:
                 ct = get_contact(ctid)
                 if ct:
+                    brief_key = f"brief_text_{cache_key}_{ctid}"
+                    if st.session_state.get(brief_key) is None:
+                        saved_brief = (comp.get("extra_data") or {}).get("brief") or ""
+                        if (saved_brief or "").strip():
+                            st.session_state[brief_key] = saved_brief.strip()
+                        else:
+                            with st.spinner("Generating brief..."):
+                                brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
+                                st.session_state[brief_key] = brief or "Could not generate brief."
+                    brief_display = st.session_state.get(brief_key) or ""
                     st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
                     st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
                     brief_entry = st.text_input(
@@ -1052,19 +1064,15 @@ with tabs[2]:  # INTELLIGENCE
                         key=f"brief_entry_{cache_key}_{ctid}",
                         label_visibility="collapsed",
                     )
-                    if st.session_state.auto_brief_text is None:
-                        with st.spinner("Generating brief..."):
-                            brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
-                            st.session_state.auto_brief_text = brief or "Could not generate brief."
-                    st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(st.session_state.auto_brief_text or "") + "</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(brief_display) + "</div>", unsafe_allow_html=True)
                     brief_btn_col1, brief_btn_col2 = st.columns(2)
                     with brief_btn_col1:
                         if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
-                            st.session_state.auto_brief_text = None
+                            st.session_state.pop(brief_key, None)
                             st.rerun()
                     with brief_btn_col2:
                         if st.button("💾 Save", key="brief_save_all", help="Save brief to DB, Notion, and Drive"):
-                            _brief = (st.session_state.auto_brief_text or "").strip()
+                            _brief = (brief_display or "").strip()
                             if not _brief:
                                 st.warning("No brief to save.")
                             else:
@@ -1091,9 +1099,35 @@ with tabs[2]:  # INTELLIGENCE
                     st.markdown(crd(l, v), unsafe_allow_html=True)
 
             # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
+            # Re-fetch comp so extra_data (research_full) is fresh after save/run
+            if is_advisor and aid:
+                _fresh_adv = get_advisor_company(aid)
+                if _fresh_adv:
+                    _ed = _fresh_adv.get("extra_data")
+                    if isinstance(_ed, str) and (_ed or "").strip():
+                        try:
+                            _ed = json.loads(_ed)
+                        except Exception:
+                            _ed = {}
+                    comp = {**comp, "extra_data": _ed if isinstance(_ed, dict) else {}}
+            elif cid:
+                _fresh_comp = get_company(cid)
+                if _fresh_comp:
+                    comp = _fresh_comp
             st.markdown(sh_small("Research document"), unsafe_allow_html=True)
-            extra = comp.get("extra_data") or {}
-            research_full_db = (extra.get("research_full") or "").strip() if not is_advisor else (extra.get("research_full") or "").strip()
+            _raw_extra = comp.get("extra_data")
+            if isinstance(_raw_extra, str):
+                try:
+                    extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
+                except Exception:
+                    extra = {}
+            else:
+                extra = _raw_extra if isinstance(_raw_extra, dict) else {}
+            research_full_db = (extra.get("research_full") or "").strip()
+            # Use just-fetched result from session so it shows immediately after Run/Re-run (avoids read-your-writes)
+            _fresh_key = f"research_fresh_result_{cache_key}"
+            if not research_full_db and st.session_state.get(_fresh_key):
+                research_full_db = (st.session_state.pop(_fresh_key) or "").strip()
             research_source_from_notion = False
             if not research_full_db and rn:
                 research_full_display = "\n\n".join(
@@ -1123,6 +1157,10 @@ with tabs[2]:  # INTELLIGENCE
                             merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                         if cache_key in st.session_state.get("research_cache", {}):
                             del st.session_state.research_cache[cache_key]
+                        st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
+                        st.session_state.pop("research_command_result", None)
+                        st.session_state.pop("research_command_result_cid", None)
+                        st.session_state[f"research_fresh_result_{cache_key}"] = result
                         st.success("Research saved to Command Center. Edit below if needed, then click **Save** to write to DB, Notion, and Drive.")
                         st.rerun()
                     else:
@@ -1158,6 +1196,9 @@ with tabs[2]:  # INTELLIGENCE
                                 del st.session_state.research_cache[cache_key]
                             st.session_state.auto_brief_text = None
                             st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
+                            st.session_state.pop("research_command_result", None)
+                            st.session_state.pop("research_command_result_cid", None)
+                            st.session_state[f"research_fresh_result_{cache_key}"] = result
                             st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB, Notion, and Drive.")
                             st.rerun()
                         else:
@@ -1800,7 +1841,14 @@ with tabs[3]:  # STRATEGIST
                         with row_col3:
                             if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
                                 upsert_contact(cid, name, role=role or None, linkedin=url or None)
-                                st.success(f"Added **{name}** to company.")
+                                upsert_spoc_contact(
+                                    cid, ctid, name,
+                                    role=role or None,
+                                    email=(r.get("email") or "").strip() or None,
+                                    linkedin_url=url or None,
+                                    phone=(r.get("phone") or "").strip() or None,
+                                )
+                                st.success(f"Added **{name}** to company (and under this SPOC).")
                                 st.rerun()
                         with row_col4:
                             if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
@@ -1809,10 +1857,45 @@ with tabs[3]:  # STRATEGIST
                                 _persist_linkedin_results(new_list)
                                 st.success("Removed from list.")
                                 st.rerun()
-                if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=False):
-                    st.session_state.pop(linkedin_results_key, None)
-                    _persist_linkedin_results([])
-                    st.rerun()
+                clear_col, save_col = st.columns(2)
+                with clear_col:
+                    if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
+                        st.session_state.pop(linkedin_results_key, None)
+                        _persist_linkedin_results([])
+                        st.rerun()
+                with save_col:
+                    if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Save every contact in the list to the DB, tagged under the current SPOC"):
+                        for r in results_list:
+                            nm = (r.get("name") or "").strip()
+                            if not nm:
+                                continue
+                            upsert_spoc_contact(
+                                cid, ctid, nm,
+                                role=(r.get("role") or "").strip() or None,
+                                email=(r.get("email") or "").strip() or None,
+                                linkedin_url=(r.get("linkedin_url") or "").strip() or None,
+                                phone=(r.get("phone") or "").strip() or None,
+                            )
+                        st.success(f"Saved {len([x for x in results_list if (x.get('name') or '').strip()])} contact(s) under this SPOC.")
+                        st.rerun()
+
+            # ── Contacts under this SPOC (from spoc_contacts table) ──
+            st.markdown(sh_small("Contacts under this SPOC"), unsafe_allow_html=True)
+            spoc_list = get_spoc_contacts_by_spoc(ctid)
+            if not spoc_list:
+                st.caption("No contacts saved under this SPOC yet. Use «Add to company» or «Save all to DB (under this SPOC)» from the list above.")
+            else:
+                df = pd.DataFrame([
+                    {
+                        "Name": s.get("name") or "—",
+                        "Role": s.get("role") or "—",
+                        "Email": s.get("email") or "—",
+                        "LinkedIn": s.get("linkedin_url") or "—",
+                        "Phone": s.get("phone") or "—",
+                    }
+                    for s in spoc_list
+                ])
+                st.dataframe(df, use_container_width=True, hide_index=True)
 
             if run_enrich:
                 if not lookup_identifier:
@@ -1910,7 +1993,14 @@ with tabs[3]:  # STRATEGIST
                                 role=res.get("headline") or None,
                                 extra_data=extra,
                             )
-                            st.success(f"Contact “{add_name.strip()}” added to {get_company(add_cid).get('domain','company')}.")
+                            upsert_spoc_contact(
+                                add_cid, ctid, add_name.strip(),
+                                role=res.get("headline") or None,
+                                email=primary_email or None,
+                                linkedin_url=res.get("linkedin") or None,
+                                phone=primary_phone or None,
+                            )
+                            st.success(f"Contact “{add_name.strip()}” added to {get_company(add_cid).get('domain','company')} (and under this SPOC).")
                             st.session_state.pop(enrich_result_key, None)
                             st.rerun()
 

@@ -178,6 +178,31 @@ class AdvisorCompany(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SpocContact(Base):
+    """
+    Contacts saved from the Strategist (brief/research + LinkedIn + SignalHire), tagged under a SPOC.
+    Separate table so existing contacts table is unchanged; clear columns for email, linkedin_url, phone.
+    """
+    __tablename__ = "spoc_contacts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    spoc_contact_id = Column(
+        Integer, ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    name = Column(String(255), nullable=False)
+    role = Column(String(150))
+    email = Column(String(255))
+    linkedin_url = Column(Text)
+    phone = Column(String(100))
+    extra_data = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ProcessedGmailMessage(Base):
     """Tracks Gmail message IDs we've already synced so we don't log the same sent email twice."""
     __tablename__ = "processed_gmail_messages"

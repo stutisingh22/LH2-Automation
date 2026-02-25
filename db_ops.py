@@ -22,7 +22,7 @@ from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
-    ProcessedGmailMessage,
+    ProcessedGmailMessage, SpocContact,
 )
 
 log = logging.getLogger(__name__)
@@ -549,6 +549,81 @@ def get_latest_enrichment_for_user(user_id, status="completed"):
             "identifier": r.identifier, "result_json": r.result_json or {},
             "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else None,
         }
+
+
+# ── SPOC contacts (strategist-saved, tagged under a SPOC; separate table, distinct email/linkedin/phone) ──
+
+def _ensure_spoc_contacts_table(session):
+    try:
+        SpocContact.__table__.create(session.get_bind(), checkfirst=True)
+    except Exception:
+        pass
+
+
+def upsert_spoc_contact(company_id, spoc_contact_id, name, role=None, email=None, linkedin_url=None, phone=None, extra_data=None):
+    """
+    Create or update a contact under a SPOC in spoc_contacts. Match by (company_id, spoc_contact_id, name).
+    Returns the spoc_contact row id.
+    """
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        row = s.query(SpocContact).filter_by(
+            company_id=company_id, spoc_contact_id=spoc_contact_id, name=(name or "").strip()
+        ).first()
+        if row:
+            if role is not None:
+                row.role = role
+            if email is not None:
+                row.email = email
+            if linkedin_url is not None:
+                row.linkedin_url = linkedin_url
+            if phone is not None:
+                row.phone = phone
+            if extra_data is not None and isinstance(extra_data, dict):
+                row.extra_data = {**(row.extra_data or {}), **extra_data}
+            row.updated_at = datetime.utcnow()
+            s.flush()
+            return row.id
+        row = SpocContact(
+            company_id=company_id, spoc_contact_id=spoc_contact_id, name=(name or "").strip(),
+            role=role, email=email or None, linkedin_url=linkedin_url or None, phone=phone or None,
+            extra_data=extra_data,
+        )
+        s.add(row)
+        s.flush()
+        return row.id
+
+
+def get_spoc_contacts_by_spoc(spoc_contact_id):
+    """All contacts tagged under this SPOC (contact id)."""
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        return [
+            {
+                "id": r.id, "company_id": r.company_id, "spoc_contact_id": r.spoc_contact_id,
+                "name": r.name, "role": r.role, "email": r.email, "linkedin_url": r.linkedin_url,
+                "phone": r.phone, "extra_data": r.extra_data,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in s.query(SpocContact).filter_by(spoc_contact_id=spoc_contact_id).order_by(SpocContact.name).all()
+        ]
+
+
+def get_spoc_contacts_by_company(company_id):
+    """All SPOC-tagged contacts for this company."""
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        return [
+            {
+                "id": r.id, "company_id": r.company_id, "spoc_contact_id": r.spoc_contact_id,
+                "name": r.name, "role": r.role, "email": r.email, "linkedin_url": r.linkedin_url,
+                "phone": r.phone, "extra_data": r.extra_data,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in s.query(SpocContact).filter_by(company_id=company_id).order_by(SpocContact.spoc_contact_id, SpocContact.name).all()
+        ]
 
 
 # ── Sessions ──────────────────────────────────────────────────
