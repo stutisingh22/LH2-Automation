@@ -9,6 +9,7 @@ Features:
   - Streaming chat with proper styling
 """
 
+import html as html_module
 import inspect
 import re
 import time
@@ -283,6 +284,15 @@ defaults = {
 for k, d in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = d
+
+
+def _is_placeholder_contact(ct, comp):
+    """Block plan/draft only when there is no email — no SPOC, no real person. Email present = real contact; name is resolved from SPOC."""
+    if not ct:
+        return True
+    if (ct.get("email") or "").strip():
+        return False  # email = SPOC present = real contact; name is tracked down from SPOC
+    return True
 
 
 def select_contact(comp_id, ct_id):
@@ -648,7 +658,7 @@ with st.sidebar:
 # HEADER + TOP TAB BAR (buttons)
 # ══════════════════════════════════════════════════════════════
 
-TAB_NAMES = ["DASHBOARD", "COMPANIES", "INTELLIGENCE", "STRATEGIST", "ACTIONS", "TIMELINE", "CALENDAR", "PIPELINE", "HISTORY", "ADVISOR"]
+TAB_NAMES = ["DASHBOARD", "COMPANIES", "INTELLIGENCE", "STRATEGIST", "ACTIONS", "TIMELINE", "CALENDAR", "PIPELINE", "SPOC TRACKING", "HISTORY", "ADVISOR"]
 
 # Which Notion DB drives the Companies view: Independent (NOTION_DATABASE_ID) or Media Houses (NOTION_DATABASE_ID_2)
 if "notion_companies_source" not in st.session_state:
@@ -701,7 +711,8 @@ with header_cols[2]:
 
 # Professional Admin Navigation using st.tabs()
 tab_labels = [n.title() if n != "ADVISOR" else "Advisor" for n in TAB_NAMES]
-tabs = st.tabs(tab_labels)
+default_tab_label = tab_labels[TAB_NAMES.index(current_tab)] if current_tab in TAB_NAMES else tab_labels[0]
+tabs = st.tabs(tab_labels, default=default_tab_label)
 
 # ════════════════════ DASHBOARD ════════════════════
 
@@ -813,10 +824,16 @@ with tabs[1]:  # COMPANIES
                 unsafe_allow_html=True)
         else:
             st.markdown(sh(f"{len(advisor_rows)} COMPANIES (by parent)"), unsafe_allow_html=True)
+            _shadow_cache = st.session_state.setdefault("_advisor_shadow", {})
+            _contacts_cache = st.session_state.setdefault("_advisor_contacts", {})
             for grp in advisor_groups:
                 with st.expander(f"**{grp['parent_name']}** — {len(grp['children'])} child(ren)", expanded=False):
                     for ch in grp["children"]:
                         is_sel_adv = st.session_state.get("sel_advisor_company_id") == ch["id"]
+                        ch_id = ch["id"]
+                        if ch_id not in _shadow_cache:
+                            _shadow_cache[ch_id] = get_or_create_shadow_company_for_advisor(ch_id)
+                        shadow_cid, _ = _shadow_cache[ch_id]
                         row_col1, row_col2 = st.columns([4, 0.5])
                         with row_col1:
                             st.markdown(
@@ -839,8 +856,43 @@ with tabs[1]:  # COMPANIES
                                 st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
                                 st.session_state.auto_brief_text = None
                                 st.session_state.pending_plan = None
-                                st.session_state.current_tab = "INTELLIGENCE"
+                                st.session_state.current_tab = "STRATEGIST"
                                 st.rerun()
+                        # Same as Independent: expander with contacts for this child (shadow company)
+                        if shadow_cid and shadow_cid not in _contacts_cache:
+                            _contacts_cache[shadow_cid] = get_contacts(shadow_cid)
+                        cts_adv = (_contacts_cache.get(shadow_cid) or []) if shadow_cid else []
+                        if cts_adv:
+                            with st.expander(f"👥 {len(cts_adv)} contact(s)", expanded=is_sel_adv):
+                                for ct in cts_adv:
+                                    _norm_adv = normalize_contact_status(ct.get("status", "not_contacted"))
+                                    scolor_adv = CONTACT_STATUS_COLORS.get(_norm_adv, "gray")
+                                    slabel_adv = CONTACT_STATUS_LABELS.get(_norm_adv, "")
+                                    cols_adv = st.columns([2.5, 1.2, 0.4, 0.4])
+                                    with cols_adv[0]:
+                                        st.markdown(
+                                            f"<b>{ct['name']}</b> <span style='font-size:11px;color:var(--text-3);'>"
+                                            f"{ct.get('role','')}</span> {bdg(slabel_adv, scolor_adv)}",
+                                            unsafe_allow_html=True)
+                                    with cols_adv[1]:
+                                        ns_adv = st.selectbox("s", CONTACT_STATUSES,
+                                            index=CONTACT_STATUSES.index(_norm_adv) if _norm_adv in CONTACT_STATUSES else 0,
+                                            format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                                            key=f"adv_qs_{ch['id']}_{ct['id']}", label_visibility="collapsed")
+                                        if ns_adv != ct.get("status"):
+                                            update_contact_status(ct["id"], ns_adv)
+                                            st.rerun()
+                                    with cols_adv[2]:
+                                        if st.button("→", key=f"adv_go_ct_{ch['id']}_{ct['id']}", use_container_width=True):
+                                            st.session_state.sel_advisor_company_id = ch["id"]
+                                            select_contact(shadow_cid, ct["id"])
+                                            st.rerun()
+                                    with cols_adv[3]:
+                                        if st.button("📅", key=f"adv_tl_{ch['id']}_{ct['id']}", use_container_width=True, help="View contact timeline"):
+                                            st.session_state.timeline_contact_id = ct["id"]
+                                            st.session_state.timeline_company_id = shadow_cid
+                                            st.session_state.timeline_contact_name = ct.get("name", "Contact")
+                                            st.rerun()
     else:
         # ── Primary DB: existing companies + contacts flow ──
         if st.session_state.get("clear_company_search"):
@@ -960,13 +1012,29 @@ with tabs[1]:  # COMPANIES
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
                 border = "border-left:3px solid var(--accent);" if is_sel else ""
-                st.markdown(
-                    f"<div class='c' style='padding:10px 14px;{border}'>"
-                    f"<div style='display:flex;justify-content:space-between;'>"
-                    f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
-                    f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
-                    f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
-                    unsafe_allow_html=True)
+                # Same row: company name/card + arrow button
+                row_name, row_arrow = st.columns([4, 0.5])
+                with row_name:
+                    st.markdown(
+                        f"<div class='c' style='padding:10px 14px;{border}'>"
+                        f"<div style='display:flex;justify-content:space-between;'>"
+                        f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
+                        f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
+                        f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
+                        unsafe_allow_html=True)
+                with row_arrow:
+                    if st.button("→", key=f"comp_go_{comp['id']}", use_container_width=True, help="Open intelligence/brief for this company"):
+                        # Choose a primary contact (if any) so existing brief logic can run unchanged.
+                        contacts_for_comp = get_contacts(comp["id"])
+                        if contacts_for_comp:
+                            primary_ct = contacts_for_comp[0]
+                            select_contact(comp["id"], primary_ct["id"])
+                        else:
+                            st.session_state.sel_company = comp["id"]
+                            st.session_state.sel_contact = None
+                            st.session_state.session_id = None
+                            st.session_state.current_tab = "INTELLIGENCE"
+                        st.rerun()
                 cts = get_contacts(comp["id"])
                 if cts:
                     with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
@@ -1057,9 +1125,13 @@ with tabs[2]:  # INTELLIGENCE
                         comp = _fc
                 brief_key = f"brief_text_{cache_key}_{ctid}"
                 if st.session_state.get(brief_key) is None:
-                    saved_brief = (comp.get("extra_data") or {}).get("brief") or ""
-                    if (saved_brief or "").strip():
-                        st.session_state[brief_key] = saved_brief.strip()
+                    extra = comp.get("extra_data") or {}
+                    briefs = extra.get("briefs") or {}
+                    saved_brief = ((briefs.get(str(ctid)) or {}).get("content") or "").strip()
+                    if not saved_brief:
+                        saved_brief = (extra.get("brief") or "").strip()
+                    if saved_brief:
+                        st.session_state[brief_key] = saved_brief
                     else:
                         with st.spinner("Generating brief..."):
                             brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
@@ -1086,10 +1158,13 @@ with tabs[2]:  # INTELLIGENCE
                             st.warning("No brief to save.")
                         else:
                             _doc_name = comp.get("domain") or comp.get("name", "Company")
+                            _extra = comp.get("extra_data") or {}
+                            _briefs = dict(_extra.get("briefs") or {})
+                            _briefs[str(ctid)] = {"content": _brief, "updated_at": datetime.utcnow().isoformat()}
                             if is_advisor:
-                                merge_advisor_company_extra_data(aid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
+                                merge_advisor_company_extra_data(aid, {"briefs": _briefs})
                             else:
-                                merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
+                                merge_company_extra_data(cid, {"briefs": _briefs})
                             st.session_state[brief_key] = _brief
                             fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
                             if fid:
@@ -1303,17 +1378,20 @@ with tabs[2]:  # INTELLIGENCE
                             current = (current_research_text or research_full_display or "").strip()
                             append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
                             merged = f"{current}\n\n{append_html}" if current else (append_html or current)
-                            if is_advisor:
-                                merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            if not (merged or "").strip():
+                                st.warning("No content to add.")
                             else:
-                                merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
-                            st.session_state[_fresh_key] = merged
-                            st.session_state.auto_brief_text = None
-                            st.session_state.pop(wysiwyg_key, None)
-                            st.session_state.pop("research_command_result", None)
-                            st.session_state.pop("research_command_result_cid", None)
-                            st.toast("Added to research and saved. Full document updated.")
-                            st.rerun()
+                                st.session_state[_fresh_key] = merged
+                                if is_advisor:
+                                    merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                else:
+                                    merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                st.session_state.auto_brief_text = None
+                                st.session_state.pop(wysiwyg_key, None)
+                                st.session_state.pop("research_command_result", None)
+                                st.session_state.pop("research_command_result_cid", None)
+                                st.toast("Added to research and saved. Full document updated.")
+                                st.rerun()
                     with app_col2:
                         if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", use_container_width=True):
                             st.session_state.pop("research_command_result", None)
@@ -1516,749 +1594,843 @@ with tabs[3]:  # STRATEGIST
         else:
             # Research cache: Intelligence uses advisor_{id} for Media Houses, cid for Independent
             research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
-            # ── FROM / TO selectors ──
-            # FROM: only registered users, displayed by email
-            # TO: only contacts that have an email for this company, displayed by email
-            sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
-            with sel1:
-                all_users = get_all_users()
-                user_emails = {u["id"]: (u.get("email") or "").strip() or (u.get("username") or "?") for u in all_users}
-                from_options = [u["id"] for u in all_users if (u.get("email") or "").strip()]
-                if not from_options:
-                    from_options = [u["id"] for u in all_users]
-                from_index = from_options.index(st.session_state.sender_id) if st.session_state.sender_id in from_options else 0
-                sender_id = st.selectbox(
-                    "FROM (sender)",
-                    options=from_options,
-                    format_func=lambda x: f"📧 {user_emails.get(x, '?')}",
-                    index=from_index,
-                    key="from_sel",
-                )
-                st.session_state.sender_id = sender_id
-                sender_name = user_emails.get(sender_id, "")
-
-            with sel2:
-                contacts = get_contacts(cid)
-                spoc_contacts = get_spoc_contacts_by_company(cid)
-                spoc_email_by_name = {}
-                spoc_email_by_parent_id = {}
-                for sc in (spoc_contacts or []):
-                    em = (sc.get("email") or "").strip()
-                    if em:
-                        nm = (sc.get("name") or "").strip()
-                        if nm and nm not in spoc_email_by_name:
-                            spoc_email_by_name[nm] = em
-                        pid = sc.get("spoc_contact_id")
-                        if pid and pid not in spoc_email_by_parent_id:
-                            spoc_email_by_parent_id[pid] = em
-                def _recipient_display(c):
-                    em = (c.get("email") or "").strip()
-                    if not em:
-                        em = spoc_email_by_name.get((c.get("name") or "").strip(), "")
-                    if not em:
-                        em = spoc_email_by_parent_id.get(c["id"], "")
-                    return em or f"{c.get('name', '?')} (no email)"
-                def _has_email(c):
-                    return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
-                contacts_with_email = [c for c in contacts if _has_email(c)]
-                to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
-                ct_display = {c["id"]: _recipient_display(c) for c in contacts}
-                to_index = to_options.index(ctid) if ctid in to_options else 0
-                to_id = st.selectbox(
-                    "TO (recipient)",
-                    options=to_options,
-                    format_func=lambda x: f"📨 {ct_display.get(x, '?')}",
-                    index=to_index,
-                    key="to_sel",
-                )
-                if to_id != ctid:
-                    select_contact(cid, to_id)
-                    st.rerun()
-
-            with sel3:
-                score = compute_lead_score(comp, ct)
-                lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
-                si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                st.markdown(
-                    f"<div style='padding:8px 0;'>"
-                    f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
-                    f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
-                    unsafe_allow_html=True)
-
-            # ── Contact details & enrichment ──
-            st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
-            enrich_result_key = f"enrich_result_{ctid}"
-            db_email = (ct.get("email") or "").strip()
-            db_linkedin = (ct.get("linkedin") or "").strip()
-            if db_email or db_linkedin:
-                ecol1, ecol2 = st.columns(2)
-                with ecol1:
-                    st.markdown(
-                        f"<div class='c' style='padding:10px 14px;'><div class='c-l'>Email (DB)</div>"
-                        f"<div class='c-v'>{db_email or '—'} {bdg('From DB', 'gray') if db_email else ''}</div></div>",
-                        unsafe_allow_html=True)
-                with ecol2:
-                    st.markdown(
-                        f"<div class='c' style='padding:10px 14px;'><div class='c-l'>LinkedIn (DB)</div>"
-                        f"<div class='c-v'>{db_linkedin[:50] + '…' if db_linkedin and len(db_linkedin) > 50 else (db_linkedin or '—')} "
-                        f"{bdg('From DB', 'gray') if db_linkedin else ''}</div></div>",
-                        unsafe_allow_html=True)
-            credits = get_signalhire_credits()
-            if credits is not None:
-                st.caption(f"SignalHire credits: {credits}")
-            else:
-                st.caption("Enrichment uses mock data when no API/callback")
-
-            # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
-            st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
-            linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
-            if is_advisor_strategist and _aid_s:
-                _fa = get_advisor_company(_aid_s)
-                if _fa:
-                    comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
-            else:
-                _fc = get_company(cid)
-                if _fc:
-                    comp = _fc
-            def _persist_linkedin_results(lst):
-                if is_advisor_strategist and _aid_s:
-                    merge_advisor_company_extra_data(_aid_s, {"linkedin_lookup_results": lst})
-                else:
-                    merge_company_extra_data(cid, {"linkedin_lookup_results": lst})
-
-            do_linkedin_lookup = st.button(
-                "🔗 Extract contacts & find LinkedIn URLs",
-                key="btn_linkedin_lookup",
-                type="secondary",
-                use_container_width=True,
-                help="Parse brief and research for people, then find their LinkedIn profiles via search.",
+            # ── Conversation dropdown: load chat only when user selects one ──
+            sessions_strat = get_sessions_for_company(cid)
+            session_map_strat = {s["id"]: s for s in sessions_strat}
+            conv_options = [None] + [s["id"] for s in sessions_strat]
+            def _conv_label(sid):
+                if sid is None:
+                    return "— Select conversation —"
+                s = session_map_strat.get(sid)
+                if not s:
+                    return str(sid)
+                ct_label = get_contact(s["contact_id"])
+                name = (ct_label.get("name") or "?") if ct_label else "?"
+                return f"{name} @ {comp.get('domain', '?')}"
+            selected_conv_sid = st.selectbox(
+                "Conversation",
+                options=conv_options,
+                format_func=_conv_label,
+                key="strategist_conv_sel",
             )
-            if do_linkedin_lookup:
-                rn = st.session_state.research_cache.get(research_cache_key, [])
-                if not rn and comp.get("notion_page_id"):
-                    with st.spinner("Loading research from Notion…"):
-                        rn = fetch_research_from_notion(comp["notion_page_id"])
-                        if rn:
-                            st.session_state.research_cache[research_cache_key] = rn
-                saved_brief_for_extract = (comp.get("extra_data") or {}).get("brief") or ""
-                if (saved_brief_for_extract or "").strip():
-                    brief_text = saved_brief_for_extract.strip()
-                else:
-                    with st.spinner("Generating brief…"):
-                        brief_text = auto_brief(comp, ct, user["id"], sid, rn) or ""
-                research_full = (comp.get("extra_data") or {}).get("research_full") or ""
-                research_notes_text = "\n\n".join(
-                    f"{(n.get('title') or 'Section')}\n{(n.get('content') or '').strip()}"
-                    for n in (rn or [])
-                ).strip()
-                research_combined = (research_full or research_notes_text or "").strip()
-                company_name = comp.get("domain") or comp.get("name") or "this company"
-                with st.spinner("Extracting names from SPOC tables…"):
-                    contacts = extract_spoc_table_contacts(brief_text, research_combined, company_name)
-                if not contacts:
-                    st.info("No SPOC table found in brief or research. Generate a brief or run deep research to get a SPOC/stakeholder table first.")
-                else:
-                    progress = st.progress(0, text=f"Finding LinkedIn URLs (0/{len(contacts)})…")
-                    def _prog(i, total, name):
-                        progress.progress((i + 1) / max(1, total), text=f"Finding LinkedIn URLs ({i + 1}/{total}): {name[:30]}…")
-                    results = run_linkedin_lookup_for_contacts(contacts, progress_callback=_prog)
-                    progress.empty()
-                    st.session_state[linkedin_results_key] = results
-                    _persist_linkedin_results(results)
-                    st.success(f"Found {sum(1 for r in results if r.get('linkedin_url'))} LinkedIn URLs for {len(results)} contacts.")
+            # When user picks a conversation from dropdown, sync to it; otherwise use current session
+            if selected_conv_sid is not None and sid != selected_conv_sid:
+                sess = session_map_strat.get(selected_conv_sid)
+                if sess:
+                    st.session_state.session_id = selected_conv_sid
+                    st.session_state.sel_contact = sess["contact_id"]
+                    st.session_state.chat_messages = load_messages(selected_conv_sid)
                     st.rerun()
-
-            def _linkedin_result_matches_company(result_company, comp):
-                """True only if this result is for the current company. Strict: brief/deep research only; exclude other companies."""
-                if not comp:
-                    return True
-                rc = (result_company or "").strip()
-                rc_lower = rc.lower()
-                domain = (comp.get("domain") or "").strip().lower()
-                name = (comp.get("name") or "").strip().lower()
-                if not domain and not name:
-                    return True
-                # Unspecified or "this company" -> treat as current (extraction sets company_name for all)
-                if not rc or rc_lower == "this company":
-                    return True
-                identifiers = [x for x in [domain, name] if x]
-                for id in identifiers:
-                    if id and (rc_lower == id or (len(id) >= 3 and id in rc_lower) or (len(rc_lower) >= 3 and rc_lower in id)):
-                        return True
-                return False
-
-            _saved_list = None
-            if is_advisor_strategist and _aid_s:
-                _adv = get_advisor_company(_aid_s)
-                _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
+            sid = st.session_state.session_id
+            ctid = st.session_state.sel_contact
+            ct = get_contact(ctid)
+            if not ct:
+                st.error("Contact not found.")
             else:
-                _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
-            if _saved_list and isinstance(_saved_list, list):
-                _raw_len = len(_saved_list)
-                _saved_list = [r for r in _saved_list if _linkedin_result_matches_company(r.get("company"), comp)]
-                _existing = st.session_state.get(linkedin_results_key)
-                if _saved_list or not (isinstance(_existing, list) and len(_existing) > 0):
-                    st.session_state[linkedin_results_key] = _saved_list
-                if _raw_len != len(_saved_list) and _saved_list:
-                    _persist_linkedin_results(_saved_list)
+                # ── FROM / TO selectors ──
+                # FROM: only registered users, displayed by email
+                # TO: only contacts that have an email for this company, displayed by email
+                sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
+                with sel1:
+                    all_users = get_all_users()
+                    user_emails = {u["id"]: (u.get("email") or "").strip() or (u.get("username") or "?") for u in all_users}
+                    from_options = [u["id"] for u in all_users if (u.get("email") or "").strip()]
+                    if not from_options:
+                        from_options = [u["id"] for u in all_users]
+                    from_index = from_options.index(st.session_state.sender_id) if st.session_state.sender_id in from_options else 0
+                    sender_id = st.selectbox(
+                        "FROM (sender)",
+                        options=from_options,
+                        format_func=lambda x: f"📧 {user_emails.get(x, '?')}",
+                        index=from_index,
+                        key="from_sel",
+                    )
+                    st.session_state.sender_id = sender_id
+                    sender_name = user_emails.get(sender_id, "")
 
-            if linkedin_results_key in st.session_state:
-                results_list = st.session_state[linkedin_results_key]
-                filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
+                with sel2:
+                    contacts = get_contacts(cid)
+                    spoc_contacts = get_spoc_contacts_by_company(cid)
+                    spoc_email_by_name = {}
+                    spoc_email_by_parent_id = {}
+                    spoc_linkedin_by_parent_id = {}
+                    spoc_name_by_parent_id = {}
+                    spoc_name_by_email = {}  # track down name using email for outreach plan
+                    spoc_role_by_parent_id = {}
+                    spoc_role_by_email = {}
+                    for sc in (spoc_contacts or []):
+                        em = (sc.get("email") or "").strip()
+                        nm = (sc.get("name") or "").strip()
+                        role = (sc.get("role") or "").strip()
+                        pid = sc.get("spoc_contact_id")
+                        if pid and nm and pid not in spoc_name_by_parent_id:
+                            spoc_name_by_parent_id[pid] = nm
+                        if pid and role and pid not in spoc_role_by_parent_id:
+                            spoc_role_by_parent_id[pid] = role
+                        if em and nm:
+                            spoc_name_by_email[em] = nm
+                        if em and role:
+                            spoc_role_by_email[em] = role
+                        if em:
+                            if nm and nm not in spoc_email_by_name:
+                                spoc_email_by_name[nm] = em
+                            if pid and pid not in spoc_email_by_parent_id:
+                                spoc_email_by_parent_id[pid] = em
+                        link_url = (sc.get("linkedin_url") or "").strip()
+                        if link_url and pid and pid not in spoc_linkedin_by_parent_id:
+                            spoc_linkedin_by_parent_id[pid] = link_url
+                    def _recipient_display(c):
+                        em = (c.get("email") or "").strip()
+                        if not em:
+                            em = spoc_email_by_name.get((c.get("name") or "").strip(), "")
+                        if not em:
+                            em = spoc_email_by_parent_id.get(c["id"], "")
+                        return em or f"{c.get('name', '?')} (no email)"
+                    def _has_email(c):
+                        return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
+                    contacts_with_email = [c for c in contacts if _has_email(c)]
+                    to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
+                    ct_display = {c["id"]: _recipient_display(c) for c in contacts}
+                    to_index = to_options.index(ctid) if ctid in to_options else 0
+                    to_id = st.selectbox(
+                        "TO (recipient)",
+                        options=to_options,
+                        format_func=lambda x: f"📨 {ct_display.get(x, '?')}",
+                        index=to_index,
+                        key="to_sel",
+                    )
+                    if to_id != ctid:
+                        select_contact(cid, to_id)
+                        st.rerun()
 
-                # Check pending SignalHire enrichments and merge if completed
-                pending_updated = False
-                _new_list = []
-                for _r in results_list:
-                    if _r.get("enrichment_status") == "pending" and _r.get("enrichment_request_id"):
-                        _er = get_enrichment_by_request_id(_r["enrichment_request_id"])
+                with sel3:
+                    score = compute_lead_score(comp, ct)
+                    lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
+                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
+                    st.markdown(
+                        f"<div style='padding:8px 0;'>"
+                        f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
+                        f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
+                        unsafe_allow_html=True)
+
+                # Enrich contact with SPOC email/LinkedIn/name so plan and strategist use context for the selected recipient
+                ct_ctx = dict(ct)
+                if not (ct_ctx.get("email") or "").strip():
+                    ct_ctx["email"] = (spoc_email_by_parent_id.get(ctid) or spoc_email_by_name.get((ct.get("name") or "").strip()) or "").strip()
+                if not (ct_ctx.get("linkedin") or "").strip():
+                    ct_ctx["linkedin"] = (spoc_linkedin_by_parent_id.get(ctid) or "").strip()
+                # Track down name using email: SPOC has email → use SPOC name for outreach plan (role, person-specific)
+                _name = (ct_ctx.get("name") or "").strip()
+                if not _name or "@" in _name or ".com" in _name or _name == "—" or _name == "?":
+                    ct_ctx["name"] = (
+                        spoc_name_by_email.get((ct_ctx.get("email") or "").strip()) or
+                        spoc_name_by_parent_id.get(ctid) or _name or ""
+                    ).strip() or ct_ctx.get("name", "")
+                _email = (ct_ctx.get("email") or "").strip()
+                if not (ct_ctx.get("role") or "").strip() and _email:
+                    ct_ctx["role"] = spoc_role_by_email.get(_email) or spoc_role_by_parent_id.get(ctid) or ct_ctx.get("role", "")
+
+                # Debug: show exactly how email was resolved (so we can see why Full Plan works or doesn't)
+                with st.expander("🔍 Why Full Plan works / doesn't (debug)", expanded=False):
+                    ct_name = (ct.get("name") or "").strip()
+                    from_parent = spoc_email_by_parent_id.get(ctid)
+                    from_name = spoc_email_by_name.get(ct_name)
+                    st.code(
+                        f"Contact id (TO): {ctid}\n"
+                        f"Contact name (DB): {repr(ct.get('name'))}\n"
+                        f"Contact email (DB): {repr(ct.get('email'))}\n"
+                        f"Email from SPOC by parent_id: {repr(from_parent)}\n"
+                        f"Email from SPOC by name (exact match): {repr(from_name)}\n"
+                        f"→ ct_ctx['email']: {repr(ct_ctx.get('email'))}\n"
+                        f"→ Full Plan allowed: {bool((ct_ctx.get('email') or '').strip())}\n"
+                        f"SPOC names in map (first 10): {list(spoc_email_by_name.keys())[:10]}"
+                    )
+
+                # ── Contact details & enrichment ──
+                st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
+                enrich_result_key = f"enrich_result_{ctid}"
+                db_email = (ct_ctx.get("email") or "").strip()
+                db_linkedin = (ct_ctx.get("linkedin") or "").strip()
+                if db_email or db_linkedin:
+                    ecol1, ecol2 = st.columns(2)
+                    with ecol1:
+                        st.markdown(
+                            f"<div class='c' style='padding:10px 14px;'><div class='c-l'>Email (DB)</div>"
+                            f"<div class='c-v'>{db_email or '—'} {bdg('From DB', 'gray') if db_email else ''}</div></div>",
+                            unsafe_allow_html=True)
+                    with ecol2:
+                        st.markdown(
+                            f"<div class='c' style='padding:10px 14px;'><div class='c-l'>LinkedIn (DB)</div>"
+                            f"<div class='c-v'>{db_linkedin[:50] + '…' if db_linkedin and len(db_linkedin) > 50 else (db_linkedin or '—')} "
+                            f"{bdg('From DB', 'gray') if db_linkedin else ''}</div></div>",
+                            unsafe_allow_html=True)
+                credits = get_signalhire_credits()
+                if credits is not None:
+                    st.caption(f"SignalHire credits: {credits}")
+                else:
+                    st.caption("Enrichment uses mock data when no API/callback")
+
+                # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
+                st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
+                linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
+                if is_advisor_strategist and _aid_s:
+                    _fa = get_advisor_company(_aid_s)
+                    if _fa:
+                        comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
+                else:
+                    _fc = get_company(cid)
+                    if _fc:
+                        comp = _fc
+                def _persist_linkedin_results(lst):
+                    if is_advisor_strategist and _aid_s:
+                        merge_advisor_company_extra_data(_aid_s, {"linkedin_lookup_results": lst})
+                    else:
+                        merge_company_extra_data(cid, {"linkedin_lookup_results": lst})
+
+                do_linkedin_lookup = st.button(
+                    "🔗 Extract contacts & find LinkedIn URLs",
+                    key="btn_linkedin_lookup",
+                    type="secondary",
+                    use_container_width=True,
+                    help="Parse brief and research for people, then find their LinkedIn profiles via search.",
+                )
+                if do_linkedin_lookup:
+                    rn = st.session_state.research_cache.get(research_cache_key, [])
+                    if not rn and comp.get("notion_page_id"):
+                        with st.spinner("Loading research from Notion…"):
+                            rn = fetch_research_from_notion(comp["notion_page_id"])
+                            if rn:
+                                st.session_state.research_cache[research_cache_key] = rn
+                    saved_brief_for_extract = (comp.get("extra_data") or {}).get("brief") or ""
+                    if (saved_brief_for_extract or "").strip():
+                        brief_text = saved_brief_for_extract.strip()
+                    else:
+                        with st.spinner("Generating brief…"):
+                            brief_text = auto_brief(comp, ct_ctx, user["id"], sid, rn) or ""
+                    research_full = (comp.get("extra_data") or {}).get("research_full") or ""
+                    research_notes_text = "\n\n".join(
+                        f"{(n.get('title') or 'Section')}\n{(n.get('content') or '').strip()}"
+                        for n in (rn or [])
+                    ).strip()
+                    research_combined = (research_full or research_notes_text or "").strip()
+                    company_name = comp.get("domain") or comp.get("name") or "this company"
+                    with st.spinner("Extracting names from SPOC tables…"):
+                        contacts = extract_spoc_table_contacts(brief_text, research_combined, company_name)
+                    if not contacts:
+                        st.info("No SPOC table found in brief or research. Generate a brief or run deep research to get a SPOC/stakeholder table first.")
+                    else:
+                        progress = st.progress(0, text=f"Finding LinkedIn URLs (0/{len(contacts)})…")
+                        def _prog(i, total, name):
+                            progress.progress((i + 1) / max(1, total), text=f"Finding LinkedIn URLs ({i + 1}/{total}): {name[:30]}…")
+                        results = run_linkedin_lookup_for_contacts(contacts, progress_callback=_prog)
+                        progress.empty()
+                        st.session_state[linkedin_results_key] = results
+                        _persist_linkedin_results(results)
+                        st.success(f"Found {sum(1 for r in results if r.get('linkedin_url'))} LinkedIn URLs for {len(results)} contacts.")
+                        st.rerun()
+
+                def _linkedin_result_matches_company(result_company, comp):
+                    """True only if this result is for the current company. Strict: brief/deep research only; exclude other companies."""
+                    if not comp:
+                        return True
+                    rc = (result_company or "").strip()
+                    rc_lower = rc.lower()
+                    domain = (comp.get("domain") or "").strip().lower()
+                    name = (comp.get("name") or "").strip().lower()
+                    if not domain and not name:
+                        return True
+                    # Unspecified or "this company" -> treat as current (extraction sets company_name for all)
+                    if not rc or rc_lower == "this company":
+                        return True
+                    identifiers = [x for x in [domain, name] if x]
+                    for id in identifiers:
+                        if id and (rc_lower == id or (len(id) >= 3 and id in rc_lower) or (len(rc_lower) >= 3 and rc_lower in id)):
+                            return True
+                    return False
+
+                _saved_list = None
+                if is_advisor_strategist and _aid_s:
+                    _adv = get_advisor_company(_aid_s)
+                    _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
+                else:
+                    _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
+                if _saved_list and isinstance(_saved_list, list):
+                    _raw_len = len(_saved_list)
+                    _saved_list = [r for r in _saved_list if _linkedin_result_matches_company(r.get("company"), comp)]
+                    _existing = st.session_state.get(linkedin_results_key)
+                    if _saved_list or not (isinstance(_existing, list) and len(_existing) > 0):
+                        st.session_state[linkedin_results_key] = _saved_list
+                    if _raw_len != len(_saved_list) and _saved_list:
+                        _persist_linkedin_results(_saved_list)
+
+                if linkedin_results_key in st.session_state:
+                    results_list = st.session_state[linkedin_results_key]
+                    filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
+
+                    # Check pending SignalHire enrichments and merge if completed
+                    pending_updated = False
+                    _new_list = []
+                    for _r in results_list:
+                        if _r.get("enrichment_status") == "pending" and _r.get("enrichment_request_id"):
+                            _er = get_enrichment_by_request_id(_r["enrichment_request_id"])
+                            if _er and _er.get("status") == "completed" and _er.get("result_json"):
+                                _res = _er["result_json"]
+                                _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                _r = {**_r, "email": _email, "phone": _phone, "enrichment_status": "completed", "enrichment_request_id": None}
+                                _nm = (_r.get("name") or "").strip()
+                                if _nm:
+                                    upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=(_r.get("linkedin_url") or "").strip() or None)
+                                pending_updated = True
+                        else:
+                            # Completed but email/phone empty (e.g. callback arrived after we marked completed): fill from enrichment_results by LinkedIn URL
+                            _link = (_r.get("linkedin_url") or "").strip()
+                            _has_contact = (_r.get("email") or "").strip() or (_r.get("phone") or "").strip()
+                            if _r.get("enrichment_status") == "completed" and not _has_contact and _link:
+                                _er = get_completed_enrichment_by_identifier(_link)
+                                if _er and _er.get("result_json"):
+                                    _res = _er["result_json"]
+                                    _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                    _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                    if _email or _phone:
+                                        _r = {**_r, "email": _email, "phone": _phone}
+                                        _nm = (_r.get("name") or "").strip()
+                                        if _nm:
+                                            upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_link or None)
+                                        pending_updated = True
+                        _new_list.append(_r)
+                    if pending_updated:
+                        st.session_state[linkedin_results_key] = _new_list
+                        _persist_linkedin_results(_new_list)
+                        st.rerun()
+                    results_list = st.session_state[linkedin_results_key]
+                    filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
+                    with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)})", expanded=True):
+                        if is_advisor_strategist:
+                            st.caption("Add to company saves under the selected **child** (this company).")
+                        add_input_key = f"linkedin_add_input_{research_cache_key}"
+                        add_val = st.text_input(
+                            "Add or recheck",
+                            placeholder="Add: Jane Smith | Jane — CEO. Re-check URL: recheck Jane Smith",
+                            key=add_input_key,
+                            label_visibility="collapsed",
+                        )
+                        add_btn = st.button("Add to list & find LinkedIn", key=f"linkedin_add_btn_{research_cache_key}", use_container_width=False)
+                        if add_btn and (add_val or "").strip():
+                            raw = (add_val or "").strip()
+                            raw_lower = raw.lower()
+                            default_company = (comp.get("domain") or comp.get("name") or "")
+
+                            recheck_match = re.search(r"(?:recheck|re-check|find again)\s+(.+)", raw_lower, re.IGNORECASE)
+                            if recheck_match:
+                                name_asked = recheck_match.group(1).strip()
+                                for idx, entry in enumerate(results_list):
+                                    entry_name = (entry.get("name") or "").strip()
+                                    if name_asked in entry_name or entry_name.lower() == name_asked.lower():
+                                        with st.spinner(f"Re-checking LinkedIn for {entry_name}…"):
+                                            new_url = get_linkedin_url_for_contact(entry_name, entry.get("company") or default_company)
+                                        new_list = list(results_list)
+                                        new_list[idx] = {**new_list[idx], "linkedin_url": new_url or ""}
+                                        st.session_state[linkedin_results_key] = new_list
+                                        _persist_linkedin_results(new_list)
+                                        st.success(f"Updated LinkedIn for **{entry_name}**." if new_url else "No new URL found.")
+                                        st.rerun()
+                                st.warning(f"No contact named \"{name_asked}\" in the list.")
+                            else:
+                                to_add = []
+                                if " and " in raw:
+                                    for part in raw.split(" and "):
+                                        part = part.strip()
+                                        if not part:
+                                            continue
+                                        if " — " in part:
+                                            nm, rest = part.split(" — ", 1)
+                                            to_add.append((nm.strip(), rest.strip(), default_company))
+                                        elif ", " in part:
+                                            p = re.split(r"\s*,\s*", part, 1)
+                                            to_add.append((p[0].strip(), "", default_company if len(p) <= 1 else (p[1] or "").strip()))
+                                        else:
+                                            to_add.append((part, "", default_company))
+                                else:
+                                    if " — " in raw:
+                                        nm, rest = raw.split(" — ", 1)
+                                        to_add.append((nm.strip(), rest.strip(), default_company))
+                                    elif ", " in raw:
+                                        p = re.split(r"\s*,\s*", raw, 1)
+                                        nm = (p[0] or "").strip()
+                                        company = (p[1] or "").strip() if len(p) > 1 else default_company
+                                        to_add.append((nm, "", company))
+                                    else:
+                                        to_add.append((raw, "", default_company))
+
+                                new_list = list(results_list)
+                                for name, role, company in to_add:
+                                    name = (name or "").strip()
+                                    if not name:
+                                        continue
+                                    with st.spinner(f"Finding LinkedIn for {name}…"):
+                                        new_url = get_linkedin_url_for_contact(name, company)
+                                    new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
+                                if new_list != results_list:
+                                    st.session_state[linkedin_results_key] = new_list
+                                    _persist_linkedin_results(new_list)
+                                    st.success(f"Added {len(to_add)} contact(s).")
+                                    st.rerun()
+                        st.caption("Add: name, or \"Name — Role\", or \"Name, Company\". Re-check: **recheck** or **find again** + name.")
+                        st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+                        for i, r in enumerate(results_list):
+                            if not _linkedin_result_matches_company(r.get("company"), comp):
+                                continue
+                            name = (r.get("name") or "").strip() or "—"
+                            role = (r.get("role") or "").strip()
+                            company_display = r.get("company") or "—"
+                            url = (r.get("linkedin_url") or "").strip()
+                            row_col1, row_col2, row_col3, row_col4 = st.columns([2, 0.8, 0.8, 0.4])
+                            with row_col1:
+                                if url:
+                                    link_html = f"<a href='{url}' target='_blank' rel='noopener' style='font-size:12px;'>Profile</a>"
+                                else:
+                                    link_html = "<span style='font-size:12px;color:var(--text-3);'>—</span>"
+                                _email = (r.get("email") or "").strip()
+                                _phone = (r.get("phone") or "").strip()
+                                _status = (r.get("enrichment_status") or "").strip() or "—"
+                                _extra = ""
+                                if _email or _phone:
+                                    _extra = f"<div style='font-size:11px;color:var(--text-3);margin-top:4px;'>📧 {_email or '—'} · 📞 {_phone or '—'}</div>"
+                                if _status and _status != "—":
+                                    _extra += f"<div style='font-size:10px;color:var(--text-3);'>{_status}</div>"
+                                st.markdown(
+                                    f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
+                                    f"<div style='font-weight:500;'>{name}</div>"
+                                    f"<div style='font-size:12px;color:var(--text-2);'>{role or '—'} · {company_display}</div>"
+                                    f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div>{_extra}</div>",
+                                    unsafe_allow_html=True)
+                            with row_col2:
+                                if name != "—":
+                                    if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", use_container_width=True, help="Re-run search for this person"):
+                                        with st.spinner(f"Searching again for {name}…"):
+                                            new_url = get_linkedin_url_for_contact(name, r.get("company") or comp.get("domain") or "")
+                                        new_list = list(results_list)
+                                        new_list[i] = {**new_list[i], "linkedin_url": new_url or ""}
+                                        st.session_state[linkedin_results_key] = new_list
+                                        _persist_linkedin_results(new_list)
+                                        st.success("Updated." if new_url else "No new URL found.")
+                                        st.rerun()
+                            with row_col3:
+                                if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
+                                    new_contact_id = upsert_contact(cid, name, role=role or None, linkedin=url or None)
+                                    upsert_spoc_contact(
+                                        cid, ctid, name,
+                                        role=role or None,
+                                        email=(r.get("email") or "").strip() or None,
+                                        linkedin_url=url or None,
+                                        phone=(r.get("phone") or "").strip() or None,
+                                    )
+                                    if new_contact_id:
+                                        select_contact(cid, new_contact_id)
+                                        st.session_state.current_tab = "STRATEGIST"
+                                    st.success(f"Added **{name}** to company (and under this SPOC). Select them in TO (recipient) if not shown.")
+                                    st.rerun()
+                            with row_col4:
+                                if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
+                                    new_list = [x for j, x in enumerate(results_list) if j != i]
+                                    st.session_state[linkedin_results_key] = new_list
+                                    _persist_linkedin_results(new_list)
+                                    st.success("Removed from list.")
+                                    st.rerun()
+                        st.markdown(sh_small("Email & contacts table"), unsafe_allow_html=True)
+                        _table_df = pd.DataFrame([
+                            {
+                                "Name": (x.get("name") or "").strip() or "—",
+                                "Role": (x.get("role") or "").strip() or "—",
+                                "Company": (x.get("company") or "—").strip() or "—",
+                                "LinkedIn": (x.get("linkedin_url") or "").strip() or "—",
+                                "Email": (x.get("email") or "").strip() or "—",
+                                "Phone": (x.get("phone") or "").strip() or "—",
+                                "Status": (x.get("enrichment_status") or "").strip() or "—",
+                            }
+                            for x in filtered_results
+                        ])
+                        st.dataframe(_table_df, use_container_width=True, hide_index=True)
+                        st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+                        # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
+                        _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
+                        if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
+                            _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip() and _linkedin_result_matches_company(_r.get("company"), comp)]
+                            if not _with_url:
+                                st.warning("No contacts with LinkedIn URLs in the list.")
+                            else:
+                                _prog = st.progress(0, text=f"Enriching 0/{len(_with_url)}…")
+                                _new_list = list(results_list)
+                                for _idx, (_i, _r) in enumerate(_with_url):
+                                    _prog.progress((_idx + 1) / len(_with_url), text=f"Enriching {_idx + 1}/{len(_with_url)}: {(_r.get('name') or '')[:25]}…")
+                                    _url = (_r.get("linkedin_url") or "").strip()
+                                    _rec_id, _req_id, _status = request_enrichment(_url, user["id"], callback_url=_callback_url)
+                                    if _status == "completed" and _rec_id:
+                                        try:
+                                            _er = get_enrichment_result(_rec_id)
+                                            if _er and _er.get("result_json"):
+                                                _res = _er["result_json"]
+                                                _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                                _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                                _new_list[_i] = {**_new_list[_i], "email": _email, "phone": _phone, "enrichment_status": "completed"}
+                                                _nm = (_new_list[_i].get("name") or "").strip()
+                                                if _nm:
+                                                    upsert_spoc_contact(cid, ctid, _nm, role=(_new_list[_i].get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_url or None)
+                                        except Exception:
+                                            pass
+                                    elif _status == "pending" and _req_id:
+                                        _new_list[_i] = {**_new_list[_i], "enrichment_status": "pending", "enrichment_request_id": _req_id}
+                                _prog.empty()
+                                st.session_state[linkedin_results_key] = _new_list
+                                _persist_linkedin_results(_new_list)
+                                st.success(f"Enrichment run for {len(_with_url)} contact(s). Refresh in a moment if any are pending (callback).")
+                                st.rerun()
+                        st.caption("On localhost: run `python signalhire_callback_server.py` and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
+                    clear_col, save_col = st.columns(2)
+                    with clear_col:
+                        if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
+                            st.session_state.pop(linkedin_results_key, None)
+                            _persist_linkedin_results([])
+                            st.rerun()
+                    with save_col:
+                        if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Save every contact in the list to the DB, tagged under the current SPOC"):
+                            for r in results_list:
+                                nm = (r.get("name") or "").strip()
+                                if not nm:
+                                    continue
+                                upsert_spoc_contact(
+                                    cid, ctid, nm,
+                                    role=(r.get("role") or "").strip() or None,
+                                    email=(r.get("email") or "").strip() or None,
+                                    linkedin_url=(r.get("linkedin_url") or "").strip() or None,
+                                    phone=(r.get("phone") or "").strip() or None,
+                                )
+                            st.success(f"Saved {len([x for x in results_list if (x.get('name') or '').strip()])} contact(s) under this SPOC.")
+                            st.rerun()
+
+                # ── Contacts under this SPOC (from spoc_contacts table) ──
+                st.markdown(sh_small("Contacts under this SPOC"), unsafe_allow_html=True)
+                spoc_list = get_spoc_contacts_by_spoc(ctid)
+                # Check pending SignalHire enrichments for saved contacts and merge if completed
+                _spoc_callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
+                _spoc_updated = False
+                for _s in spoc_list:
+                    _ed = _s.get("extra_data") or {}
+                    _req_id = _ed.get("enrichment_request_id") if isinstance(_ed, dict) else None
+                    if _req_id:
+                        _er = get_enrichment_by_request_id(_req_id)
                         if _er and _er.get("status") == "completed" and _er.get("result_json"):
                             _res = _er["result_json"]
                             _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
                             _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
-                            _r = {**_r, "email": _email, "phone": _phone, "enrichment_status": "completed", "enrichment_request_id": None}
-                            _nm = (_r.get("name") or "").strip()
-                            if _nm:
-                                upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=(_r.get("linkedin_url") or "").strip() or None)
-                            pending_updated = True
-                    else:
-                        # Completed but email/phone empty (e.g. callback arrived after we marked completed): fill from enrichment_results by LinkedIn URL
-                        _link = (_r.get("linkedin_url") or "").strip()
-                        _has_contact = (_r.get("email") or "").strip() or (_r.get("phone") or "").strip()
-                        if _r.get("enrichment_status") == "completed" and not _has_contact and _link:
-                            _er = get_completed_enrichment_by_identifier(_link)
-                            if _er and _er.get("result_json"):
-                                _res = _er["result_json"]
-                                _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
-                                _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
-                                if _email or _phone:
-                                    _r = {**_r, "email": _email, "phone": _phone}
-                                    _nm = (_r.get("name") or "").strip()
-                                    if _nm:
-                                        upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_link or None)
-                                    pending_updated = True
-                    _new_list.append(_r)
-                if pending_updated:
-                    st.session_state[linkedin_results_key] = _new_list
-                    _persist_linkedin_results(_new_list)
+                            _new_extra = {k: v for k, v in (_ed or {}).items() if k != "enrichment_request_id"}
+                            _new_extra["enrichment_request_id"] = None
+                            upsert_spoc_contact(cid, ctid, _s.get("name") or "", role=_s.get("role"), email=_email or None, phone=_phone or None, linkedin_url=_s.get("linkedin_url"), extra_data=_new_extra)
+                            _spoc_updated = True
+                if _spoc_updated:
                     st.rerun()
-                results_list = st.session_state[linkedin_results_key]
-                filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
-                with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)})", expanded=True):
-                    if is_advisor_strategist:
-                        st.caption("Add to company saves under the selected **child** (this company).")
-                    add_input_key = f"linkedin_add_input_{research_cache_key}"
-                    add_val = st.text_input(
-                        "Add or recheck",
-                        placeholder="Add: Jane Smith | Jane — CEO. Re-check URL: recheck Jane Smith",
-                        key=add_input_key,
-                        label_visibility="collapsed",
-                    )
-                    add_btn = st.button("Add to list & find LinkedIn", key=f"linkedin_add_btn_{research_cache_key}", use_container_width=False)
-                    if add_btn and (add_val or "").strip():
-                        raw = (add_val or "").strip()
-                        raw_lower = raw.lower()
-                        default_company = (comp.get("domain") or comp.get("name") or "")
-
-                        recheck_match = re.search(r"(?:recheck|re-check|find again)\s+(.+)", raw_lower, re.IGNORECASE)
-                        if recheck_match:
-                            name_asked = recheck_match.group(1).strip()
-                            for idx, entry in enumerate(results_list):
-                                entry_name = (entry.get("name") or "").strip()
-                                if name_asked in entry_name or entry_name.lower() == name_asked.lower():
-                                    with st.spinner(f"Re-checking LinkedIn for {entry_name}…"):
-                                        new_url = get_linkedin_url_for_contact(entry_name, entry.get("company") or default_company)
-                                    new_list = list(results_list)
-                                    new_list[idx] = {**new_list[idx], "linkedin_url": new_url or ""}
-                                    st.session_state[linkedin_results_key] = new_list
-                                    _persist_linkedin_results(new_list)
-                                    st.success(f"Updated LinkedIn for **{entry_name}**." if new_url else "No new URL found.")
-                                    st.rerun()
-                            st.warning(f"No contact named \"{name_asked}\" in the list.")
-                        else:
-                            to_add = []
-                            if " and " in raw:
-                                for part in raw.split(" and "):
-                                    part = part.strip()
-                                    if not part:
-                                        continue
-                                    if " — " in part:
-                                        nm, rest = part.split(" — ", 1)
-                                        to_add.append((nm.strip(), rest.strip(), default_company))
-                                    elif ", " in part:
-                                        p = re.split(r"\s*,\s*", part, 1)
-                                        to_add.append((p[0].strip(), "", default_company if len(p) <= 1 else (p[1] or "").strip()))
-                                    else:
-                                        to_add.append((part, "", default_company))
-                            else:
-                                if " — " in raw:
-                                    nm, rest = raw.split(" — ", 1)
-                                    to_add.append((nm.strip(), rest.strip(), default_company))
-                                elif ", " in raw:
-                                    p = re.split(r"\s*,\s*", raw, 1)
-                                    nm = (p[0] or "").strip()
-                                    company = (p[1] or "").strip() if len(p) > 1 else default_company
-                                    to_add.append((nm, "", company))
-                                else:
-                                    to_add.append((raw, "", default_company))
-
-                            new_list = list(results_list)
-                            for name, role, company in to_add:
-                                name = (name or "").strip()
-                                if not name:
-                                    continue
-                                with st.spinner(f"Finding LinkedIn for {name}…"):
-                                    new_url = get_linkedin_url_for_contact(name, company)
-                                new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
-                            if new_list != results_list:
-                                st.session_state[linkedin_results_key] = new_list
-                                _persist_linkedin_results(new_list)
-                                st.success(f"Added {len(to_add)} contact(s).")
-                                st.rerun()
-                    st.caption("Add: name, or \"Name — Role\", or \"Name, Company\". Re-check: **recheck** or **find again** + name.")
-                    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-                    for i, r in enumerate(results_list):
-                        if not _linkedin_result_matches_company(r.get("company"), comp):
-                            continue
-                        name = (r.get("name") or "").strip() or "—"
-                        role = (r.get("role") or "").strip()
-                        company_display = r.get("company") or "—"
-                        url = (r.get("linkedin_url") or "").strip()
-                        row_col1, row_col2, row_col3, row_col4 = st.columns([2, 0.8, 0.8, 0.4])
-                        with row_col1:
-                            if url:
-                                link_html = f"<a href='{url}' target='_blank' rel='noopener' style='font-size:12px;'>Profile</a>"
-                            else:
-                                link_html = "<span style='font-size:12px;color:var(--text-3);'>—</span>"
-                            _email = (r.get("email") or "").strip()
-                            _phone = (r.get("phone") or "").strip()
-                            _status = (r.get("enrichment_status") or "").strip() or "—"
-                            _extra = ""
-                            if _email or _phone:
-                                _extra = f"<div style='font-size:11px;color:var(--text-3);margin-top:4px;'>📧 {_email or '—'} · 📞 {_phone or '—'}</div>"
-                            if _status and _status != "—":
-                                _extra += f"<div style='font-size:10px;color:var(--text-3);'>{_status}</div>"
+                if not spoc_list:
+                    st.caption("No contacts saved under this SPOC yet. Use «Add to company» or «Save all to DB (under this SPOC)» from the list above.")
+                else:
+                    for _idx, s in enumerate(spoc_list):
+                        _name = s.get("name") or "—"
+                        _role = s.get("role") or "—"
+                        _email = s.get("email") or "—"
+                        _linkedin = (s.get("linkedin_url") or "").strip()
+                        _phone = s.get("phone") or "—"
+                        _col1, _col2 = st.columns([4, 1])
+                        with _col1:
                             st.markdown(
                                 f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
-                                f"<div style='font-weight:500;'>{name}</div>"
-                                f"<div style='font-size:12px;color:var(--text-2);'>{role or '—'} · {company_display}</div>"
-                                f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div>{_extra}</div>",
+                                f"<div style='font-weight:500;'>{_name}</div>"
+                                f"<div style='font-size:12px;color:var(--text-2);'>{_role} · 📧 {_email} · 📞 {_phone}</div>"
+                                f"<div style='font-size:11px;'>{'<a href=\"' + _linkedin + '\" target=\"_blank\">LinkedIn</a>' if _linkedin else '—'}</div></div>",
                                 unsafe_allow_html=True)
-                        with row_col2:
-                            if name != "—":
-                                if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", use_container_width=True, help="Re-run search for this person"):
-                                    with st.spinner(f"Searching again for {name}…"):
-                                        new_url = get_linkedin_url_for_contact(name, r.get("company") or comp.get("domain") or "")
-                                    new_list = list(results_list)
-                                    new_list[i] = {**new_list[i], "linkedin_url": new_url or ""}
-                                    st.session_state[linkedin_results_key] = new_list
-                                    _persist_linkedin_results(new_list)
-                                    st.success("Updated." if new_url else "No new URL found.")
-                                    st.rerun()
-                        with row_col3:
-                            if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
-                                new_contact_id = upsert_contact(cid, name, role=role or None, linkedin=url or None)
-                                upsert_spoc_contact(
-                                    cid, ctid, name,
-                                    role=role or None,
-                                    email=(r.get("email") or "").strip() or None,
-                                    linkedin_url=url or None,
-                                    phone=(r.get("phone") or "").strip() or None,
-                                )
-                                if new_contact_id:
-                                    select_contact(cid, new_contact_id)
-                                    st.session_state.current_tab = "STRATEGIST"
-                                st.success(f"Added **{name}** to company (and under this SPOC). Select them in TO (recipient) if not shown.")
-                                st.rerun()
-                        with row_col4:
-                            if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
-                                new_list = [x for j, x in enumerate(results_list) if j != i]
-                                st.session_state[linkedin_results_key] = new_list
-                                _persist_linkedin_results(new_list)
-                                st.success("Removed from list.")
-                                st.rerun()
-                    st.markdown(sh_small("Email & contacts table"), unsafe_allow_html=True)
-                    _table_df = pd.DataFrame([
-                        {
-                            "Name": (x.get("name") or "").strip() or "—",
-                            "Role": (x.get("role") or "").strip() or "—",
-                            "Company": (x.get("company") or "—").strip() or "—",
-                            "LinkedIn": (x.get("linkedin_url") or "").strip() or "—",
-                            "Email": (x.get("email") or "").strip() or "—",
-                            "Phone": (x.get("phone") or "").strip() or "—",
-                            "Status": (x.get("enrichment_status") or "").strip() or "—",
-                        }
-                        for x in filtered_results
-                    ])
-                    st.dataframe(_table_df, use_container_width=True, hide_index=True)
-                    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-                    # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
-                    _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
-                    if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
-                        _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip() and _linkedin_result_matches_company(_r.get("company"), comp)]
-                        if not _with_url:
-                            st.warning("No contacts with LinkedIn URLs in the list.")
-                        else:
-                            _prog = st.progress(0, text=f"Enriching 0/{len(_with_url)}…")
-                            _new_list = list(results_list)
-                            for _idx, (_i, _r) in enumerate(_with_url):
-                                _prog.progress((_idx + 1) / len(_with_url), text=f"Enriching {_idx + 1}/{len(_with_url)}: {(_r.get('name') or '')[:25]}…")
-                                _url = (_r.get("linkedin_url") or "").strip()
-                                _rec_id, _req_id, _status = request_enrichment(_url, user["id"], callback_url=_callback_url)
-                                if _status == "completed" and _rec_id:
-                                    try:
-                                        _er = get_enrichment_result(_rec_id)
-                                        if _er and _er.get("result_json"):
-                                            _res = _er["result_json"]
-                                            _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
-                                            _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
-                                            _new_list[_i] = {**_new_list[_i], "email": _email, "phone": _phone, "enrichment_status": "completed"}
-                                            _nm = (_new_list[_i].get("name") or "").strip()
-                                            if _nm:
-                                                upsert_spoc_contact(cid, ctid, _nm, role=(_new_list[_i].get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_url or None)
-                                    except Exception:
-                                        pass
-                                elif _status == "pending" and _req_id:
-                                    _new_list[_i] = {**_new_list[_i], "enrichment_status": "pending", "enrichment_request_id": _req_id}
-                            _prog.empty()
-                            st.session_state[linkedin_results_key] = _new_list
-                            _persist_linkedin_results(_new_list)
-                            st.success(f"Enrichment run for {len(_with_url)} contact(s). Refresh in a moment if any are pending (callback).")
-                            st.rerun()
-                    st.caption("On localhost: run `python signalhire_callback_server.py` and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
-                clear_col, save_col = st.columns(2)
-                with clear_col:
-                    if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
-                        st.session_state.pop(linkedin_results_key, None)
-                        _persist_linkedin_results([])
-                        st.rerun()
-                with save_col:
-                    if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Save every contact in the list to the DB, tagged under the current SPOC"):
-                        for r in results_list:
-                            nm = (r.get("name") or "").strip()
-                            if not nm:
-                                continue
-                            upsert_spoc_contact(
-                                cid, ctid, nm,
-                                role=(r.get("role") or "").strip() or None,
-                                email=(r.get("email") or "").strip() or None,
-                                linkedin_url=(r.get("linkedin_url") or "").strip() or None,
-                                phone=(r.get("phone") or "").strip() or None,
-                            )
-                        st.success(f"Saved {len([x for x in results_list if (x.get('name') or '').strip()])} contact(s) under this SPOC.")
-                        st.rerun()
-
-            # ── Contacts under this SPOC (from spoc_contacts table) ──
-            st.markdown(sh_small("Contacts under this SPOC"), unsafe_allow_html=True)
-            spoc_list = get_spoc_contacts_by_spoc(ctid)
-            # Check pending SignalHire enrichments for saved contacts and merge if completed
-            _spoc_callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
-            _spoc_updated = False
-            for _s in spoc_list:
-                _ed = _s.get("extra_data") or {}
-                _req_id = _ed.get("enrichment_request_id") if isinstance(_ed, dict) else None
-                if _req_id:
-                    _er = get_enrichment_by_request_id(_req_id)
-                    if _er and _er.get("status") == "completed" and _er.get("result_json"):
-                        _res = _er["result_json"]
-                        _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
-                        _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
-                        _new_extra = {k: v for k, v in (_ed or {}).items() if k != "enrichment_request_id"}
-                        _new_extra["enrichment_request_id"] = None
-                        upsert_spoc_contact(cid, ctid, _s.get("name") or "", role=_s.get("role"), email=_email or None, phone=_phone or None, linkedin_url=_s.get("linkedin_url"), extra_data=_new_extra)
-                        _spoc_updated = True
-            if _spoc_updated:
-                st.rerun()
-            if not spoc_list:
-                st.caption("No contacts saved under this SPOC yet. Use «Add to company» or «Save all to DB (under this SPOC)» from the list above.")
-            else:
-                for _idx, s in enumerate(spoc_list):
-                    _name = s.get("name") or "—"
-                    _role = s.get("role") or "—"
-                    _email = s.get("email") or "—"
-                    _linkedin = (s.get("linkedin_url") or "").strip()
-                    _phone = s.get("phone") or "—"
-                    _col1, _col2 = st.columns([4, 1])
-                    with _col1:
-                        st.markdown(
-                            f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
-                            f"<div style='font-weight:500;'>{_name}</div>"
-                            f"<div style='font-size:12px;color:var(--text-2);'>{_role} · 📧 {_email} · 📞 {_phone}</div>"
-                            f"<div style='font-size:11px;'>{'<a href=\"' + _linkedin + '\" target=\"_blank\">LinkedIn</a>' if _linkedin else '—'}</div></div>",
-                            unsafe_allow_html=True)
-                    with _col2:
-                        if _linkedin and st.button("Get email (SignalHire)", key=f"spoc_signalhire_{ctid}_{_idx}_{s.get('id')}", use_container_width=True, help="Fetch email/phone via SignalHire for this saved contact"):
-                            _sname = (s.get("name") or "").strip()
-                            if not _sname:
-                                st.warning("Contact has no name.")
-                            else:
-                                _rec_id, _req_id, _status = request_enrichment(_linkedin, user["id"], callback_url=_spoc_callback_url)
-                                if _status == "completed" and _rec_id:
-                                    try:
-                                        _er = get_enrichment_result(_rec_id)
-                                        if _er and _er.get("result_json"):
-                                            _res = _er["result_json"]
-                                            _e = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
-                                            _p = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
-                                            upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=_e or None, phone=_p or None, linkedin_url=_linkedin or None)
-                                            st.success("Email/phone updated.")
-                                            st.rerun()
-                                    except Exception:
-                                        pass
-                                elif _status == "pending" and _req_id:
-                                    upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=s.get("email"), phone=s.get("phone"), linkedin_url=_linkedin or None, extra_data={"enrichment_request_id": _req_id})
-                                    st.info("Enrichment requested; refresh in a moment for results.")
-                                    st.rerun()
+                        with _col2:
+                            if _linkedin and st.button("Get email (SignalHire)", key=f"spoc_signalhire_{ctid}_{_idx}_{s.get('id')}", use_container_width=True, help="Fetch email/phone via SignalHire for this saved contact"):
+                                _sname = (s.get("name") or "").strip()
+                                if not _sname:
+                                    st.warning("Contact has no name.")
                                 else:
-                                    st.warning("Enrichment failed or no result.")
-                st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+                                    _rec_id, _req_id, _status = request_enrichment(_linkedin, user["id"], callback_url=_spoc_callback_url)
+                                    if _status == "completed" and _rec_id:
+                                        try:
+                                            _er = get_enrichment_result(_rec_id)
+                                            if _er and _er.get("result_json"):
+                                                _res = _er["result_json"]
+                                                _e = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                                _p = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                                upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=_e or None, phone=_p or None, linkedin_url=_linkedin or None)
+                                                st.success("Email/phone updated.")
+                                                st.rerun()
+                                        except Exception:
+                                            pass
+                                    elif _status == "pending" and _req_id:
+                                        upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=s.get("email"), phone=s.get("phone"), linkedin_url=_linkedin or None, extra_data={"enrichment_request_id": _req_id})
+                                        st.info("Enrichment requested; refresh in a moment for results.")
+                                        st.rerun()
+                                    else:
+                                        st.warning("Enrichment failed or no result.")
+                    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
 
-            run_enrich = False  # Single-contact enrichment UI removed; credits only shown
-            lookup_identifier = ""
-            if run_enrich:
-                if not lookup_identifier:
-                    st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
-                else:
+                run_enrich = False  # Single-contact enrichment UI removed; credits only shown
+                lookup_identifier = ""
+                if run_enrich:
+                    if not lookup_identifier:
+                        st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
+                    else:
+                        try:
+                            with st.spinner("Enriching contact..."):
+                                record_id, req_id, status = request_enrichment(lookup_identifier, user["id"])
+                            if record_id and status == "completed":
+                                st.session_state[enrich_result_key] = record_id
+                                st.success("Enrichment complete.")
+                                st.rerun()
+                            elif record_id and status == "pending":
+                                st.info("Enrichment requested. Results will appear when the callback is received. You can refresh in a moment.")
+                                st.session_state[enrich_result_key] = record_id
+                                st.rerun()
+                            else:
+                                st.error("Enrichment failed. Check API key and identifier, or see terminal logs.")
+                        except Exception as e:
+                            st.error(f"Enrichment error: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+                # Show enrichment result only for this contact (so switching company/contact doesn't show another person)
+                show_record_id = st.session_state.get(enrich_result_key)
+                if show_record_id:
                     try:
-                        with st.spinner("Enriching contact..."):
-                            record_id, req_id, status = request_enrichment(lookup_identifier, user["id"])
-                        if record_id and status == "completed":
-                            st.session_state[enrich_result_key] = record_id
-                            st.success("Enrichment complete.")
-                            st.rerun()
-                        elif record_id and status == "pending":
-                            st.info("Enrichment requested. Results will appear when the callback is received. You can refresh in a moment.")
-                            st.session_state[enrich_result_key] = record_id
-                            st.rerun()
-                        else:
-                            st.error("Enrichment failed. Check API key and identifier, or see terminal logs.")
-                    except Exception as e:
-                        st.error(f"Enrichment error: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-
-            # Show enrichment result only for this contact (so switching company/contact doesn't show another person)
-            show_record_id = st.session_state.get(enrich_result_key)
-            if show_record_id:
-                try:
-                    er = get_enrichment_result(show_record_id)
-                except Exception:
-                    er = None
-                if er and er.get("status") == "completed" and er.get("result_json"):
-                    res = er["result_json"]
-                    display_name = (res.get("fullName") or "").strip() or (ct.get("name") or "").strip() or "Contact"
-                    st.markdown(
-                        "<div style='background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);"
-                        "padding:16px;margin-top:12px;'>"
-                        "<div style='font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:10px;'>"
-                        "Enrichment result — Verified vs Enriched</div>",
-                        unsafe_allow_html=True)
-                    st.markdown(
-                        f"<div style='font-size:13px;font-weight:500;margin-bottom:8px;'>{display_name}"
-                        f" <span style='font-size:11px;color:var(--text-3);font-weight:400;'>· {comp.get('domain','')}</span></div>"
-                        f"<div style='font-size:12px;color:var(--text-3);margin-bottom:12px;'>{res.get('headline') or ''}</div>",
-                        unsafe_allow_html=True)
-                    for email in res.get("emails") or []:
-                        src = email.get("source", "Enriched")
-                        conf = email.get("confidence", 0)
+                        er = get_enrichment_result(show_record_id)
+                    except Exception:
+                        er = None
+                    if er and er.get("status") == "completed" and er.get("result_json"):
+                        res = er["result_json"]
+                        display_name = (res.get("fullName") or "").strip() or (ct.get("name") or "").strip() or "Contact"
                         st.markdown(
-                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📧 {email.get('value','')}</div>"
-                            f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} "
-                            f"Confidence: {conf}% · {res.get('source','SignalHire')}</div></div>",
+                            "<div style='background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);"
+                            "padding:16px;margin-top:12px;'>"
+                            "<div style='font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:10px;'>"
+                            "Enrichment result — Verified vs Enriched</div>",
                             unsafe_allow_html=True)
-                    for phone in res.get("phones") or []:
-                        src = phone.get("source", "Enriched")
-                        conf = phone.get("confidence", 0)
                         st.markdown(
-                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📞 {phone.get('value','')}</div>"
-                            f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} Confidence: {conf}%</div></div>",
+                            f"<div style='font-size:13px;font-weight:500;margin-bottom:8px;'>{display_name}"
+                            f" <span style='font-size:11px;color:var(--text-3);font-weight:400;'>· {comp.get('domain','')}</span></div>"
+                            f"<div style='font-size:12px;color:var(--text-3);margin-bottom:12px;'>{res.get('headline') or ''}</div>",
                             unsafe_allow_html=True)
-                    if res.get("linkedin"):
-                        st.markdown(
-                            f"<div class='c' style='padding:8px 12px;'><div class='c-l'>LinkedIn</div>"
-                            f"<div class='c-v'><a href='{res['linkedin']}' target='_blank' rel='noopener'>Profile</a></div></div>",
-                            unsafe_allow_html=True)
-                    if not (res.get("emails") or res.get("phones")) and res.get("linkedin"):
-                        st.caption("To get company/personal email and phone for this profile, set up SignalHire callback (SIGNALHIRE_CALLBACK_BASE_URL in keys.env).")
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    # Add contact to company
-                    st.markdown(sh_small("Add enriched contact to company"), unsafe_allow_html=True)
-                    add_cid = st.selectbox(
-                        "Company",
-                        options=[cid] + [c["id"] for c in get_all_companies() if c["id"] != cid],
-                        format_func=lambda x: get_company(x).get("domain", str(x)) if get_company(x) else str(x),
-                        index=0,
-                        key="enrich_add_company",
-                    )
-                    add_name = st.text_input("Contact name", value=res.get("fullName") or "", key="enrich_add_name")
-                    if st.button("✅ Add contact to company", key="add_enriched_contact", type="primary"):
-                        if not add_name or not add_cid:
-                            st.warning("Select company and enter contact name.")
-                        else:
-                            primary_email = (res.get("emails") or [{}])[0].get("value", "") if res.get("emails") else ""
-                            primary_phone = (res.get("phones") or [{}])[0].get("value", "") if res.get("phones") else ""
-                            extra = {
-                                "enrichment": {
-                                    "source": res.get("source", "SignalHire"),
-                                    "confidence": res.get("confidence", 0),
-                                    "enriched_at": datetime.utcnow().isoformat(),
-                                }
-                            }
-                            new_id = upsert_contact(
-                                add_cid, add_name.strip(),
-                                email=primary_email or None,
-                                linkedin=res.get("linkedin") or None,
-                                role=res.get("headline") or None,
-                                extra_data=extra,
-                            )
-                            upsert_spoc_contact(
-                                add_cid, ctid, add_name.strip(),
-                                role=res.get("headline") or None,
-                                email=primary_email or None,
-                                linkedin_url=res.get("linkedin") or None,
-                                phone=primary_phone or None,
-                            )
-                            st.success(f"Contact “{add_name.strip()}” added to {get_company(add_cid).get('domain','company')} (and under this SPOC).")
-                            st.session_state.pop(enrich_result_key, None)
-                            st.rerun()
-
-            # ── Quick actions + Sequence builder ──
-            q1, q2, q3, q4, q5 = st.columns(5)
-            with q1:
-                if st.button("💬 LinkedIn", key="qa1", use_container_width=True):
-                    st.session_state.qa = "Draft a LinkedIn connection request for this contact. Under 300 characters. Specific to research."
-            with q2:
-                if st.button("📧 Email", key="qa2", use_container_width=True):
-                    st.session_state.qa = "Draft the initial outreach email with subject line. Human and direct."
-            with q3:
-                if st.button("⏰ Timing", key="qa3", use_container_width=True):
-                    st.session_state.qa = "What's the optimal day and time for first outreach? Specific: day, time, timezone."
-            with q4:
-                if st.button("📋 Sequence", key="qa4", use_container_width=True):
-                    st.session_state.qa = "Design a 4-touch outreach sequence with timing, channel, and angle per touch."
-            with q5:
-                if st.button("🎯 Full Plan", key="gen_plan", use_container_width=True):
-                    with st.spinner("Building outreach plan..."):
-                        rn = st.session_state.research_cache.get(research_cache_key, [])
-                        plan = generate_outreach_plan(comp, ct, user["id"], sid, sender_name, rn)
-                        if plan:
-                            st.session_state.pending_plan = plan
-
-            # ── Pending plan preview ──
-            if st.session_state.pending_plan:
-                plan = st.session_state.pending_plan
-                st.markdown(sh(f"OUTREACH PLAN — {len(plan)} STEPS"), unsafe_allow_html=True)
-                st.markdown(
-                    "<div style='background:var(--accent-bg);border:1px solid #c7d2fe;border-radius:var(--radius);"
-                    "padding:16px;margin-bottom:12px;'>",
-                    unsafe_allow_html=True)
-
-                for step in plan:
-                    with st.container():
-                        st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
-                        ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧"
-                        content_draft = (step.get("content_draft") or "").strip()
-                        preview_len = 120
-                        st.markdown(
-                            f"<div class='sequence-step-header'>"
-                            f"<span style='font-size:13px;font-weight:600;'>"
-                            f"{ch_icon} Step {step['step']}: {step['channel']} — Day {step['day_offset']}</span>"
-                            f"<span style='font-size:11px;color:var(--text-3);'>{step.get('timing_note','')}</span></div>"
-                            f"<div style='font-size:12px;color:var(--text-2);'>{step['description']}</div>"
-                            f"<div class='sequence-step-divider'></div>",
-                            unsafe_allow_html=True)
-                        if content_draft:
-                            with st.expander(f"📄 Read full message" + (f" — {content_draft[:preview_len]}..." if len(content_draft) > preview_len else ""), expanded=False):
-                                st.markdown(
-                                    f"<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>{(content_draft)}</div>",
-                                    unsafe_allow_html=True)
-                        if "email" in step.get("channel", "").lower() and step.get("content_draft"):
-                            st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
-                            subj, bod = parse_email_content(step["content_draft"])
-                            _render_save_to_gmail(
-                                ct.get("email", ""), subj, bod,
-                                f"plan_{st.session_state.session_id}_{step['step']}",
-                            )
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    if st.button("✅ Add Full Plan to Timeline", key="add_plan", use_container_width=True, type="primary"):
-                        actions_for_db = []
-                        for step in plan:
-                            actions_for_db.append({
-                                "action_type": "Outreach",
-                                "channel": step["channel"],
-                                "description": f"Step {step['step']}: {step['description']}",
-                                "status": "planned",
-                                "scheduled_at": step.get("scheduled_at"),
-                                "content_sent": step.get("content_draft"),
-                                "context_note": step.get("timing_note"),
-                            })
-                        ids, seq_id = bulk_log_actions(sid, sender_id, actions_for_db)
-                        st.session_state.pending_plan = None
-                        st.success(f"Added {len(ids)} steps as sequence {seq_id}")
-                        st.rerun()
-                with pc2:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        ics = _build_ics(plan, title=f"LH2 Outreach — {comp.get('domain','')}")
-                        st.download_button(
-                            "📅 Download .ics",
-                            data=ics,
-                            file_name=f"lh2_{comp.get('domain','outreach')}_plan.ics",
-                            mime="text/calendar",
-                            use_container_width=True,
+                        for email in res.get("emails") or []:
+                            src = email.get("source", "Enriched")
+                            conf = email.get("confidence", 0)
+                            st.markdown(
+                                f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📧 {email.get('value','')}</div>"
+                                f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} "
+                                f"Confidence: {conf}% · {res.get('source','SignalHire')}</div></div>",
+                                unsafe_allow_html=True)
+                        for phone in res.get("phones") or []:
+                            src = phone.get("source", "Enriched")
+                            conf = phone.get("confidence", 0)
+                            st.markdown(
+                                f"<div class='c' style='padding:8px 12px;'><div class='c-l'>📞 {phone.get('value','')}</div>"
+                                f"<div class='c-v'>{bdg(src, 'green' if src == 'Verified' else 'blue')} Confidence: {conf}%</div></div>",
+                                unsafe_allow_html=True)
+                        if res.get("linkedin"):
+                            st.markdown(
+                                f"<div class='c' style='padding:8px 12px;'><div class='c-l'>LinkedIn</div>"
+                                f"<div class='c-v'><a href='{res['linkedin']}' target='_blank' rel='noopener'>Profile</a></div></div>",
+                                unsafe_allow_html=True)
+                        if not (res.get("emails") or res.get("phones")) and res.get("linkedin"):
+                            st.caption("To get company/personal email and phone for this profile, set up SignalHire callback (SIGNALHIRE_CALLBACK_BASE_URL in keys.env).")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        # Add contact to company
+                        st.markdown(sh_small("Add enriched contact to company"), unsafe_allow_html=True)
+                        add_cid = st.selectbox(
+                            "Company",
+                            options=[cid] + [c["id"] for c in get_all_companies() if c["id"] != cid],
+                            format_func=lambda x: get_company(x).get("domain", str(x)) if get_company(x) else str(x),
+                            index=0,
+                            key="enrich_add_company",
                         )
-                    with c2:
-                        if st.button("❌ Discard", key="discard_plan", use_container_width=True):
+                        add_name = st.text_input("Contact name", value=res.get("fullName") or "", key="enrich_add_name")
+                        if st.button("✅ Add contact to company", key="add_enriched_contact", type="primary"):
+                            if not add_name or not add_cid:
+                                st.warning("Select company and enter contact name.")
+                            else:
+                                primary_email = (res.get("emails") or [{}])[0].get("value", "") if res.get("emails") else ""
+                                primary_phone = (res.get("phones") or [{}])[0].get("value", "") if res.get("phones") else ""
+                                extra = {
+                                    "enrichment": {
+                                        "source": res.get("source", "SignalHire"),
+                                        "confidence": res.get("confidence", 0),
+                                        "enriched_at": datetime.utcnow().isoformat(),
+                                    }
+                                }
+                                new_id = upsert_contact(
+                                    add_cid, add_name.strip(),
+                                    email=primary_email or None,
+                                    linkedin=res.get("linkedin") or None,
+                                    role=res.get("headline") or None,
+                                    extra_data=extra,
+                                )
+                                upsert_spoc_contact(
+                                    add_cid, ctid, add_name.strip(),
+                                    role=res.get("headline") or None,
+                                    email=primary_email or None,
+                                    linkedin_url=res.get("linkedin") or None,
+                                    phone=primary_phone or None,
+                                )
+                                st.success(f"Contact “{add_name.strip()}” added to {get_company(add_cid).get('domain','company')} (and under this SPOC).")
+                                st.session_state.pop(enrich_result_key, None)
+                                st.rerun()
+
+                # ── Quick actions + Sequence builder ──
+                q1, q2, q3, q4, q5 = st.columns(5)
+                with q1:
+                    if st.button("💬 LinkedIn", key="qa1", use_container_width=True):
+                        st.session_state.qa = "Draft a LinkedIn connection request for this contact. Under 300 characters. Specific to research."
+                with q2:
+                    if st.button("📧 Email", key="qa2", use_container_width=True):
+                        st.session_state.qa = "Draft the initial outreach email with subject line. Human and direct."
+                with q3:
+                    if st.button("⏰ Timing", key="qa3", use_container_width=True):
+                        st.session_state.qa = "What's the optimal day and time for first outreach? Specific: day, time, timezone."
+                with q4:
+                    if st.button("📋 Sequence", key="qa4", use_container_width=True):
+                        st.session_state.qa = "Design a 4-touch outreach sequence with timing, channel, and angle per touch."
+                with q5:
+                    if st.button("🎯 Full Plan", key="gen_plan", use_container_width=True):
+                        if _is_placeholder_contact(ct_ctx, comp):
+                            st.warning("Select a specific SPOC with a real name and LinkedIn. Current contact looks like a placeholder (e.g. domain as name).")
+                        else:
+                            with st.spinner("Building outreach plan..."):
+                                rn = st.session_state.research_cache.get(research_cache_key, [])
+                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn)
+                                if plan:
+                                    st.session_state.pending_plan = plan
+
+                # ── Pending plan preview ──
+                if st.session_state.pending_plan:
+                    plan = st.session_state.pending_plan
+                    st.markdown(sh(f"OUTREACH PLAN — {len(plan)} STEPS"), unsafe_allow_html=True)
+                    st.markdown(
+                        "<div style='background:var(--accent-bg);border:1px solid #c7d2fe;border-radius:var(--radius);"
+                        "padding:16px;margin-bottom:12px;'>",
+                        unsafe_allow_html=True)
+
+                    for step in plan:
+                        with st.container():
+                            st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
+                            ch_icon = "💬" if "linkedin" in step["channel"].lower() else "📧"
+                            content_draft = (step.get("content_draft") or "").strip()
+                            preview_len = 120
+                            st.markdown(
+                                f"<div class='sequence-step-header'>"
+                                f"<span style='font-size:13px;font-weight:600;'>"
+                                f"{ch_icon} Step {step['step']}: {step['channel']} — Day {step['day_offset']}</span>"
+                                f"<span style='font-size:11px;color:var(--text-3);'>{step.get('timing_note','')}</span></div>"
+                                f"<div style='font-size:12px;color:var(--text-2);'>{step['description']}</div>"
+                                f"<div class='sequence-step-divider'></div>",
+                                unsafe_allow_html=True)
+                            if content_draft:
+                                with st.expander(f"📄 Read full message" + (f" — {content_draft[:preview_len]}..." if len(content_draft) > preview_len else ""), expanded=False):
+                                    st.markdown(
+                                        f"<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>{(content_draft)}</div>",
+                                        unsafe_allow_html=True)
+                            if "email" in step.get("channel", "").lower() and step.get("content_draft"):
+                                st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
+                                subj, bod = parse_email_content(step["content_draft"])
+                                _render_save_to_gmail(
+                                    ct_ctx.get("email", ""), subj, bod,
+                                    f"plan_{st.session_state.session_id}_{step['step']}",
+                                )
+
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        if st.button("✅ Add Full Plan to Timeline", key="add_plan", use_container_width=True, type="primary"):
+                            actions_for_db = []
+                            for step in plan:
+                                actions_for_db.append({
+                                    "action_type": "Outreach",
+                                    "channel": step["channel"],
+                                    "description": f"Step {step['step']}: {step['description']}",
+                                    "status": "planned",
+                                    "scheduled_at": step.get("scheduled_at"),
+                                    "content_sent": step.get("content_draft"),
+                                    "context_note": step.get("timing_note"),
+                                })
+                            ids, seq_id = bulk_log_actions(sid, sender_id, actions_for_db)
                             st.session_state.pending_plan = None
+                            st.success(f"Added {len(ids)} steps as sequence {seq_id}")
                             st.rerun()
+                    with pc2:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            ics = _build_ics(plan, title=f"LH2 Outreach — {comp.get('domain','')}")
+                            st.download_button(
+                                "📅 Download .ics",
+                                data=ics,
+                                file_name=f"lh2_{comp.get('domain','outreach')}_plan.ics",
+                                mime="text/calendar",
+                                use_container_width=True,
+                            )
+                        with c2:
+                            if st.button("❌ Discard", key="discard_plan", use_container_width=True):
+                                st.session_state.pending_plan = None
+                                st.rerun()
 
-            # ── Chat messages ──
-            for m in st.session_state.chat_messages:
-                ts = (m.get("created_at") or "")
-                ts_short = ts[11:16] if len(ts) > 16 else ""
-                with st.chat_message(m["role"]):
-                    st.markdown(m["content"])
-                    if ts_short:
-                        st.markdown(f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>{ts_short}</div>", unsafe_allow_html=True)
+                # ── Chat messages ──
+                for m in st.session_state.chat_messages:
+                    ts = (m.get("created_at") or "")
+                    ts_short = ts[11:16] if len(ts) > 16 else ""
+                    with st.chat_message(m["role"]):
+                        st.markdown(m["content"])
+                        if ts_short:
+                            st.markdown(f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>{ts_short}</div>", unsafe_allow_html=True)
 
-            # ── Input ──
-            qa = st.session_state.pop("qa", None)
-            user_input = st.chat_input(f"Message strategist as {sender_name}...")
-            prompt = qa or user_input
+                # ── Input ──
+                qa = st.session_state.pop("qa", None)
+                user_input = st.chat_input(f"Message strategist as {sender_name}...")
+                prompt = qa or user_input
 
-            if prompt:
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-                save_message(sid, "user", prompt)
-                st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
-                rn = st.session_state.research_cache.get(research_cache_key, [])
-                with st.chat_message("assistant"):
-                    chunks = []
-                    ph = st.empty()
-                    for chunk in get_strategist_response_stream(comp, ct, st.session_state.chat_messages, prompt, user["id"], sid, rn):
-                        chunks.append(chunk)
-                        ph.markdown("".join(chunks) + "▌")
-                    response = "".join(chunks)
-                    ph.markdown(response)
-                save_message(sid, "assistant", response)
-                st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
-                maybe_update_summary(sid, comp, ct)
-                extract_episodic_memories(sid, response, comp)
-                detected = parse_ai_actions(response)
-                if detected:
-                    st.markdown(sh(f"{len(detected)} ACTION(S) DETECTED"), unsafe_allow_html=True)
-                    for i, da in enumerate(detected):
-                        dc1, dc2 = st.columns([3, 1])
-                        with dc1:
-                            st.markdown(f"<div class='c' style='padding:10px;'><b>{da['channel']}</b>: {da['description'][:200]}</div>", unsafe_allow_html=True)
-                        with dc2:
-                            if st.button("Add", key=f"aa_{i}"):
-                                log_action(sid, sender_id, da["type"], da["channel"], da["description"], "planned", scheduled_at=da.get("scheduled_at"))
-                                st.success("Added!")
+                if prompt:
+                    if _is_placeholder_contact(ct_ctx, comp):
+                        with st.chat_message("user"):
+                            st.markdown(prompt)
+                        save_message(sid, "user", prompt)
+                        st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
+                        with st.chat_message("assistant"):
+                            st.warning("Select a specific SPOC with a real name and LinkedIn. Current contact looks like a placeholder (e.g. domain as name). Drafts and plans are only generated for real contacts.")
+                    else:
+                        with st.chat_message("user"):
+                            st.markdown(prompt)
+                        save_message(sid, "user", prompt)
+                        st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
+                        rn = st.session_state.research_cache.get(research_cache_key, [])
+                        with st.chat_message("assistant"):
+                            chunks = []
+                            ph = st.empty()
+                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn):
+                                chunks.append(chunk)
+                                ph.markdown("".join(chunks) + "▌")
+                            response = "".join(chunks)
+                            ph.markdown(response)
+                        save_message(sid, "assistant", response)
+                        st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+                        maybe_update_summary(sid, comp, ct_ctx)
+                        extract_episodic_memories(sid, response, comp)
+                        detected = parse_ai_actions(response)
+                        if detected:
+                            st.markdown(sh(f"{len(detected)} ACTION(S) DETECTED"), unsafe_allow_html=True)
+                            for i, da in enumerate(detected):
+                                dc1, dc2 = st.columns([3, 1])
+                                with dc1:
+                                    st.markdown(f"<div class='c' style='padding:10px;'><b>{da['channel']}</b>: {da['description'][:200]}</div>", unsafe_allow_html=True)
+                                with dc2:
+                                    if st.button("Add", key=f"aa_{i}"):
+                                        log_action(sid, sender_id, da["type"], da["channel"], da["description"], "planned", scheduled_at=da.get("scheduled_at"))
+                                        st.success("Added!")
 
 
 # ════════════════════ ACTIONS ════════════════════
@@ -2630,9 +2802,216 @@ with tabs[7]:  # PIPELINE
                     st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>", unsafe_allow_html=True)
 
 
+# ════════════════════ SPOC TRACKING ════════════════════
+
+with tabs[8]:  # SPOC TRACKING
+    st.markdown(lh2_section_header("SPOC TRACKING"), unsafe_allow_html=True)
+    st.caption("SPOCs added to company: pipeline status, messages sent, and next step.")
+    all_comp_spoc = get_all_companies()
+    spoc_rows = []
+    for cd in all_comp_spoc:
+        for ctd in get_contacts(cd["id"]):
+            sub = get_spoc_contacts_by_spoc(ctd["id"])
+            if not sub:
+                continue
+            sessions = get_sessions_for_company(cd["id"])
+            sess = next((s for s in sessions if s.get("contact_id") == ctd["id"]), None)
+            actions = get_session_actions(sess["id"]) if sess else []
+            planned = [a for a in actions if (a.get("status") or "").strip().lower() == "planned" and a.get("scheduled_at")]
+            from datetime import datetime
+            today = datetime.utcnow().date()
+            next_dates = []
+            for a in planned:
+                try:
+                    dt = datetime.fromisoformat(a["scheduled_at"].replace("Z", "+00:00"))
+                    if dt.date() >= today:
+                        next_dates.append(dt)
+                except Exception:
+                    pass
+            next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
+            # Primary SPOC = first spoc_contacts row under this contact (canonical name/role/email/phone per company)
+            primary_spoc = sub[0] if sub else None
+            spoc_rows.append({
+                "company": cd,
+                "contact": ctd,
+                "session": sess,
+                "actions": actions,
+                "next_step_date": next_step_date,
+                "sub_count": len(sub),
+                "primary_spoc": primary_spoc,
+            })
+    if not spoc_rows:
+        st.markdown("<div style='text-align:center;padding:32px;color:var(--text-3);'>No SPOCs added to company yet. Add contacts from Strategist to see them here.</div>", unsafe_allow_html=True)
+    else:
+        # CSS for card-style rows: visual separation, padding, shadow, hover
+        st.markdown("""
+        <style>
+        .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div {
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            transition: background 0.2s ease, box-shadow 0.2s ease;
+        }
+        .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div:hover {
+            background: #f0f2f5;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        }
+        .spoc-company { font-weight: 600; color: inherit; }
+        .spoc-name { font-size: 1.05em; font-weight: 500; }
+        .spoc-role { color: #6c757d; font-size: 0.95em; }
+        .spoc-muted { color: #6c757d; font-size: 0.9em; }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown("<div class='spoc-rows-wrap'>", unsafe_allow_html=True)
+        # Header row: ▸ | Company | Name | Role | LinkedIn | Email | Phone number | Status | Next step
+        h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.9, 0.9])
+        for col, label in [
+            (h0, ""),
+            (h1, "Company"),
+            (h2, "Name"),
+            (h3, "Role"),
+            (h4, "LinkedIn"),
+            (h5, "Email"),
+            (h6, "Phone number"),
+            (h7, "Status"),
+            (h8, "Next step"),
+        ]:
+            with col:
+                if label:
+                    st.markdown(f"**{label}**")
+                else:
+                    st.markdown("&nbsp;")
+        st.markdown("<div style='margin:8px 0 16px 0; border-bottom:1px solid #e9ecef;'></div>", unsafe_allow_html=True)
+        for idx, row in enumerate(spoc_rows):
+            cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
+            _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
+            company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
+            # Use name/role/email/linkedin/phone from spoc_contacts (saved under each company) when present
+            ps = row.get("primary_spoc")
+            if ps:
+                name_display = (ps.get("name") or "—").strip() or "—"
+                role_display = (ps.get("role") or "—").strip() or "—"
+                linkedin_val = (ps.get("linkedin_url") or "—").strip() or "—"
+                email_display = (ps.get("email") or "—").strip() or "—"
+                phone_display = (ps.get("phone") or "—")
+                if isinstance(phone_display, str):
+                    phone_display = phone_display.strip() or "—"
+                else:
+                    phone_display = "—"
+            else:
+                name_display = (ctd.get("name") or "—").strip() or "—"
+                role_display = (ctd.get("role") or "—").strip() or "—"
+                linkedin_val = (ctd.get("linkedin") or "—").strip() or "—"
+                email_display = (ctd.get("email") or "—").strip() or "—"
+                phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
+                if isinstance(phone_display, str):
+                    phone_display = phone_display.strip() or "—"
+                else:
+                    phone_display = "—"
+            if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
+                linkedin_display = linkedin_val[:40] + "…" if len(linkedin_val) > 40 else linkedin_val
+            else:
+                linkedin_display = linkedin_val
+            next_step_display = row["next_step_date"]
+
+            # Container-based row with card styling
+            with st.container():
+                st.markdown("<div class='spoc-row-card'></div>", unsafe_allow_html=True)
+                # Better width ratios: Name + Role more prominent; LinkedIn/Email lighter; Status right-aligned
+                arrow_col, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.9, 0.9])
+                open_key = f"spoc_open_{ctd['id']}"
+                is_open = st.session_state.get(open_key, False)
+                with arrow_col:
+                    # Top: expand / collapse for activity details
+                    if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
+                        st.session_state[open_key] = not is_open
+                        st.rerun()
+                    # Bottom: SPOC-level brief / strategist context
+                    if st.button("→", key=f"spoc_brief_{ctd['id']}", help="Open brief for this SPOC", use_container_width=True):
+                        select_contact(cd["id"], ctd["id"])
+                        st.rerun()
+                with c1:
+                    st.markdown(f"<span class='spoc-company'>{html_module.escape(company_display)}</span>", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"<span class='spoc-name'>{html_module.escape(name_display)}</span>", unsafe_allow_html=True)
+                with c3:
+                    st.markdown(f"<span class='spoc-role'>{html_module.escape(role_display)}</span>", unsafe_allow_html=True)
+                with c4:
+                    if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
+                        st.markdown(f"<span class='spoc-muted'><a href=\"{html_module.escape(linkedin_val)}\" target=\"_blank\" rel=\"noopener\">Link</a></span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(linkedin_display)}</span>", unsafe_allow_html=True)
+                with c5:
+                    st.markdown(f"<span class='spoc-muted'>{html_module.escape(email_display)}</span>", unsafe_allow_html=True)
+                with c6:
+                    st.markdown(f"<span class='spoc-muted'>{html_module.escape(phone_display)}</span>", unsafe_allow_html=True)
+                with c7:
+                    # Status dropdown: vertically centered, reduced width; state binding unchanged
+                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
+                    current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
+                    new_status = st.selectbox(
+                        "Status",
+                        CONTACT_STATUSES,
+                        index=current_index,
+                        format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                        key=f"spoc_status_{ctd['id']}",
+                        label_visibility="collapsed",
+                    )
+                    if new_status != _norm:
+                        update_contact_status(ctd["id"], new_status)
+                        st.rerun()
+                with c8:
+                    st.markdown(next_step_display)
+
+            # Details section directly under the strip when expanded (same info, clearer layout)
+            if is_open:
+                import html
+                link_part = f'<a href="{html.escape(linkedin_val)}">Link</a>' if (linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http")) else html.escape(linkedin_display)
+                top_html = (
+                    f"<div style='margin-top:8px; padding:12px 16px; border-radius:8px; border:1px solid #e0e0e0; background:#fafafa;'>"
+                    f"<p style='margin:4px 0;'><strong>{html.escape(company_display)}</strong></p>"
+                    f"<p style='margin:4px 0;'>{html.escape(name_display)}</p>"
+                    f"<p style='margin:4px 0;'>{html.escape(role_display)}</p>"
+                    f"<p style='margin:4px 0;'>{link_part}</p>"
+                    f"<p style='margin:4px 0;'>{html.escape(email_display)}</p>"
+                    f"<p style='margin:4px 0;'>{html.escape(phone_display)}</p>"
+                    f"<p style='margin:4px 0;'><strong>Status:</strong> {html.escape(CONTACT_STATUS_LABELS.get(_norm, _norm))} · <strong>Next step:</strong> {html.escape(next_step_display)}</p>"
+                    f"<p style='margin:4px 0; font-size:0.9em;'><em>Contacts under this SPOC: {row['sub_count']}</em></p>"
+                    f"<hr style='margin:8px 0;'/></div>"
+                )
+                st.markdown(top_html, unsafe_allow_html=True)
+                completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
+                planned = [a for a in actions if (a.get("status") or "").strip().lower() == "planned"]
+                st.markdown("**What happened**")
+                if completed:
+                    for a in completed[:20]:
+                        done_at = a.get("completed_at") or a.get("created_at") or "—"
+                        if isinstance(done_at, str) and len(done_at) > 10:
+                            done_at = done_at[:10]
+                        desc = (a.get("description") or "").strip() or "(no description)"
+                        content = (a.get("content_sent") or "").strip()
+                        if content:
+                            content_preview = content[:120] + "…" if len(content) > 120 else content
+                            st.markdown(f"- {done_at} · {desc}\n  `{content_preview}`")
+                        else:
+                            st.markdown(f"- {done_at} · {desc}")
+                else:
+                    st.markdown("*No completed actions yet.*")
+                st.markdown("**What's planned**")
+                if planned:
+                    for a in planned[:20]:
+                        sch = (a.get("scheduled_at") or "")[:10] if a.get("scheduled_at") else "—"
+                        desc = (a.get("description") or "").strip() or "(no description)"
+                        st.markdown(f"- {sch} · {desc}")
+                else:
+                    st.markdown("*No planned actions.*")
+        st.markdown("</div>", unsafe_allow_html=True)
+
 # ════════════════════ HISTORY ════════════════════
 
-with tabs[8]:  # HISTORY
+with tabs[9]:  # HISTORY
     # === UI REFACTOR START ===
     ginsights = get_global_insights(user["id"], limit=8)
     if ginsights:
@@ -2697,7 +3076,7 @@ with tabs[8]:  # HISTORY
     if not sessions:
         st.markdown("<div style='text-align:center;padding:40px;color:var(--text-3);'>No sessions.</div>", unsafe_allow_html=True)
 
-with tabs[9]:  # ADVISOR
+with tabs[10]:  # ADVISOR
     # Header with history button
     h1, h2 = st.columns([3, 1])
     with h1:

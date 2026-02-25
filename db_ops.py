@@ -296,7 +296,7 @@ def merge_company_extra_data(company_id: int, patch: dict):
             return False
         base = _normalize_extra_data(c.extra_data)
         base.update(patch)
-        c.extra_data = base
+        c.extra_data = dict(base)  # new dict so ORM detects change and persists to DB
         c.updated_at = datetime.utcnow()
         s.flush()
         return True
