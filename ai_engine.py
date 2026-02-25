@@ -559,13 +559,25 @@ def advisor_chat(uid, user_message, history):
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
     messages.append({"role": "user", "content": user_message})
     try:
-        r = _ai().messages.create(
+        client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=600.0)
+        with client.messages.stream(
             model=AI_MODEL,
             max_tokens=25000,
             system=system,
             messages=messages,
-        )
-        return (r.content[0].text or "").strip()
+        ) as stream:
+            chunks = []
+            for text in stream.text_stream:
+                chunks.append(text)
+            result = ("".join(chunks) or "").strip()
+            if not result:
+                final = stream.get_final_message()
+                if final and getattr(final, "content", None):
+                    for block in final.content:
+                        if getattr(block, "text", None):
+                            result = block.text.strip()
+                            break
+        return result or ""
     except Exception as e:
         log.error("advisor_chat failed: %s", e)
         return f"Sorry, I couldn't process that: {e}"

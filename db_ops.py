@@ -532,6 +532,53 @@ def update_enrichment_result(request_id, result_json, status="completed"):
             r.status = status
 
 
+def update_enrichment_result_by_identifier(identifier, result_json, status="completed"):
+    """Update first pending enrichment with this identifier (fallback when callback has no Request-Id header)."""
+    if not (identifier or "").strip():
+        return False
+    with db() as s:
+        _ensure_enrichment_table(s)
+        r = (
+            s.query(EnrichmentResult)
+            .filter_by(identifier=(identifier or "").strip(), status="pending")
+            .first()
+        )
+        if r:
+            r.result_json = result_json
+            r.status = status
+            return True
+    return False
+
+
+def get_completed_enrichment_by_identifier(identifier):
+    """Get most recent completed enrichment for this identifier (e.g. LinkedIn URL). Used to fill email/phone for rows already marked completed but with empty result."""
+    if not (identifier or "").strip():
+        return None
+    ident = (identifier or "").strip().rstrip("/")
+    with db() as s:
+        _ensure_enrichment_table(s)
+        rows = (
+            s.query(EnrichmentResult)
+            .filter_by(status="completed")
+            .order_by(EnrichmentResult.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        for r in rows:
+            if not r.result_json:
+                continue
+            stored = (r.identifier or "").strip().rstrip("/")
+            if stored != ident:
+                continue
+            res = r.result_json or {}
+            if res.get("emails") or res.get("phones"):
+                return {
+                    "id": r.id, "request_id": r.request_id, "identifier": r.identifier,
+                    "result_json": res, "status": r.status,
+                }
+    return None
+
+
 def get_latest_enrichment_for_user(user_id, status="completed"):
     """Get most recent completed enrichment for user (for Add to company)."""
     with db() as s:

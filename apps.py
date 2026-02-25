@@ -58,7 +58,7 @@ from db_ops import (
     get_session_summary, get_pipeline_stats,
     merge_company_extra_data,
     save_advisor_conversation, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
-    get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id,
+    get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id, get_completed_enrichment_by_identifier,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
@@ -75,7 +75,7 @@ from ai_engine import (
 )
 from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
 from linkedin_lookup import (
-    extract_contacts_from_brief_research,
+    extract_spoc_table_contacts,
     run_linkedin_lookup_for_contacts,
     get_linkedin_url_for_contact,
 )
@@ -1082,6 +1082,7 @@ with tabs[2]:  # INTELLIGENCE
                                     merge_advisor_company_extra_data(aid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
+                                st.session_state[brief_key] = _brief  # keep session in sync so saved brief persists
                                 fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
                                 if fid:
                                     st.toast("Brief saved to DB and Drive.")
@@ -1638,16 +1639,9 @@ with tabs[3]:  # STRATEGIST
 
             # ── Contact details & enrichment ──
             st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
-            # Clear enrichment input when user clicks Clear (must run before text_input is created)
             enrich_result_key = f"enrich_result_{ctid}"
-            if st.session_state.get("enrich_clear_input"):
-                st.session_state["enrich_lookup_input"] = ""
-                st.session_state.pop("last_enrichment_record_id", None)
-                st.session_state.pop(enrich_result_key, None)
-                st.session_state.pop("enrich_clear_input", None)
             db_email = (ct.get("email") or "").strip()
             db_linkedin = (ct.get("linkedin") or "").strip()
-            needs_enrichment = not db_email and not db_linkedin
             if db_email or db_linkedin:
                 ecol1, ecol2 = st.columns(2)
                 with ecol1:
@@ -1661,32 +1655,11 @@ with tabs[3]:  # STRATEGIST
                         f"<div class='c-v'>{db_linkedin[:50] + '…' if db_linkedin and len(db_linkedin) > 50 else (db_linkedin or '—')} "
                         f"{bdg('From DB', 'gray') if db_linkedin else ''}</div></div>",
                         unsafe_allow_html=True)
-            if needs_enrichment or not db_email:
-                st.markdown(
-                    "<div style='background:var(--warn-bg);border:1px solid #f59e0b;border-radius:var(--radius);"
-                    "padding:12px 14px;margin:8px 0;font-size:13px;'>"
-                    "No verified email found. Run enrichment?</div>",
-                    unsafe_allow_html=True)
-            enrich_input = st.text_input(
-                "Look up by LinkedIn URL or email",
-                placeholder="Paste LinkedIn URL or email to enrich...",
-                key="enrich_lookup_input",
-                label_visibility="collapsed",
-            )
-            lookup_identifier = (enrich_input or "").strip() or (db_linkedin or db_email or "").strip()
-            run_col, clear_col, credits_col = st.columns([1, 0.6, 1])
-            with run_col:
-                run_enrich = st.button("🔍 Run enrichment", key="run_enrichment", type="primary", use_container_width=True)
-            with clear_col:
-                if st.button("Clear", key="enrich_clear_btn", use_container_width=True, help="Clear box and result to add another LinkedIn/email"):
-                    st.session_state.enrich_clear_input = True
-                    st.rerun()
-            with credits_col:
-                credits = get_signalhire_credits()
-                if credits is not None:
-                    st.caption(f"SignalHire credits: {credits}")
-                else:
-                    st.caption("Enrichment uses mock data when no API/callback")
+            credits = get_signalhire_credits()
+            if credits is not None:
+                st.caption(f"SignalHire credits: {credits}")
+            else:
+                st.caption("Enrichment uses mock data when no API/callback")
 
             # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
             st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
@@ -1721,10 +1694,10 @@ with tabs[3]:  # STRATEGIST
                 ).strip()
                 research_combined = (research_full or research_notes_text or "").strip()
                 company_name = comp.get("domain") or comp.get("name") or "this company"
-                with st.spinner("Extracting contacts…"):
-                    contacts = extract_contacts_from_brief_research(brief_text, research_combined, company_name)
+                with st.spinner("Extracting names from SPOC tables…"):
+                    contacts = extract_spoc_table_contacts(brief_text, research_combined, company_name)
                 if not contacts:
-                    st.info("No contacts found in brief or research. Add SPOCs in the brief or run deep research first.")
+                    st.info("No SPOC table found in brief or research. Generate a brief or run deep research to get a SPOC/stakeholder table first.")
                 else:
                     progress = st.progress(0, text=f"Finding LinkedIn URLs (0/{len(contacts)})…")
                     def _prog(i, total, name):
@@ -1748,6 +1721,30 @@ with tabs[3]:  # STRATEGIST
 
             if linkedin_results_key in st.session_state:
                 results_list = st.session_state[linkedin_results_key]
+
+                def _linkedin_result_matches_company(result_company, comp):
+                    """True if this result belongs to the current session company. Show when company matches or is unspecified; hide only when explicitly a different company (e.g. Season 4, LLC)."""
+                    if not comp:
+                        return True
+                    rc = (result_company or "").strip()
+                    rc_lower = rc.lower()
+                    domain = (comp.get("domain") or "").strip().lower()
+                    name = (comp.get("name") or "").strip().lower()
+                    # Unspecified or generic -> show for current company (extraction default)
+                    if not rc or rc_lower == "this company":
+                        return bool(domain or name)
+                    if not domain and not name:
+                        return True
+                    identifiers = [x for x in [domain, name] if x]
+                    if rc_lower in identifiers:
+                        return True
+                    for id in identifiers:
+                        if (len(id) >= 3 and id in rc_lower) or (len(rc_lower) >= 3 and rc_lower in id):
+                            return True
+                    return False
+
+                filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
+
                 # Check pending SignalHire enrichments and merge if completed
                 pending_updated = False
                 _new_list = []
@@ -1763,13 +1760,30 @@ with tabs[3]:  # STRATEGIST
                             if _nm:
                                 upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=(_r.get("linkedin_url") or "").strip() or None)
                             pending_updated = True
+                    else:
+                        # Completed but email/phone empty (e.g. callback arrived after we marked completed): fill from enrichment_results by LinkedIn URL
+                        _link = (_r.get("linkedin_url") or "").strip()
+                        _has_contact = (_r.get("email") or "").strip() or (_r.get("phone") or "").strip()
+                        if _r.get("enrichment_status") == "completed" and not _has_contact and _link:
+                            _er = get_completed_enrichment_by_identifier(_link)
+                            if _er and _er.get("result_json"):
+                                _res = _er["result_json"]
+                                _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                if _email or _phone:
+                                    _r = {**_r, "email": _email, "phone": _phone}
+                                    _nm = (_r.get("name") or "").strip()
+                                    if _nm:
+                                        upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_link or None)
+                                    pending_updated = True
                     _new_list.append(_r)
                 if pending_updated:
                     st.session_state[linkedin_results_key] = _new_list
                     _persist_linkedin_results(_new_list)
                     st.rerun()
                 results_list = st.session_state[linkedin_results_key]
-                with st.expander(f"Contacts with LinkedIn URLs ({len(results_list)})", expanded=True):
+                filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
+                with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)})", expanded=True):
                     if is_advisor_strategist:
                         st.caption("Add to company saves under the selected **child** (this company).")
                     add_input_key = f"linkedin_add_input_{research_cache_key}"
@@ -1843,6 +1857,8 @@ with tabs[3]:  # STRATEGIST
                     st.caption("Add: name, or \"Name — Role\", or \"Name, Company\". Re-check: **recheck** or **find again** + name.")
                     st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
                     for i, r in enumerate(results_list):
+                        if not _linkedin_result_matches_company(r.get("company"), comp):
+                            continue
                         name = (r.get("name") or "").strip() or "—"
                         role = (r.get("role") or "").strip()
                         company_display = r.get("company") or "—"
@@ -1911,14 +1927,14 @@ with tabs[3]:  # STRATEGIST
                             "Phone": (x.get("phone") or "").strip() or "—",
                             "Status": (x.get("enrichment_status") or "").strip() or "—",
                         }
-                        for x in results_list
+                        for x in filtered_results
                     ])
                     st.dataframe(_table_df, use_container_width=True, hide_index=True)
                     st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
                     # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
                     _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
                     if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
-                        _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip()]
+                        _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip() and _linkedin_result_matches_company(_r.get("company"), comp)]
                         if not _with_url:
                             st.warning("No contacts with LinkedIn URLs in the list.")
                         else:
@@ -2036,6 +2052,8 @@ with tabs[3]:  # STRATEGIST
                                     st.warning("Enrichment failed or no result.")
                 st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
 
+            run_enrich = False  # Single-contact enrichment UI removed; credits only shown
+            lookup_identifier = ""
             if run_enrich:
                 if not lookup_identifier:
                     st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")

@@ -31,7 +31,7 @@ if _env.exists():
                 if k and v and k not in os.environ:
                     os.environ[k] = v
 
-from db_ops import update_enrichment_result
+from db_ops import update_enrichment_result, update_enrichment_result_by_identifier
 from signalhire_enrichment import parse_callback_payload
 
 try:
@@ -55,7 +55,12 @@ def root():
 @app.route("/api/signalhire-callback", methods=["POST"])
 def signalhire_callback():
     body = request.get_data(as_text=True) or "[]"
-    request_id_header = request.headers.get("Request-Id") or request.headers.get("request-id") or ""
+    request_id_header = (
+        request.headers.get("Request-Id")
+        or request.headers.get("request-id")
+        or request.headers.get("X-Request-Id")
+        or ""
+    )
     log.info("SignalHire callback received (body length=%s, Request-Id=%s)", len(body), request_id_header or "(none)")
     try:
         try:
@@ -66,10 +71,13 @@ def signalhire_callback():
         updates = parse_callback_payload(data, request_id_from_header=request_id_header or None)
         if not updates:
             log.warning("No updates parsed (missing Request-Id header or success result). Raw body: %s", body[:500])
-        for request_id, result_json in updates:
+        for request_id, identifier, result_json in updates:
             if request_id:
                 update_enrichment_result(request_id, result_json, status="completed")
                 log.info("Updated enrichment request_id=%s", request_id)
+            elif identifier:
+                ok = update_enrichment_result_by_identifier(identifier, result_json, status="completed")
+                log.info("Updated enrichment by identifier (no Request-Id header): identifier=%s ok=%s", identifier[:60], ok)
         return "", 200
     except Exception as e:
         log.exception("Callback error: %s", e)

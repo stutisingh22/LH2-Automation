@@ -105,14 +105,8 @@ def render():
             # ── Contact details & enrichment ──
             st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
             enrich_result_key = f"enrich_result_{ctid}"
-            if st.session_state.get("enrich_clear_input"):
-                st.session_state["enrich_lookup_input"] = ""
-                st.session_state.pop("last_enrichment_record_id", None)
-                st.session_state.pop(enrich_result_key, None)
-                st.session_state.pop("enrich_clear_input", None)
             db_email = (ct.get("email") or "").strip()
             db_linkedin = (ct.get("linkedin") or "").strip()
-            needs_enrichment = not db_email and not db_linkedin
             if db_email or db_linkedin:
                 ecol1, ecol2 = st.columns(2)
                 with ecol1:
@@ -126,53 +120,11 @@ def render():
                         f"<div class='c-v'>{db_linkedin[:50] + '…' if db_linkedin and len(db_linkedin) > 50 else (db_linkedin or '—')} "
                         f"{bdg('From DB', 'gray') if db_linkedin else ''}</div></div>",
                         unsafe_allow_html=True)
-            if needs_enrichment or not db_email:
-                st.markdown(
-                    "<div style='background:var(--warn-bg);border:1px solid #f59e0b;border-radius:var(--radius);"
-                    "padding:12px 14px;margin:8px 0;font-size:13px;'>"
-                    "No verified email found. Run enrichment?</div>",
-                    unsafe_allow_html=True)
-            enrich_input = st.text_input(
-                "Look up by LinkedIn URL or email",
-                placeholder="Paste LinkedIn URL or email to enrich...",
-                key="enrich_lookup_input",
-                label_visibility="collapsed",
-            )
-            lookup_identifier = (enrich_input or "").strip() or (db_linkedin or db_email or "").strip()
-            run_col, clear_col, credits_col = st.columns([1, 0.6, 1])
-            with run_col:
-                run_enrich = st.button("🔍 Run enrichment", key="run_enrichment", type="primary", use_container_width=True)
-            with clear_col:
-                if st.button("Clear", key="enrich_clear_btn", use_container_width=True, help="Clear box and result to add another LinkedIn/email"):
-                    st.session_state.enrich_clear_input = True
-                    st.rerun()
-            with credits_col:
-                credits = get_signalhire_credits()
-                if credits is not None:
-                    st.caption(f"SignalHire credits: {credits}")
-                else:
-                    st.caption("Enrichment uses mock data when no API/callback")
-            if run_enrich:
-                if not lookup_identifier:
-                    st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
-                else:
-                    try:
-                        with st.spinner("Enriching contact..."):
-                            record_id, req_id, status = request_enrichment(lookup_identifier, user["id"])
-                        if record_id and status == "completed":
-                            st.session_state[enrich_result_key] = record_id
-                            st.success("Enrichment complete.")
-                            st.rerun()
-                        elif record_id and status == "pending":
-                            st.info("Enrichment requested. Results will appear when the callback is received. You can refresh in a moment.")
-                            st.session_state[enrich_result_key] = record_id
-                            st.rerun()
-                        else:
-                            st.error("Enrichment failed. Check API key and identifier, or see terminal logs.")
-                    except Exception as e:
-                        st.error(f"Enrichment error: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+            credits = get_signalhire_credits()
+            if credits is not None:
+                st.caption(f"SignalHire credits: {credits}")
+            else:
+                st.caption("Enrichment uses mock data when no API/callback")
 
             show_record_id = st.session_state.get(enrich_result_key)
             if show_record_id:

@@ -209,10 +209,12 @@ def has_verified_email(contact_dict):
 
 def parse_callback_payload(body, request_id_from_header=None):
     """
-    Parse SignalHire callback POST body. Returns list of (request_id, result_json) to update.
-    - SignalHire sends body as a top-level array; request ID is in the Request-Id response header.
+    Parse SignalHire callback POST body. Returns list of (request_id, identifier, result_json) to update.
+    - SignalHire sends body as a top-level array; request ID is in the Request-Id request header.
     - Handles: array [ { "item", "status", "candidate" } ] with request_id_from_header.
     - Also handles: { "requestId": "x", "results": [...] } if present.
+    - When Request-Id header is missing (e.g. stripped by proxy), request_id is None but we still
+      return success items with identifier so callback can update by identifier (fallback).
     """
     out = []
     try:
@@ -235,9 +237,9 @@ def parse_callback_payload(body, request_id_from_header=None):
         status = (item.get("status") or "").lower()
         candidate = item.get("candidate") or {}
         identifier = (item.get("item") or "").strip()
-        if status == "success" and candidate and request_id:
+        if status == "success" and candidate:
             result_json = normalize_candidate_to_result(candidate, identifier)
-            out.append((str(request_id), result_json))
+            out.append((str(request_id) if request_id else None, identifier, result_json))
     if not out and request_id:
-        out.append((str(request_id), {"fullName": "", "emails": [], "phones": [], "source": "SignalHire"}))
+        out.append((str(request_id), "", {"fullName": "", "emails": [], "phones": [], "source": "SignalHire"}))
     return out

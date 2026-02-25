@@ -182,6 +182,87 @@ def get_linkedin_url_for_contact(name: str, company: str) -> str | None:
     return _search_and_pick(query_name_only)
 
 
+def _parse_markdown_table_rows(text: str) -> list[tuple[list[str], list[list[str]]]]:
+    """
+    Find markdown tables in text and return (header_cells, data_rows) per table.
+    Each row is a list of cell strings (stripped).
+    """
+    tables = []
+    lines = (text or "").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not (line.strip().startswith("|") and line.strip().endswith("|")):
+            i += 1
+            continue
+        # Collect consecutive table lines
+        table_lines = []
+        j = i
+        while j < len(lines) and lines[j].strip().startswith("|") and lines[j].strip().endswith("|"):
+            table_lines.append(lines[j])
+            j += 1
+        if len(table_lines) >= 2:
+            # Parse: row 0 = header, row 1 = separator, row 2+ = data
+            def cells(ln):
+                return [c.strip() for c in ln.strip().strip("|").split("|")]
+            header = cells(table_lines[0])
+            # Separator row has --- in cells
+            sep = table_lines[1] if len(table_lines) > 1 else ""
+            if "---" in sep or "--" in sep:
+                data_rows = [cells(ln) for ln in table_lines[2:]]
+                if header and any(
+                    x in (h or "").lower() for h in header for x in ("name", "stakeholder", "spoc")
+                ):
+                    tables.append((header, data_rows))
+        i = j
+    return tables
+
+
+def extract_spoc_table_contacts(
+    brief_text: str,
+    research_text: str,
+    company_name: str,
+) -> list[dict]:
+    """
+    Extract (name, role) only from SPOC/stakeholder markdown tables in brief and research.
+    Uses the exact names from those tables; company is set to company_name for all (current target).
+    Returns list of {"name", "role", "company"} for LinkedIn lookup. No AI extraction.
+    """
+    combined = f"{(brief_text or '').strip()}\n\n{(research_text or '').strip()}"
+    if not combined.strip():
+        return []
+    company_name = (company_name or "this company").strip()
+    tables = _parse_markdown_table_rows(combined)
+    seen_names = set()
+    out = []
+    for header, data_rows in tables:
+        header_lower = [h.lower() for h in header]
+        name_col = 0
+        for idx, h in enumerate(header_lower):
+            if "name" in (h or "") or "stakeholder" in (h or "") or "spoc" in (h or ""):
+                name_col = idx
+                break
+        title_col = 1 if name_col == 0 and len(header) > 1 else 0
+        for idx, h in enumerate(header_lower):
+            if idx != name_col and ("title" in (h or "") or "role" in (h or "")):
+                title_col = idx
+                break
+        for row in data_rows:
+            if not row:
+                continue
+            name = (row[name_col] if name_col < len(row) else "").strip()
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            role = (row[title_col] if title_col < len(row) and title_col != name_col else "").strip()
+            out.append({
+                "name": name,
+                "role": role,
+                "company": company_name,
+            })
+    return out
+
+
 def extract_contacts_from_brief_research(
     brief_text: str,
     research_text: str,
@@ -203,11 +284,12 @@ def extract_contacts_from_brief_research(
         return []
 
     company_name = (company_name or "this company").strip()
-    prompt = f"""From the brief and research below, list every person (SPOC, contact, or named individual) mentioned.
-For each person provide: their full name, their role/title (if stated, else empty string), and the company they belong to (if not stated, use "{company_name}").
+    prompt = f"""From the brief and research below, list only people who are SPOCs or contacts for "{company_name}" (this target company).
+Include only individuals who work at, or are direct decision-makers for, "{company_name}". Exclude people who work only at other companies (e.g. parent companies, sister brands, partners) unless they are explicitly SPOCs for "{company_name}".
+For each person provide: their full name, their role/title (if stated, else empty string), and the company they belong to (use "{company_name}" for everyone you list, since you are only listing people for this company).
 Output valid JSON only, no markdown: [{{"name": "...", "role": "...", "company": "..."}}, ...]
 Deduplicate by name; if the same person appears twice, keep one entry with the most complete role/company.
-If no people are mentioned, return []."""
+If no people are mentioned for this company, return []."""
 
     try:
         from config import AI_MODEL
