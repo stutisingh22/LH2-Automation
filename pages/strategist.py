@@ -56,29 +56,36 @@ def render():
         if not comp or not ct:
             st.error("Not found.")
         else:
-            # ── FROM / TO selectors ──
+            # ── FROM / TO selectors (FROM = registered user emails, TO = company contacts with email) ──
             sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
             with sel1:
                 all_users = get_all_users()
-                user_names = {u["id"]: display_full_name(u["username"]) for u in all_users}
+                user_emails = {u["id"]: (u.get("email") or "").strip() or (u.get("username") or "?") for u in all_users}
+                from_options = [u["id"] for u in all_users if (u.get("email") or "").strip()]
+                if not from_options:
+                    from_options = [u["id"] for u in all_users]
+                from_index = from_options.index(st.session_state.sender_id) if st.session_state.sender_id in from_options else 0
                 sender_id = st.selectbox(
                     "FROM (sender)",
-                    options=[u["id"] for u in all_users],
-                    format_func=lambda x: f"👤 {user_names.get(x, '?')}",
-                    index=[u["id"] for u in all_users].index(st.session_state.sender_id) if st.session_state.sender_id in [u["id"] for u in all_users] else 0,
+                    options=from_options,
+                    format_func=lambda x: f"📧 {user_emails.get(x, '?')}",
+                    index=from_index,
                     key="from_sel",
                 )
                 st.session_state.sender_id = sender_id
-                sender_name = user_names.get(sender_id, "")
+                sender_name = user_emails.get(sender_id, "")
 
             with sel2:
                 contacts = get_contacts(cid)
-                ct_names = {c["id"]: f"{c['name']} — {c.get('role','')}" for c in contacts}
+                contacts_with_email = [c for c in contacts if (c.get("email") or "").strip()]
+                to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
+                ct_display = {c["id"]: (c.get("email") or "").strip() or f"{c.get('name', '?')} (no email)" for c in contacts}
+                to_index = to_options.index(ctid) if ctid in to_options else 0
                 to_id = st.selectbox(
                     "TO (recipient)",
-                    options=[c["id"] for c in contacts],
-                    format_func=lambda x: f"📨 {ct_names.get(x, '?')}",
-                    index=[c["id"] for c in contacts].index(ctid) if ctid in [c["id"] for c in contacts] else 0,
+                    options=to_options,
+                    format_func=lambda x: f"📨 {ct_display.get(x, '?')}",
+                    index=to_index,
                     key="to_sel",
                 )
                 if to_id != ctid:

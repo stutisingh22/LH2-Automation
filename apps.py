@@ -38,6 +38,7 @@ from config import (
     normalize_contact_status,
     ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS,
     GOOGLE_SERVICE_ACCOUNT_JSON,
+    SIGNALHIRE_CALLBACK_BASE_URL,
 )
 from db_ops import (
     create_user, authenticate, get_user, get_all_users,
@@ -57,7 +58,7 @@ from db_ops import (
     get_session_summary, get_pipeline_stats,
     merge_company_extra_data,
     save_advisor_conversation, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
-    get_enrichment_result, get_latest_enrichment_for_user,
+    get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
@@ -1588,28 +1589,37 @@ with tabs[3]:  # STRATEGIST
             # Research cache: Intelligence uses advisor_{id} for Media Houses, cid for Independent
             research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
             # ── FROM / TO selectors ──
+            # FROM: only registered users, displayed by email
+            # TO: only contacts that have an email for this company, displayed by email
             sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
             with sel1:
                 all_users = get_all_users()
-                user_names = {u["id"]: display_full_name(u["username"]) for u in all_users}
+                user_emails = {u["id"]: (u.get("email") or "").strip() or (u.get("username") or "?") for u in all_users}
+                from_options = [u["id"] for u in all_users if (u.get("email") or "").strip()]
+                if not from_options:
+                    from_options = [u["id"] for u in all_users]
+                from_index = from_options.index(st.session_state.sender_id) if st.session_state.sender_id in from_options else 0
                 sender_id = st.selectbox(
                     "FROM (sender)",
-                    options=[u["id"] for u in all_users],
-                    format_func=lambda x: f"👤 {user_names.get(x, '?')}",
-                    index=[u["id"] for u in all_users].index(st.session_state.sender_id) if st.session_state.sender_id in [u["id"] for u in all_users] else 0,
+                    options=from_options,
+                    format_func=lambda x: f"📧 {user_emails.get(x, '?')}",
+                    index=from_index,
                     key="from_sel",
                 )
                 st.session_state.sender_id = sender_id
-                sender_name = user_names.get(sender_id, "")
+                sender_name = user_emails.get(sender_id, "")
 
             with sel2:
                 contacts = get_contacts(cid)
-                ct_names = {c["id"]: f"{c['name']} — {c.get('role','')}" for c in contacts}
+                contacts_with_email = [c for c in contacts if (c.get("email") or "").strip()]
+                to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
+                ct_display = {c["id"]: (c.get("email") or "").strip() or f"{c.get('name', '?')} (no email)" for c in contacts}
+                to_index = to_options.index(ctid) if ctid in to_options else 0
                 to_id = st.selectbox(
                     "TO (recipient)",
-                    options=[c["id"] for c in contacts],
-                    format_func=lambda x: f"📨 {ct_names.get(x, '?')}",
-                    index=[c["id"] for c in contacts].index(ctid) if ctid in [c["id"] for c in contacts] else 0,
+                    options=to_options,
+                    format_func=lambda x: f"📨 {ct_display.get(x, '?')}",
+                    index=to_index,
                     key="to_sel",
                 )
                 if to_id != ctid:
@@ -1732,10 +1742,32 @@ with tabs[3]:  # STRATEGIST
                 _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
             else:
                 _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
-            if _saved_list and isinstance(_saved_list, list) and linkedin_results_key not in st.session_state:
+            # Always rehydrate from DB when we have persisted data so SignalHire email/phone survive refresh
+            if _saved_list and isinstance(_saved_list, list):
                 st.session_state[linkedin_results_key] = _saved_list
 
             if linkedin_results_key in st.session_state:
+                results_list = st.session_state[linkedin_results_key]
+                # Check pending SignalHire enrichments and merge if completed
+                pending_updated = False
+                _new_list = []
+                for _r in results_list:
+                    if _r.get("enrichment_status") == "pending" and _r.get("enrichment_request_id"):
+                        _er = get_enrichment_by_request_id(_r["enrichment_request_id"])
+                        if _er and _er.get("status") == "completed" and _er.get("result_json"):
+                            _res = _er["result_json"]
+                            _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                            _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                            _r = {**_r, "email": _email, "phone": _phone, "enrichment_status": "completed", "enrichment_request_id": None}
+                            _nm = (_r.get("name") or "").strip()
+                            if _nm:
+                                upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=(_r.get("linkedin_url") or "").strip() or None)
+                            pending_updated = True
+                    _new_list.append(_r)
+                if pending_updated:
+                    st.session_state[linkedin_results_key] = _new_list
+                    _persist_linkedin_results(_new_list)
+                    st.rerun()
                 results_list = st.session_state[linkedin_results_key]
                 with st.expander(f"Contacts with LinkedIn URLs ({len(results_list)})", expanded=True):
                     if is_advisor_strategist:
@@ -1821,11 +1853,19 @@ with tabs[3]:  # STRATEGIST
                                 link_html = f"<a href='{url}' target='_blank' rel='noopener' style='font-size:12px;'>Profile</a>"
                             else:
                                 link_html = "<span style='font-size:12px;color:var(--text-3);'>—</span>"
+                            _email = (r.get("email") or "").strip()
+                            _phone = (r.get("phone") or "").strip()
+                            _status = (r.get("enrichment_status") or "").strip() or "—"
+                            _extra = ""
+                            if _email or _phone:
+                                _extra = f"<div style='font-size:11px;color:var(--text-3);margin-top:4px;'>📧 {_email or '—'} · 📞 {_phone or '—'}</div>"
+                            if _status and _status != "—":
+                                _extra += f"<div style='font-size:10px;color:var(--text-3);'>{_status}</div>"
                             st.markdown(
                                 f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
                                 f"<div style='font-weight:500;'>{name}</div>"
                                 f"<div style='font-size:12px;color:var(--text-2);'>{role or '—'} · {company_display}</div>"
-                                f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div></div>",
+                                f"<div style='font-size:12px;margin-top:4px;'>{link_html}</div>{_extra}</div>",
                                 unsafe_allow_html=True)
                         with row_col2:
                             if name != "—":
@@ -1840,7 +1880,7 @@ with tabs[3]:  # STRATEGIST
                                     st.rerun()
                         with row_col3:
                             if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
-                                upsert_contact(cid, name, role=role or None, linkedin=url or None)
+                                new_contact_id = upsert_contact(cid, name, role=role or None, linkedin=url or None)
                                 upsert_spoc_contact(
                                     cid, ctid, name,
                                     role=role or None,
@@ -1848,7 +1888,10 @@ with tabs[3]:  # STRATEGIST
                                     linkedin_url=url or None,
                                     phone=(r.get("phone") or "").strip() or None,
                                 )
-                                st.success(f"Added **{name}** to company (and under this SPOC).")
+                                if new_contact_id:
+                                    select_contact(cid, new_contact_id)
+                                    st.session_state.current_tab = "STRATEGIST"
+                                st.success(f"Added **{name}** to company (and under this SPOC). Select them in TO (recipient) if not shown.")
                                 st.rerun()
                         with row_col4:
                             if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
@@ -1857,6 +1900,55 @@ with tabs[3]:  # STRATEGIST
                                 _persist_linkedin_results(new_list)
                                 st.success("Removed from list.")
                                 st.rerun()
+                    st.markdown(sh_small("Email & contacts table"), unsafe_allow_html=True)
+                    _table_df = pd.DataFrame([
+                        {
+                            "Name": (x.get("name") or "").strip() or "—",
+                            "Role": (x.get("role") or "").strip() or "—",
+                            "Company": (x.get("company") or "—").strip() or "—",
+                            "LinkedIn": (x.get("linkedin_url") or "").strip() or "—",
+                            "Email": (x.get("email") or "").strip() or "—",
+                            "Phone": (x.get("phone") or "").strip() or "—",
+                            "Status": (x.get("enrichment_status") or "").strip() or "—",
+                        }
+                        for x in results_list
+                    ])
+                    st.dataframe(_table_df, use_container_width=True, hide_index=True)
+                    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+                    # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
+                    _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
+                    if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
+                        _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip()]
+                        if not _with_url:
+                            st.warning("No contacts with LinkedIn URLs in the list.")
+                        else:
+                            _prog = st.progress(0, text=f"Enriching 0/{len(_with_url)}…")
+                            _new_list = list(results_list)
+                            for _idx, (_i, _r) in enumerate(_with_url):
+                                _prog.progress((_idx + 1) / len(_with_url), text=f"Enriching {_idx + 1}/{len(_with_url)}: {(_r.get('name') or '')[:25]}…")
+                                _url = (_r.get("linkedin_url") or "").strip()
+                                _rec_id, _req_id, _status = request_enrichment(_url, user["id"], callback_url=_callback_url)
+                                if _status == "completed" and _rec_id:
+                                    try:
+                                        _er = get_enrichment_result(_rec_id)
+                                        if _er and _er.get("result_json"):
+                                            _res = _er["result_json"]
+                                            _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                            _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                            _new_list[_i] = {**_new_list[_i], "email": _email, "phone": _phone, "enrichment_status": "completed"}
+                                            _nm = (_new_list[_i].get("name") or "").strip()
+                                            if _nm:
+                                                upsert_spoc_contact(cid, ctid, _nm, role=(_new_list[_i].get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_url or None)
+                                    except Exception:
+                                        pass
+                                elif _status == "pending" and _req_id:
+                                    _new_list[_i] = {**_new_list[_i], "enrichment_status": "pending", "enrichment_request_id": _req_id}
+                            _prog.empty()
+                            st.session_state[linkedin_results_key] = _new_list
+                            _persist_linkedin_results(_new_list)
+                            st.success(f"Enrichment run for {len(_with_url)} contact(s). Refresh in a moment if any are pending (callback).")
+                            st.rerun()
+                    st.caption("On localhost: run `python signalhire_callback_server.py` and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
                 clear_col, save_col = st.columns(2)
                 with clear_col:
                     if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
@@ -1882,20 +1974,67 @@ with tabs[3]:  # STRATEGIST
             # ── Contacts under this SPOC (from spoc_contacts table) ──
             st.markdown(sh_small("Contacts under this SPOC"), unsafe_allow_html=True)
             spoc_list = get_spoc_contacts_by_spoc(ctid)
+            # Check pending SignalHire enrichments for saved contacts and merge if completed
+            _spoc_callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
+            _spoc_updated = False
+            for _s in spoc_list:
+                _ed = _s.get("extra_data") or {}
+                _req_id = _ed.get("enrichment_request_id") if isinstance(_ed, dict) else None
+                if _req_id:
+                    _er = get_enrichment_by_request_id(_req_id)
+                    if _er and _er.get("status") == "completed" and _er.get("result_json"):
+                        _res = _er["result_json"]
+                        _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                        _phone = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                        _new_extra = {k: v for k, v in (_ed or {}).items() if k != "enrichment_request_id"}
+                        _new_extra["enrichment_request_id"] = None
+                        upsert_spoc_contact(cid, ctid, _s.get("name") or "", role=_s.get("role"), email=_email or None, phone=_phone or None, linkedin_url=_s.get("linkedin_url"), extra_data=_new_extra)
+                        _spoc_updated = True
+            if _spoc_updated:
+                st.rerun()
             if not spoc_list:
                 st.caption("No contacts saved under this SPOC yet. Use «Add to company» or «Save all to DB (under this SPOC)» from the list above.")
             else:
-                df = pd.DataFrame([
-                    {
-                        "Name": s.get("name") or "—",
-                        "Role": s.get("role") or "—",
-                        "Email": s.get("email") or "—",
-                        "LinkedIn": s.get("linkedin_url") or "—",
-                        "Phone": s.get("phone") or "—",
-                    }
-                    for s in spoc_list
-                ])
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                for _idx, s in enumerate(spoc_list):
+                    _name = s.get("name") or "—"
+                    _role = s.get("role") or "—"
+                    _email = s.get("email") or "—"
+                    _linkedin = (s.get("linkedin_url") or "").strip()
+                    _phone = s.get("phone") or "—"
+                    _col1, _col2 = st.columns([4, 1])
+                    with _col1:
+                        st.markdown(
+                            f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
+                            f"<div style='font-weight:500;'>{_name}</div>"
+                            f"<div style='font-size:12px;color:var(--text-2);'>{_role} · 📧 {_email} · 📞 {_phone}</div>"
+                            f"<div style='font-size:11px;'>{'<a href=\"' + _linkedin + '\" target=\"_blank\">LinkedIn</a>' if _linkedin else '—'}</div></div>",
+                            unsafe_allow_html=True)
+                    with _col2:
+                        if _linkedin and st.button("Get email (SignalHire)", key=f"spoc_signalhire_{ctid}_{_idx}_{s.get('id')}", use_container_width=True, help="Fetch email/phone via SignalHire for this saved contact"):
+                            _sname = (s.get("name") or "").strip()
+                            if not _sname:
+                                st.warning("Contact has no name.")
+                            else:
+                                _rec_id, _req_id, _status = request_enrichment(_linkedin, user["id"], callback_url=_spoc_callback_url)
+                                if _status == "completed" and _rec_id:
+                                    try:
+                                        _er = get_enrichment_result(_rec_id)
+                                        if _er and _er.get("result_json"):
+                                            _res = _er["result_json"]
+                                            _e = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                            _p = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                            upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=_e or None, phone=_p or None, linkedin_url=_linkedin or None)
+                                            st.success("Email/phone updated.")
+                                            st.rerun()
+                                    except Exception:
+                                        pass
+                                elif _status == "pending" and _req_id:
+                                    upsert_spoc_contact(cid, ctid, _sname, role=(s.get("role") or "").strip() or None, email=s.get("email"), phone=s.get("phone"), linkedin_url=_linkedin or None, extra_data={"enrichment_request_id": _req_id})
+                                    st.info("Enrichment requested; refresh in a moment for results.")
+                                    st.rerun()
+                                else:
+                                    st.warning("Enrichment failed or no result.")
+                st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
 
             if run_enrich:
                 if not lookup_identifier:

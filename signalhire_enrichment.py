@@ -205,3 +205,39 @@ def has_verified_email(contact_dict):
     enrichment = extra.get("enrichment") or {}
     # If email was set by us from enrichment, still consider it "stored" but mark source
     return bool(email)
+
+
+def parse_callback_payload(body, request_id_from_header=None):
+    """
+    Parse SignalHire callback POST body. Returns list of (request_id, result_json) to update.
+    - SignalHire sends body as a top-level array; request ID is in the Request-Id response header.
+    - Handles: array [ { "item", "status", "candidate" } ] with request_id_from_header.
+    - Also handles: { "requestId": "x", "results": [...] } if present.
+    """
+    out = []
+    try:
+        data = body if isinstance(body, (dict, list)) else (json.loads(body) if body else {})
+    except Exception:
+        data = {}
+    request_id = None
+    results = []
+    if isinstance(data, list):
+        results = data
+        request_id = (request_id_from_header or "").strip() or None
+    else:
+        request_id = data.get("requestId") or data.get("request_id") or (request_id_from_header or "").strip() or None
+        results = data.get("results") or data.get("data") or []
+    if not isinstance(results, list):
+        results = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        status = (item.get("status") or "").lower()
+        candidate = item.get("candidate") or {}
+        identifier = (item.get("item") or "").strip()
+        if status == "success" and candidate and request_id:
+            result_json = normalize_candidate_to_result(candidate, identifier)
+            out.append((str(request_id), result_json))
+    if not out and request_id:
+        out.append((str(request_id), {"fullName": "", "emails": [], "phones": [], "source": "SignalHire"}))
+    return out
