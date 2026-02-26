@@ -708,13 +708,6 @@ with header_cols[1]:
     # Breadcrumb (company > contact) intentionally not shown — selection stays in list only
     pass
 with header_cols[2]:
-    st.selectbox(
-        "Companies DB",
-        options=["Independent", "Media Houses"],
-        index=["Independent", "Media Houses"].index(st.session_state.get("notion_companies_source", "Independent")),
-        key="notion_companies_source",
-        label_visibility="collapsed",
-    )
     st.markdown(
         f"<div class='dashboard-header-right'>"
         f"<div class='user-badge'>"
@@ -726,6 +719,13 @@ with header_cols[2]:
         f"</div>"
         f"</div>",
         unsafe_allow_html=True)
+    st.selectbox(
+        "Companies DB",
+        options=["Independent", "Media Houses"],
+        index=["Independent", "Media Houses"].index(st.session_state.get("notion_companies_source", "Independent")),
+        key="notion_companies_source",
+        label_visibility="collapsed",
+    )
 
 # Professional Admin Navigation using st.tabs()
 tab_labels = [n.title() if n != "ADVISOR" else "Advisor" for n in TAB_NAMES]
@@ -2878,6 +2878,9 @@ with tabs[8]:  # SPOC TRACKING
     for cd in all_comp_spoc:
         for ctd in get_contacts(cd["id"]):
             sub = get_spoc_contacts_by_spoc(ctd["id"])
+            # Show only SPOCs you have explicitly saved under a company (via Strategist/spoc_contacts)
+            if not sub:
+                continue
             sessions = get_sessions_for_company(cd["id"])
             sess = next((s for s in sessions if s.get("contact_id") == ctd["id"]), None)
             actions = get_session_actions(sess["id"]) if sess else []
@@ -2898,6 +2901,21 @@ with tabs[8]:  # SPOC TRACKING
             first_overdue_date_str = planned_past[0][1].strftime("%b %d, %Y") if planned_past else None
             next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
             primary_spoc = sub[0] if sub else None
+            # ── Filter: skip rows with no real SPOC data ──
+            if primary_spoc:
+                _has_real = (primary_spoc.get("name") or "").strip() or (primary_spoc.get("email") or "").strip() or (primary_spoc.get("linkedin_url") or "").strip()
+                if not _has_real:
+                    continue
+            else:
+                # No sub-contacts: check if the contact itself has real data
+                _ct_name = (ctd.get("name") or "").strip()
+                _ct_email = (ctd.get("email") or "").strip()
+                _ct_li = (ctd.get("linkedin") or "").strip()
+                _ct_domain = (cd.get("domain") or "").strip().lower()
+                # Skip if name is empty, matches domain, or has no email+linkedin
+                _name_is_placeholder = (not _ct_name) or (_ct_name.lower() == _ct_domain) or (_ct_name.lower().replace("www.", "") == _ct_domain.replace("www.", ""))
+                if _name_is_placeholder and not _ct_email and not _ct_li:
+                    continue
             company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
             if primary_spoc:
                 _nm = (primary_spoc.get("name") or "—").strip() or "—"
@@ -2923,6 +2941,7 @@ with tabs[8]:  # SPOC TRACKING
                 "next_step_date": next_step_date,
                 "sub_count": len(sub),
                 "primary_spoc": primary_spoc,
+                "subs": sub,
                 "first_overdue_action": first_overdue_action,
                 "first_overdue_date_str": first_overdue_date_str,
                 "search_text": _search_text,
@@ -2942,111 +2961,68 @@ with tabs[8]:  # SPOC TRACKING
         if search_q and not spoc_rows:
             st.info("No matches for your search.")
         elif spoc_rows:
-            # Light CSS for card-style rows: subtle separation, minimal visual weight
-            st.markdown("""
-        <style>
-        .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div {
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 8px;
-            background: #fafbfc;
-            border: 1px solid #eee;
-            transition: background 0.15s ease;
-        }
-        .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div:hover {
-            background: #f5f6f8;
-        }
-        .spoc-company { font-weight: 600; color: inherit; font-size: 0.95em; }
-        .spoc-name { font-size: 1.02em; font-weight: 500; }
-        .spoc-role { color: #6c757d; font-size: 0.92em; }
-        .spoc-muted { color: #6c757d; font-size: 0.88em; }
-        </style>
-        """, unsafe_allow_html=True)
-            st.markdown("<div class='spoc-rows-wrap'>", unsafe_allow_html=True)
-            # Header row: ▸ | Company | Name | Role | LinkedIn | Email | Phone number | Status | Next step
-            h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.8, 0.9])
-            for col, label in [
-                (h0, ""),
-                (h1, "Company"),
-                (h2, "Name"),
-                (h3, "Role"),
-                (h4, "LinkedIn"),
-                (h5, "Email"),
-                (h6, "Phone number"),
-                (h7, "Status"),
-                (h8, "Next step"),
-            ]:
-                with col:
-                    if label:
-                        st.markdown(f"**{label}**")
-                    else:
-                        st.markdown("&nbsp;")
-            st.markdown("<div style='margin:8px 0 16px 0; border-bottom:1px solid #e9ecef;'></div>", unsafe_allow_html=True)
             for idx, row in enumerate(spoc_rows):
                 cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
                 _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
                 company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
-                # Use name/role/email/linkedin/phone from spoc_contacts (saved under each company) when present
                 ps = row.get("primary_spoc")
+                subs = row.get("subs") or []
+                # Collect any emails/phones from all saved SPOC contacts under this person
+                emails_from_subs = [(s.get("email") or "").strip() for s in subs if (s.get("email") or "").strip()]
+                phones_from_subs = [(s.get("phone") or "").strip() for s in subs if (s.get("phone") or "").strip()]
                 if ps:
                     name_display = (ps.get("name") or "—").strip() or "—"
                     role_display = (ps.get("role") or "—").strip() or "—"
-                    linkedin_val = (ps.get("linkedin_url") or "—").strip() or "—"
-                    email_display = (ps.get("email") or "—").strip() or "—"
-                    phone_display = (ps.get("phone") or "—")
-                    if isinstance(phone_display, str):
-                        phone_display = phone_display.strip() or "—"
-                    else:
-                        phone_display = "—"
+                    linkedin_val = (ps.get("linkedin_url") or "").strip()
+                    # Prefer SPOC-level email/phone; fall back to any sub-contact, then contact record
+                    email_display = (
+                        (ps.get("email") or "").strip()
+                        or (emails_from_subs[0] if emails_from_subs else "")
+                        or (ctd.get("email") or "").strip()
+                        or "—"
+                    )
+                    phone_display = (
+                        (ps.get("phone") or "").strip()
+                        or (phones_from_subs[0] if phones_from_subs else "")
+                        or ((ctd.get("extra_data") or {}).get("phone") or "").strip()
+                        or "—"
+                    )
+                    phone_display = phone_display or "—"
                 else:
                     name_display = (ctd.get("name") or "—").strip() or "—"
                     role_display = (ctd.get("role") or "—").strip() or "—"
-                    linkedin_val = (ctd.get("linkedin") or "—").strip() or "—"
+                    linkedin_val = (ctd.get("linkedin") or "").strip()
                     email_display = (ctd.get("email") or "—").strip() or "—"
                     phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
                     if isinstance(phone_display, str):
                         phone_display = phone_display.strip() or "—"
                     else:
                         phone_display = "—"
-                if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
-                    linkedin_display = linkedin_val[:40] + "…" if len(linkedin_val) > 40 else linkedin_val
-                else:
-                    linkedin_display = linkedin_val
+                linkedin_html = f"<a href='{html_module.escape(linkedin_val)}' target='_blank'>Profile</a>" if linkedin_val and linkedin_val.startswith("http") else "—"
                 next_step_display = row["next_step_date"]
+                open_key = f"spoc_open_{ctd['id']}"
+                is_open = st.session_state.get(open_key, False)
 
-                # Container-based row with card styling
+                # ── Card row: expand button | company+name+role+contacts | status | next step ──
                 with st.container():
-                    st.markdown("<div class='spoc-row-card'></div>", unsafe_allow_html=True)
-                    # Column layout: Name+Role prominent; LinkedIn/Email muted; Status slightly narrower
-                    arrow_col, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.8, 0.9])
-                    open_key = f"spoc_open_{ctd['id']}"
-                    is_open = st.session_state.get(open_key, False)
-                    with arrow_col:
-                        # Top: expand / collapse for activity details
+                    c_btn, c_info, c_status, c_next = st.columns([0.4, 4.0, 1.0, 1.0])
+                    with c_btn:
                         if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
                             st.session_state[open_key] = not is_open
                             st.rerun()
-                        # Bottom: SPOC-level brief / strategist context
-                        if st.button("→", key=f"spoc_brief_{ctd['id']}", help="Open brief for this SPOC", use_container_width=True):
-                            select_contact(cd["id"], ctd["id"])
-                            st.rerun()
-                    with c1:
-                        st.markdown(f"<span class='spoc-company'>{html_module.escape(company_display)}</span>", unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(f"<span class='spoc-name'>{html_module.escape(name_display)}</span>", unsafe_allow_html=True)
-                    with c3:
-                        st.markdown(f"<span class='spoc-role'>{html_module.escape(role_display)}</span>", unsafe_allow_html=True)
-                    with c4:
-                        if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
-                            st.markdown(f"<span class='spoc-muted'><a href=\"{html_module.escape(linkedin_val)}\" target=\"_blank\" rel=\"noopener\">Link</a></span>", unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"<span class='spoc-muted'>{html_module.escape(linkedin_display)}</span>", unsafe_allow_html=True)
-                    with c5:
-                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(email_display)}</span>", unsafe_allow_html=True)
-                    with c6:
-                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(phone_display)}</span>", unsafe_allow_html=True)
-                    with c7:
-                        # Status dropdown: state binding unchanged
+                    with c_info:
+                        st.markdown(
+                            f"<div class='spoc-card'>"
+                            f"<div class='spoc-card-company'>{html_module.escape(company_display)}</div>"
+                            f"<div class='spoc-card-name'>{html_module.escape(name_display)}"
+                            f" <span class='spoc-card-role'>· {html_module.escape(role_display)}</span></div>"
+                            f"<div class='spoc-card-contacts'>"
+                            f"📧 {html_module.escape(email_display)}"
+                            f" &nbsp;·&nbsp; 🔗 {linkedin_html}"
+                            f" &nbsp;·&nbsp; 📞 {html_module.escape(phone_display)}"
+                            f"</div></div>",
+                            unsafe_allow_html=True)
+                    with c_status:
                         current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
                         new_status = st.selectbox(
                             "Status",
@@ -3059,31 +3035,18 @@ with tabs[8]:  # SPOC TRACKING
                         if new_status != _norm:
                             update_contact_status(ctd["id"], new_status)
                             st.rerun()
-                    with c8:
+                    with c_next:
                         if row.get("first_overdue_date_str"):
-                            st.markdown(f"<span style='color:#b85450;'>Overdue (was {html_module.escape(row['first_overdue_date_str'])})</span>", unsafe_allow_html=True)
+                            st.markdown(f"<div class='spoc-card-overdue'>⚠ Overdue ({html_module.escape(row['first_overdue_date_str'])})</div>", unsafe_allow_html=True)
                             if row.get("next_step_date") and row["next_step_date"] != "—":
                                 st.caption(f"Next: {row['next_step_date']}")
                         else:
-                            st.markdown(next_step_display)
+                            st.markdown(f"<div class='spoc-card-next'>{html_module.escape(next_step_display)}</div>", unsafe_allow_html=True)
 
-                # Details section directly under the strip when expanded (same info, clearer layout)
+                # ── Expanded: action history only (contact info already visible above) ──
                 if is_open:
-                    import html
-                    link_part = f'<a href="{html.escape(linkedin_val)}">Link</a>' if (linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http")) else html.escape(linkedin_display)
-                    top_html = (
-                        f"<div style='margin-top:8px; padding:12px 16px; border-radius:8px; border:1px solid #e0e0e0; background:#fafafa;'>"
-                        f"<p style='margin:4px 0;'><strong>{html.escape(company_display)}</strong></p>"
-                        f"<p style='margin:4px 0;'>{html.escape(name_display)}</p>"
-                        f"<p style='margin:4px 0;'>{html.escape(role_display)}</p>"
-                        f"<p style='margin:4px 0;'>{link_part}</p>"
-                        f"<p style='margin:4px 0;'>{html.escape(email_display)}</p>"
-                        f"<p style='margin:4px 0;'>{html.escape(phone_display)}</p>"
-                        f"<p style='margin:4px 0;'><strong>Status:</strong> {html.escape(CONTACT_STATUS_LABELS.get(_norm, _norm))} · <strong>Next step:</strong> {html.escape(next_step_display)}</p>"
-                        f"<p style='margin:4px 0; font-size:0.9em;'><em>Contacts under this SPOC: {row['sub_count']}</em></p>"
-                        f"<hr style='margin:8px 0;'/></div>"
-                    )
-                    st.markdown(top_html, unsafe_allow_html=True)
+                    st.markdown("<div class='spoc-detail'>", unsafe_allow_html=True)
+                    st.markdown(f"*Contacts under this SPOC: {row['sub_count']}*")
                     completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
                     planned = row.get("planned") or []
                     st.markdown("**What happened**")
@@ -3145,7 +3108,7 @@ with tabs[8]:  # SPOC TRACKING
                             except Exception as e:
                                 st.error(f"Reschedule failed: {e}")
                             st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 # ════════════════════ HISTORY ════════════════════
 

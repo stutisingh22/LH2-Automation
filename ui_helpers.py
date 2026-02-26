@@ -300,6 +300,18 @@ a:hover{text-decoration:underline!important}
 .sequence-step-card{display:none}
 .sequence-step-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .sequence-step-divider{height:1px;background:#e2e8f0;margin:12px 0}
+
+/* ── SPOC Tracker cards ── */
+.spoc-card{padding:2px 0}
+.spoc-card-company{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:#64748b!important}
+.spoc-card-name{font-size:14px;font-weight:600;color:#0f172a!important;margin-top:1px}
+.spoc-card-role{font-size:12px!important;font-weight:400!important;color:#64748b!important}
+.spoc-card-contacts{font-size:12px!important;color:#475569!important;margin-top:3px;line-height:1.7}
+.spoc-card-contacts a{color:#2563eb!important;text-decoration:none!important}
+.spoc-card-contacts a:hover{text-decoration:underline!important}
+.spoc-card-next{font-size:12px!important;color:#475569!important;padding-top:6px}
+.spoc-card-overdue{font-size:12px!important;color:#b85450!important;padding-top:6px}
+.spoc-detail{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px 16px;margin:4px 0 14px 0}
 </style>
 """, unsafe_allow_html=True)
 
