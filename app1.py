@@ -51,9 +51,9 @@ from lh2_platform.core.database import (
     get_or_create_session, get_session_by_id, get_sessions_for_company,
     get_sessions_for_user, get_all_sessions_with_details, delete_session,
     save_message, load_messages, get_message_count,
-    log_action, get_session_actions, get_user_actions, update_action,
+    log_action, get_session_actions, get_all_actions, update_action,
     get_all_actions_for_timeline, get_overdue_followups, get_todays_scheduled,
-    get_session_summary, get_memory_events, get_global_insights,
+    get_session_summary, get_memory_events, get_all_global_insights,
     get_pipeline_stats, get_recent_activity,
 )
 from lh2_platform.core.strategist import (
@@ -855,7 +855,7 @@ with tab_pipeline:
 
 with tab_history:
     # Global insights
-    ginsights = get_global_insights(user["id"], limit=8)
+    ginsights = get_all_global_insights(limit=8)
     if ginsights:
         st.markdown(section_header("GLOBAL OUTREACH PATTERNS"), unsafe_allow_html=True)
         for g in ginsights:
@@ -873,7 +873,7 @@ with tab_history:
             )
 
     # Analytics
-    all_user_actions = get_user_actions(user["id"], limit=200)
+    all_user_actions = get_all_actions(limit=200)
     if all_user_actions:
         st.markdown(section_header("OUTREACH ANALYTICS"), unsafe_allow_html=True)
         total = len(all_user_actions)

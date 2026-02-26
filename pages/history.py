@@ -3,15 +3,15 @@
 import streamlit as st
 
 from db_ops import (
-    get_global_insights,
-    get_user_actions,
-    get_user_sessions,
+    get_all_global_insights,
+    get_all_actions,
+    get_all_sessions,
     get_message_count,
     get_session_actions,
     load_messages,
     delete_session,
 )
-from ui_helpers import lh2_section_header, bdg
+from ui_helpers import lh2_section_header, bdg, lh2_kpi_cell
 from ui_helpers import has_perm
 
 
@@ -20,7 +20,7 @@ def render():
     uid = user.get("id")
     if not uid:
         return
-    ginsights = get_global_insights(uid, limit=8)
+    ginsights = get_all_global_insights(limit=8)
     if ginsights:
         st.markdown(lh2_section_header("GLOBAL PATTERNS"), unsafe_allow_html=True)
         for g in ginsights:
@@ -33,7 +33,7 @@ def render():
                 unsafe_allow_html=True,
             )
 
-    all_ua = get_user_actions(uid, limit=200)
+    all_ua = get_all_actions(limit=200)
     if all_ua:
         st.markdown(lh2_section_header("ANALYTICS"), unsafe_allow_html=True)
         total = len(all_ua)
@@ -54,7 +54,7 @@ def render():
         )
 
     st.markdown(lh2_section_header("ALL SESSIONS"), unsafe_allow_html=True)
-    sessions = get_user_sessions(uid)
+    sessions = get_all_sessions()
     for sx in sessions:
         sh1, sh2, sh3 = st.columns([2, 1.5, 1])
         with sh1:

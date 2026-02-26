@@ -14,9 +14,17 @@ load_dotenv(_config_dir / "keys.env")
 load_dotenv(_config_dir / ".env")
 
 # ── Database ──────────────────────────────────────────────────
+# Use same DATABASE_URL (e.g. Supabase) on all systems so data is shared (laptop + server).
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if not DATABASE_URL:
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.warning(
+        "DATABASE_URL is not set. Using local SQLite; data will NOT be shared with other systems. "
+        "Set DATABASE_URL in keys.env (e.g. Supabase) so laptop and server use the same database."
+    )
 
 # ── API Keys ──────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

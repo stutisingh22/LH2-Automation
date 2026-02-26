@@ -7,7 +7,7 @@ Builds a single chronological list for display when user clicks a contact.
 from datetime import datetime
 
 from db_ops import (
-    get_user_sessions,
+    get_session_for_contact,
     load_messages,
     get_session_actions,
     get_timeline_actions,
@@ -59,11 +59,10 @@ def build_contact_timeline(company_id, contact_id, user_id, company_domain=None,
     items = []
     session_id = None
 
-    # Resolve session for this contact (current user's session)
-    for sess in get_user_sessions(user_id):
-        if sess.get("company_id") == company_id and sess.get("contact_id") == contact_id:
-            session_id = sess.get("id")
-            break
+    # Resolve shared session for this company+contact
+    sess = get_session_for_contact(company_id, contact_id)
+    if sess:
+        session_id = sess.get("id")
 
     # —— Messages ——
     if session_id:

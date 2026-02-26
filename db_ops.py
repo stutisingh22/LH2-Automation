@@ -692,18 +692,15 @@ def get_spoc_contacts_by_company(company_id):
 
 def get_or_create_session(company_id, contact_id, user_id, score=0):
     """
-    FIX: Explicitly handle contact_id=None so we don't create orphan sessions.
+    One session per (company_id, contact_id) shared by all users. Find by company+contact only;
+    if none exists, create with owner_user_id=user_id.
     """
     with db() as s:
-        q = s.query(Session).filter_by(
-            company_id=company_id,
-            owner_user_id=user_id,
-        )
+        q = s.query(Session).filter_by(company_id=company_id)
         if contact_id is not None:
             q = q.filter_by(contact_id=contact_id)
         else:
             q = q.filter(Session.contact_id.is_(None))
-
         sess = q.order_by(Session.updated_at.desc()).first()
 
         if sess:
@@ -737,6 +734,7 @@ def get_sessions_for_company(company_id):
 
 
 def get_user_sessions(user_id):
+    """Sessions owned by this user (kept for compatibility). Prefer get_all_sessions for shared visibility."""
     with db() as s:
         results = []
         for sess in s.query(Session).filter_by(owner_user_id=user_id).order_by(Session.updated_at.desc()).all():
@@ -762,6 +760,61 @@ def get_user_sessions(user_id):
                 d["contact_role"] = ct.role
             results.append(d)
         return results
+
+
+def get_all_sessions():
+    """All sessions (shared visibility). Includes company_domain, contact_name, owner_username."""
+    with db() as s:
+        results = []
+        for sess in s.query(Session).order_by(Session.updated_at.desc()).all():
+            d = _sess_dict(sess)
+            try:
+                comp = s.get(Company, sess.company_id) if sess.company_id else None
+            except Exception as e:
+                log.error("get_all_sessions: failed to load Company %s for session %s: %s", sess.company_id, sess.id, e)
+                comp = None
+            try:
+                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+            except Exception as e:
+                log.error("get_all_sessions: failed to load Contact %s for session %s: %s", sess.contact_id, sess.id, e)
+                ct = None
+            owner = s.get(User, sess.owner_user_id) if sess.owner_user_id else None
+            if owner:
+                d["owner_username"] = owner.username
+            if comp:
+                d["company_domain"] = comp.domain
+                d["company_name"] = comp.name
+                ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                if ed:
+                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
+            if ct:
+                d["contact_name"] = ct.name
+                d["contact_role"] = ct.role
+            results.append(d)
+        return results
+
+
+def get_session_for_contact(company_id, contact_id):
+    """Return the (shared) session for this company+contact, or None. Used for timeline."""
+    with db() as s:
+        q = s.query(Session).filter_by(company_id=company_id)
+        if contact_id is not None:
+            q = q.filter_by(contact_id=contact_id)
+        else:
+            q = q.filter(Session.contact_id.is_(None))
+        sess = q.order_by(Session.updated_at.desc()).first()
+        if not sess:
+            return None
+        d = _sess_dict(sess)
+        comp = s.get(Company, sess.company_id) if sess.company_id else None
+        ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+        if comp:
+            d["company_domain"] = comp.domain
+            d["company_name"] = comp.name
+        if ct:
+            d["contact_name"] = ct.name
+            d["contact_role"] = ct.role
+        return d
 
 
 def delete_session(sid):
@@ -900,10 +953,32 @@ def get_session_actions(sid):
 
 
 def get_user_actions(uid, limit=50):
+    """Actions by this user (kept for compatibility). Prefer get_all_actions for shared visibility."""
     with db() as s:
         results = []
         for a in s.query(Action).filter_by(user_id=uid).order_by(Action.created_at.desc()).limit(limit).all():
             d = _act_dict(a)
+            sess = s.get(Session, a.session_id)
+            if sess:
+                comp = s.get(Company, sess.company_id)
+                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+                if comp:
+                    d["company_domain"] = comp.domain
+                if ct:
+                    d["contact_name"] = ct.name
+            results.append(d)
+        return results
+
+
+def get_all_actions(limit=200):
+    """All actions (shared visibility). Includes username for who logged it."""
+    with db() as s:
+        results = []
+        for a in s.query(Action).order_by(Action.created_at.desc()).limit(limit).all():
+            d = _act_dict(a)
+            u = s.get(User, a.user_id)
+            if u:
+                d["username"] = u.username
             sess = s.get(Session, a.session_id)
             if sess:
                 comp = s.get(Company, sess.company_id)
@@ -1097,6 +1172,7 @@ def save_global_insight(uid, insight, confidence=0.5):
 
 
 def get_global_insights(uid, limit=10):
+    """Insights for this user (kept for compatibility). Prefer get_all_global_insights for shared visibility."""
     with db() as s:
         return [
             {
@@ -1110,6 +1186,26 @@ def get_global_insights(uid, limit=10):
             .limit(limit)
             .all()
         ]
+
+
+def get_all_global_insights(limit=20):
+    """All global insights (shared visibility). Includes username."""
+    with db() as s:
+        results = []
+        for g in s.query(GlobalInsight).order_by(
+            GlobalInsight.confidence_score.desc(), GlobalInsight.created_at.desc()
+        ).limit(limit).all():
+            d = {
+                "id": g.id, "insight": g.insight,
+                "confidence_score": g.confidence_score,
+                "source_count": g.source_count,
+                "created_at": g.created_at.isoformat() if g.created_at else None,
+            }
+            u = s.get(User, g.user_id)
+            if u:
+                d["username"] = u.username
+            results.append(d)
+        return results
 
 
 # ── Session Summary (L2) ─────────────────────────────────────
@@ -1247,10 +1343,24 @@ def save_advisor_conversation(user_id, messages, title=None):
 
 
 def get_advisor_conversations(user_id, limit=20):
-    """Get all advisor conversations for user."""
+    """Advisor conversations for this user (kept for compatibility). Prefer get_all_advisor_conversations for shared visibility."""
     with db() as s:
         convs = s.query(AdvisorConversation).filter_by(user_id=user_id).order_by(AdvisorConversation.updated_at.desc()).limit(limit).all()
         return [{"id": c.id, "title": c.title, "messages": c.messages, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat(), "msg_count": len(c.messages)} for c in convs]
+
+
+def get_all_advisor_conversations(limit=30):
+    """All saved advisor conversations (shared visibility). Includes username."""
+    with db() as s:
+        convs = s.query(AdvisorConversation).order_by(AdvisorConversation.updated_at.desc()).limit(limit).all()
+        out = []
+        for c in convs:
+            d = {"id": c.id, "title": c.title, "messages": c.messages, "created_at": c.created_at.isoformat(), "updated_at": c.updated_at.isoformat(), "msg_count": len(c.messages)}
+            u = s.get(User, c.user_id)
+            if u:
+                d["username"] = u.username
+            out.append(d)
+        return out
 
 
 def load_advisor_conversation(conv_id):

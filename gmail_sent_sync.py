@@ -6,15 +6,16 @@ Run periodically (cron or scheduler) or once:
   python gmail_sent_sync.py
 
 Requires:
-- credentials.json in project folder (Google OAuth client).
-- Each user in the Command Center DB must have their email set (users.email).
-- Each user must have authorized Gmail read access once (script will open browser on first run per user).
+- credentials.json in project folder (Google OAuth client; one file for all users).
+- Same DATABASE_URL (e.g. Supabase) on every system so data is shared.
+- Each user in the DB must have email set (users.email). Each user authorizes Gmail once
+  via "Connect Gmail" in the app or on first run of this script (browser opens).
 
 Flow:
 1. List all users with email from the DB.
-2. For each user, use Gmail API (read scope) to list recent SENT messages.
-3. For each sent message, get To/From/Subject/body; if recipient is a contact in the DB, call record_sent_email().
-4. record_sent_email() creates/gets session, logs a completed Email action, updates contact status; idempotent by Gmail message ID.
+2. For each user, use Gmail API (read scope) via google_auth tokens.
+3. For each sent message, if recipient is a contact in the DB, call record_sent_email().
+4. record_sent_email() creates/gets session, logs action, updates contact status; idempotent by Gmail message ID.
 """
 
 import os
@@ -32,6 +33,7 @@ load_dotenv(_ROOT / "keys.env")
 load_dotenv(_ROOT / ".env")
 
 from db_ops import get_all_users, record_sent_email
+from google_auth import get_google_credentials, log_user
 
 log = logging.getLogger("gmail_sent_sync")
 log.setLevel(logging.INFO)
@@ -39,56 +41,6 @@ if not log.handlers:
     h = logging.StreamHandler()
     h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
     log.addHandler(h)
-
-# Gmail read scope (separate from compose so we don't invalidate existing tokens)
-GMAIL_READ_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-_APP_DIR = Path(__file__).resolve().parent
-_CREDS_FILE = _APP_DIR / "credentials.json"
-_TOKEN_DIR = _APP_DIR / "tokens"
-# Token for *reading* mail (so we can list Sent) — different from compose token
-def _read_token_path(email):
-    safe = re.sub(r'[<>:"/\\|?*]', "_", (email or "").strip().lower()) or "default"
-    _TOKEN_DIR.mkdir(exist_ok=True)
-    return _TOKEN_DIR / f"{safe}_read_token.json"
-
-
-def get_read_credentials(account_email):
-    """Load or obtain OAuth credentials with gmail.readonly for listing Sent mail."""
-    try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
-        from google_auth_oauthlib.flow import InstalledAppFlow
-    except ImportError:
-        log.warning("Install: pip install google-auth google-auth-oauthlib google-api-python-client")
-        return None
-
-    path = _read_token_path(account_email)
-    creds = None
-    if path.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(path), GMAIL_READ_SCOPES)
-        except Exception as e:
-            log.warning("Could not load read token %s: %s", path, e)
-
-    if creds and creds.expired and getattr(creds, "refresh_token", None):
-        try:
-            creds.refresh(Request())
-            path.write_text(creds.to_json())
-        except Exception as e:
-            log.warning("Token refresh failed: %s", e)
-            creds = None
-
-    if (not creds or not creds.valid) and _CREDS_FILE.exists():
-        try:
-            flow = InstalledAppFlow.from_client_secrets_file(str(_CREDS_FILE), GMAIL_READ_SCOPES)
-            creds = flow.run_local_server(port=0)
-            path.write_text(creds.to_json())
-            log.info("Saved read token for %s", account_email)
-        except Exception as e:
-            log.warning("OAuth flow failed: %s", e)
-            return None
-
-    return creds
 
 
 def _parse_email_addresses(header_value):
@@ -242,18 +194,19 @@ def run_sync(newer_than_hours=24, max_messages_per_user=50):
 
     for user in users:
         email = (user.get("email") or "").strip().lower()
+        uid = user.get("id")
         if not email:
             continue
-        creds = get_read_credentials(email)
+        creds = get_google_credentials(email, scope_set="gmail_read")
         if not creds:
-            log.warning("No Gmail read credentials for %s — run once to authorize.", email)
+            log_user(log, uid, email, "No Gmail read credentials — run once to authorize (or use Connect Gmail in app).", level="warning")
             errors += 1
             continue
 
         try:
             service = build("gmail", "v1", credentials=creds)
         except Exception as e:
-            log.warning("Gmail build failed for %s: %s", email, e)
+            log_user(log, uid, email, f"Gmail build failed: {e}", level="warning")
             errors += 1
             continue
 
@@ -294,11 +247,11 @@ def run_sync(newer_than_hours=24, max_messages_per_user=50):
                 if err in ("sender_not_found", "recipient_not_found"):
                     skipped += 1
                 else:
-                    log.warning("record_sent_email failed: %s", err)
+                    log_user(log, uid, email, f"record_sent_email failed: {err}", level="warning")
                     errors += 1
             else:
                 processed += 1
-                log.info("Recorded: %s -> %s (action id %s)", email, recipient, aid)
+                log_user(log, uid, email, "Recorded -> %s (action id %s)" % (recipient, aid))
 
     return {"processed": processed, "skipped": skipped, "errors": errors}
 

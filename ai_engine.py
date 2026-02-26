@@ -19,6 +19,7 @@ from datetime import datetime
 import pytz
 from anthropic import Anthropic
 
+from anthropic_limiter import create_with_retry, stream_slot
 from config import (
     ANTHROPIC_API_KEY, AI_MODEL, AI_MAX_TOKENS, SUMMARY_INTERVAL,
     MAX_CONTEXT_MESSAGES, TIMEZONE_COUNTRIES, US_TZ,
@@ -26,8 +27,8 @@ from config import (
 from db_ops import (
     get_message_count, get_session_summary, save_session_summary,
     load_messages, get_memory_events, save_memory_event,
-    get_global_insights, save_global_insight, get_session_actions,
-    get_pipeline_stats, get_all_companies, get_user_sessions,
+    get_global_insights, get_all_global_insights, save_global_insight, get_session_actions,
+    get_pipeline_stats, get_all_companies, get_all_sessions,
 )
 from drive_sync import build_drive_context, get_lh2_knowledge_context
 
@@ -120,7 +121,7 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
         ]) or "(None yet.)"
     )
 
-    ginsights = get_global_insights(uid, limit=8)
+    ginsights = get_all_global_insights(limit=8)
     global_block = (
         "\n".join([f"- {g['insight']} (conf: {g['confidence_score']:.1f})" for g in ginsights])
         or "(None yet.)"
@@ -252,7 +253,7 @@ RISK: [One specific obstacle: e.g. gatekeeper, competitor relationship, bad timi
 Use proper Markdown tables only where specified. Do not use or cite Notion for contact or SPOC information — use only your knowledge of publicly available information. No "Unknown contact"."""
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=6000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -277,7 +278,7 @@ def maybe_update_summary(sid, comp, ct):
         convo = "\n".join(
             [f"[{m['role']}] {m['content'][:500]}" for m in msgs[-30:]]
         )
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=8000,
             messages=[{"role": "user", "content": f"""Compress this outreach conversation into a structured memory document. Preserve every decision, commitment, objection, and status change. Drop small talk and repetition.
 
@@ -304,7 +305,7 @@ CURRENT STATUS: [Where does this outreach stand right now? What is the immediate
 
 def extract_episodic_memories(sid, ai_resp, comp):
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=5000,
             messages=[{"role": "user", "content": f"""Extract 0-3 events from this strategist response about {comp.get('domain','this target')} that are worth storing for future outreach sessions.
 
@@ -343,7 +344,7 @@ No other text."""}],
 
 def generate_insight_from_outcome(uid, sid, action, comp):
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=2500,
             messages=[{"role": "user", "content": f"""Derive one reusable outreach lesson (1-2 sentences) from this outcome. The insight must apply beyond this specific target — it should help with similar companies.
 
@@ -378,7 +379,7 @@ def intelligence_request(comp, research_notes, user_message):
     else:
         ctx += "\n(No research sections loaded yet.)\n"
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL,
             max_tokens=15000,
             messages=[{"role": "user", "content": f"""You are augmenting strategic research for LH2 outreach. Match the institutional tone of existing research sections.
@@ -416,7 +417,7 @@ def summarize_research_to_context(comp, research_notes, max_paragraphs=3):
     for n in research_notes[:6]:
         ctx += f"--- {n.get('title') or 'Section'} ---\n{(n.get('content') or '')[:2500]}\n\n"
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL,
             max_tokens=10000,
             messages=[{"role": "user", "content": f"""Condense this company research into exactly {max_paragraphs} short paragraphs. Keep it factual — include specific names, numbers, and findings that are useful for planning outreach. Drop background fluff.
@@ -504,7 +505,7 @@ Paragraph 4 (only if little data) — GAPS: What we still need (LinkedIn URL, em
 Tone: institutional, factual. No filler. Output only the brief."""
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL,
             max_tokens=15000,
             messages=[{"role": "user", "content": prompt}],
@@ -520,7 +521,7 @@ def get_advisor_system_prompt(uid):
     lh2 = get_lh2_knowledge_context()
     stats = get_pipeline_stats()
     companies = get_all_companies()
-    sessions = get_user_sessions(uid)[:20]
+    sessions = get_all_sessions()[:20]
     companies_blob = "\n".join([
         f"- {c.get('domain', '?')} (type: {c.get('publisher_type', '—')}, research: {c.get('research_status', '—')})"
         for c in companies[:50]
@@ -559,24 +560,25 @@ def advisor_chat(uid, user_message, history):
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
     messages.append({"role": "user", "content": user_message})
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=600.0)
-        with client.messages.stream(
-            model=AI_MODEL,
-            max_tokens=25000,
-            system=system,
-            messages=messages,
-        ) as stream:
-            chunks = []
-            for text in stream.text_stream:
-                chunks.append(text)
-            result = ("".join(chunks) or "").strip()
-            if not result:
-                final = stream.get_final_message()
-                if final and getattr(final, "content", None):
-                    for block in final.content:
-                        if getattr(block, "text", None):
-                            result = block.text.strip()
-                            break
+        with stream_slot():
+            client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=600.0)
+            with client.messages.stream(
+                model=AI_MODEL,
+                max_tokens=25000,
+                system=system,
+                messages=messages,
+            ) as stream:
+                chunks = []
+                for text in stream.text_stream:
+                    chunks.append(text)
+                result = ("".join(chunks) or "").strip()
+                if not result:
+                    final = stream.get_final_message()
+                    if final and getattr(final, "content", None):
+                        for block in final.content:
+                            if getattr(block, "text", None):
+                                result = block.text.strip()
+                                break
         return result or ""
     except Exception as e:
         log.error("advisor_chat failed: %s", e)
@@ -596,7 +598,7 @@ def summarize_advisor_title(messages):
     context = "\n".join(first_exchange)
     
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL,
             max_tokens=200,
             system="Output a 3-5 word topic title. No quotes, no punctuation, no explanation.",
@@ -630,7 +632,7 @@ def retrieve_relevant_memories(sid, uid, query, limit=5):
         if ol > 0:
             mems.append({"type": "episodic", "text": e["summary"], "score": ol + e["importance_score"] / 10})
 
-    for g in get_global_insights(uid, limit=20):
+    for g in get_all_global_insights(limit=20):
         gw = set(re.findall(r"\b[a-zA-Z]{4,}\b", g["insight"].lower()))
         ol = len(kw & gw)
         if ol > 0:
@@ -694,7 +696,7 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
     ]
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
             system=system, messages=api_msgs,
         )
@@ -721,12 +723,13 @@ def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, resea
     ]
 
     try:
-        with _ai().messages.stream(
-            model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
-            system=system, messages=api_msgs,
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        with stream_slot():
+            with _ai().messages.stream(
+                model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
+                system=system, messages=api_msgs,
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
     except Exception as e:
         log.error("Strategist stream failed: %s", e)
         yield f"Error: {e}"
@@ -806,7 +809,7 @@ Constraints:
 - Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn."""
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -916,7 +919,7 @@ Then:
 STRATEGY NOTE: [1-2 sentences. What does their reply signal? Are we accelerating to a meeting, pivoting angle, or staying course? Why?]"""
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=20000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -954,7 +957,7 @@ Original:
 {current_draft.strip()}"""
 
     try:
-        r = _ai().messages.create(
+        r = create_with_retry(
             model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -995,7 +998,7 @@ Edit instruction: {instruction.strip()}
 Original:
 {current_draft.strip()}"""
 
-            r2 = _ai().messages.create(
+            r2 = create_with_retry(
                 model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
                 system=system,
                 messages=[{"role": "user", "content": retry_prompt}],

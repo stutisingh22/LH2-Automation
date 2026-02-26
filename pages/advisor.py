@@ -3,7 +3,7 @@
 from datetime import datetime
 import streamlit as st
 
-from db_ops import get_advisor_conversations, load_advisor_conversation, save_advisor_conversation
+from db_ops import get_all_advisor_conversations, load_advisor_conversation, save_advisor_conversation
 from ai_engine import advisor_chat
 from ui_helpers import sh
 
@@ -18,7 +18,7 @@ def render():
         st.markdown(sh("ADVISOR"), unsafe_allow_html=True)
         st.caption("Ask for company suggestions, outreach plans, or advice. I remember our conversation and your pipeline.")
     with h2:
-        past_convs = get_advisor_conversations(uid, limit=20)
+        past_convs = get_all_advisor_conversations(limit=20)
         if past_convs:
 
             def format_conv_option(conv_id):

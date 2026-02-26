@@ -490,8 +490,9 @@ def _ct_dict(c):
 # ---- Sessions ----
 
 def get_or_create_session(company_id, contact_id, user_id, score=0):
+    """One session per (company_id, contact_id) shared by all users."""
     with db() as s:
-        sess = s.query(Session).filter_by(company_id=company_id, contact_id=contact_id, owner_user_id=user_id).order_by(Session.updated_at.desc()).first()
+        sess = s.query(Session).filter_by(company_id=company_id, contact_id=contact_id).order_by(Session.updated_at.desc()).first()
         if sess:
             sess.updated_at = datetime.utcnow(); sess.lead_score = score; s.flush(); return sess.id
         sess = Session(company_id=company_id, contact_id=contact_id, owner_user_id=user_id, lead_score=score)
@@ -513,6 +514,21 @@ def get_user_sessions(user_id):
             d = _sess_dict(sess)
             comp = s.get(Company, sess.company_id)
             ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+            if comp: d["company_domain"] = comp.domain; d["company_name"] = comp.name
+            if ct: d["contact_name"] = ct.name; d["contact_role"] = ct.role
+            results.append(d)
+        return results
+
+def get_all_sessions():
+    """All sessions (shared visibility)."""
+    with db() as s:
+        results = []
+        for sess in s.query(Session).order_by(Session.updated_at.desc()).all():
+            d = _sess_dict(sess)
+            comp = s.get(Company, sess.company_id)
+            ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+            u = s.get(User, sess.owner_user_id) if sess.owner_user_id else None
+            if u: d["owner_username"] = u.username
             if comp: d["company_domain"] = comp.domain; d["company_name"] = comp.name
             if ct: d["contact_name"] = ct.name; d["contact_role"] = ct.role
             results.append(d)
@@ -569,6 +585,23 @@ def get_user_actions(uid, limit=50):
         results = []
         for a in s.query(Action).filter_by(user_id=uid).order_by(Action.created_at.desc()).limit(limit).all():
             d = _act_dict(a)
+            sess = s.get(Session, a.session_id)
+            if sess:
+                comp = s.get(Company, sess.company_id)
+                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+                if comp: d["company_domain"] = comp.domain
+                if ct: d["contact_name"] = ct.name
+            results.append(d)
+        return results
+
+def get_all_actions(limit=200):
+    """All actions (shared visibility)."""
+    with db() as s:
+        results = []
+        for a in s.query(Action).order_by(Action.created_at.desc()).limit(limit).all():
+            d = _act_dict(a)
+            u = s.get(User, a.user_id)
+            if u: d["username"] = u.username
             sess = s.get(Session, a.session_id)
             if sess:
                 comp = s.get(Company, sess.company_id)
@@ -682,6 +715,17 @@ def get_global_insights(uid, limit=10):
     with db() as s:
         return [{"id": g.id, "insight": g.insight, "confidence_score": g.confidence_score, "source_count": g.source_count, "created_at": g.created_at.isoformat() if g.created_at else None}
                 for g in s.query(GlobalInsight).filter_by(user_id=uid).order_by(GlobalInsight.confidence_score.desc(), GlobalInsight.created_at.desc()).limit(limit).all()]
+
+def get_all_global_insights(limit=20):
+    """All global insights (shared visibility)."""
+    with db() as s:
+        results = []
+        for g in s.query(GlobalInsight).order_by(GlobalInsight.confidence_score.desc(), GlobalInsight.created_at.desc()).limit(limit).all():
+            d = {"id": g.id, "insight": g.insight, "confidence_score": g.confidence_score, "source_count": g.source_count, "created_at": g.created_at.isoformat() if g.created_at else None}
+            u = s.get(User, g.user_id)
+            if u: d["username"] = u.username
+            results.append(d)
+        return results
 
 # ---- Session Summary (L2) ----
 
@@ -1021,7 +1065,7 @@ def retrieve_relevant_memories(sid, uid, query, limit=5):
         ew = set(re.findall(r'\b[a-zA-Z]{4,}\b', e["summary"].lower()))
         ol = len(kw & ew)
         if ol > 0: mems.append({"type": "episodic", "text": e["summary"], "score": ol + e["importance_score"]/10})
-    for g in get_global_insights(uid, limit=20):
+    for g in get_all_global_insights(limit=20):
         gw = set(re.findall(r'\b[a-zA-Z]{4,}\b', g["insight"].lower()))
         ol = len(kw & gw)
         if ol > 0: mems.append({"type": "global", "text": g["insight"], "score": ol + g["confidence_score"]})
@@ -1052,7 +1096,7 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid):
     summary_block = f"\n{summary}" if summary else "(No summary yet.)"
     events = get_memory_events(sid, min_imp=4)
     events_block = "\n".join([f"- [{e['event_type']}] {e['summary']} (importance: {e['importance_score']}/10)" for e in events[:8]]) or "(No key events yet.)"
-    ginsights = get_global_insights(uid, limit=8)
+    ginsights = get_all_global_insights(limit=8)
     global_block = "\n".join([f"- {g['insight']} (conf: {g['confidence_score']:.1f})" for g in ginsights]) or "(No global insights yet.)"
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     retrieval_block = "\n".join([f"- [{m['type']}] {m['text']}" for m in relevant]) or "(No relevant memories.)"
@@ -1563,7 +1607,7 @@ with tab_pipe:
 # ════════════════════ HISTORY ════════════════════
 
 with tab_hist:
-    ginsights = get_global_insights(user["id"], limit=8)
+    ginsights = get_all_global_insights(limit=8)
     if ginsights:
         st.markdown(sh("GLOBAL OUTREACH PATTERNS"), unsafe_allow_html=True)
         for g in ginsights:
@@ -1571,7 +1615,7 @@ with tab_hist:
             conf_val = g['confidence_score']
             st.markdown(f"<div class='c' style='padding:12px 16px;'><div style='display:flex;justify-content:space-between;'><span style='font-size:13px;color:var(--text);'>{g['insight']}</span>{bdg(f'conf: {conf_val:.1f}',cc2)}</div><div style='font-size:10px;color:var(--text-3);margin-top:4px;'>{(g.get('created_at') or '')[:10]}</div></div>", unsafe_allow_html=True)
 
-    all_ua = get_user_actions(user["id"], limit=200)
+    all_ua = get_all_actions(limit=200)
     if all_ua:
         st.markdown(sh("OUTREACH ANALYTICS"), unsafe_allow_html=True)
         total = len(all_ua)
@@ -1584,7 +1628,7 @@ with tab_hist:
             with col: st.markdown(mcard(n, l), unsafe_allow_html=True)
 
     st.markdown(sh("ALL SESSIONS"), unsafe_allow_html=True)
-    sessions = get_user_sessions(user["id"])
+    sessions = get_all_sessions()
     if sessions:
         for sx in sessions:
             sh1, sh2, sh3 = st.columns([2, 1.5, 1])

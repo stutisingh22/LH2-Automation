@@ -49,16 +49,16 @@ from db_ops import (
     upsert_spoc_contact, get_spoc_contacts_by_spoc, get_spoc_contacts_by_company,
     get_contacts, get_contact, update_contact_status, update_contact,
     get_or_create_session, get_session, get_sessions_for_company,
-    get_user_sessions, delete_session,
+    get_all_sessions, get_user_sessions, delete_session,
     save_message, load_messages, get_message_count,
-    log_action, bulk_log_actions, get_session_actions, get_user_actions,
+    log_action, bulk_log_actions, get_session_actions, get_all_actions, get_user_actions,
     get_timeline_actions, get_active_sequences, get_sequence_actions,
     update_action, delete_action,
     get_overdue_followups, get_todays_scheduled, get_recent_activity,
-    get_memory_events, get_global_insights,
+    get_memory_events, get_all_global_insights, get_global_insights,
     get_session_summary, get_pipeline_stats,
     merge_company_extra_data,
-    save_advisor_conversation, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
+    save_advisor_conversation, get_all_advisor_conversations, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
     get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id, get_completed_enrichment_by_identifier,
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
@@ -105,6 +105,7 @@ from signalhire_enrichment import (
     has_verified_email,
 )
 from gmail_service import create_gmail_draft, parse_email_content
+from google_auth import get_google_credentials
 from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 
 inject_css()
@@ -609,7 +610,7 @@ with st.sidebar:
         "text-transform:uppercase;color:var(--text-3);margin:12px 0 10px;'>Recent</div>",
         unsafe_allow_html=True)
 
-    _sessions_all = get_user_sessions(user["id"])
+    _sessions_all = get_all_sessions()
     if st.session_state.get("notion_companies_source") == "Media Houses":
         _sessions_all = [s for s in _sessions_all if s.get("source_advisor_company_id")]
     else:
@@ -719,6 +720,23 @@ with header_cols[2]:
         f"</div>"
         f"</div>",
         unsafe_allow_html=True)
+    with st.expander("Account", expanded=False):
+        user_email = (user.get("email") or "").strip()
+        if user_email:
+            if st.button("Connect Gmail", key="connect_gmail_btn", help="Authorize Gmail for Save to Drafts and Sent Sync"):
+                with st.spinner("Opening browser for Gmail compose…"):
+                    c1 = get_google_credentials(user_email, scope_set="gmail_compose")
+                if c1:
+                    with st.spinner("Opening browser for Gmail read (Sent Sync)…"):
+                        c2 = get_google_credentials(user_email, scope_set="gmail_read")
+                    if c2:
+                        st.success("Gmail connected. You can use Save to Gmail and Sent Sync.")
+                    else:
+                        st.warning("Compose connected; read scope failed. Sent Sync may prompt again.")
+                else:
+                    st.error("Could not connect. Check credentials.json and try again.")
+        else:
+            st.caption("Set your email in your profile to connect Gmail.")
     st.selectbox(
         "Companies DB",
         options=["Independent", "Media Houses"],
@@ -3114,7 +3132,7 @@ with tabs[8]:  # SPOC TRACKING
 
 with tabs[9]:  # HISTORY
     # === UI REFACTOR START ===
-    ginsights = get_global_insights(user["id"], limit=8)
+    ginsights = get_all_global_insights(limit=8)
     if ginsights:
         st.markdown(lh2_section_header("GLOBAL PATTERNS"), unsafe_allow_html=True)
         for g in ginsights:
@@ -3126,7 +3144,7 @@ with tabs[9]:  # HISTORY
                 f"{bdg(conf_lbl, cc2)}</div></div>",
                 unsafe_allow_html=True)
 
-    all_ua = get_user_actions(user["id"], limit=200)
+    all_ua = get_all_actions(limit=200)
     if all_ua:
         st.markdown(lh2_section_header("ANALYTICS"), unsafe_allow_html=True)
         total = len(all_ua)
@@ -3142,7 +3160,7 @@ with tabs[9]:  # HISTORY
 
     st.markdown(lh2_section_header("ALL SESSIONS"), unsafe_allow_html=True)
     # === UI REFACTOR END ===
-    sessions = get_user_sessions(user["id"])
+    sessions = get_all_sessions()
     for sx in sessions:
         sh1, sh2, sh3 = st.columns([2, 1.5, 1])
         with sh1:
@@ -3184,7 +3202,7 @@ with tabs[10]:  # ADVISOR
         st.markdown(sh("ADVISOR"), unsafe_allow_html=True)
         st.caption("Ask for company suggestions, outreach plans, or advice. I remember our conversation and your pipeline.")
     with h2:
-        past_convs = get_advisor_conversations(user["id"], limit=20)
+        past_convs = get_all_advisor_conversations(limit=20)
         if past_convs:
             def format_conv_option(conv_id):
                 if conv_id is None:

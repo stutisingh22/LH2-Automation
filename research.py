@@ -10,6 +10,7 @@ import time
 import requests
 from anthropic import Anthropic
 
+from anthropic_limiter import create_with_retry, stream_slot
 from config import (
     ANTHROPIC_API_KEY, NOTION_TOKEN, NOTION_DATABASE_ID,
 )
@@ -624,31 +625,32 @@ def run_research(domain, context="", progress_callback=None):
             collected = []
             chars = 0
 
-            with client.messages.stream(
-                model=RESEARCH_MODEL,
-                max_tokens=RESEARCH_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            ) as stream:
-                for text in stream.text_stream:
-                    collected.append(text)
-                    chars += len(text)
-                    if progress_callback and chars % 500 < len(text):
-                        progress_callback(chars, time.time() - start)
+            with stream_slot():
+                with client.messages.stream(
+                    model=RESEARCH_MODEL,
+                    max_tokens=RESEARCH_MAX_TOKENS,
+                    messages=[{"role": "user", "content": prompt}],
+                ) as stream:
+                    for text in stream.text_stream:
+                        collected.append(text)
+                        chars += len(text)
+                        if progress_callback and chars % 500 < len(text):
+                            progress_callback(chars, time.time() - start)
 
-            result = "".join(collected)
-            elapsed = time.time() - start
+                    result = "".join(collected)
+                    elapsed = time.time() - start
 
-            final = stream.get_final_message()
-            log.info(
-                "[%s] Research done — %.0fs, in:%d out:%d stop=%s",
-                domain, elapsed, final.usage.input_tokens,
-                final.usage.output_tokens, final.stop_reason,
-            )
+                    final = stream.get_final_message()
+                    log.info(
+                        "[%s] Research done — %.0fs, in:%d out:%d stop=%s",
+                        domain, elapsed, final.usage.input_tokens,
+                        final.usage.output_tokens, final.stop_reason,
+                    )
 
-            if final.stop_reason == "max_tokens":
-                log.warning("[%s] Research truncated at max_tokens", domain)
+                    if final.stop_reason == "max_tokens":
+                        log.warning("[%s] Research truncated at max_tokens", domain)
 
-            return result
+                    return result
 
         except Exception as e:
             log.error("[%s] Research attempt %d failed: %s", domain, attempt, e)
@@ -683,9 +685,7 @@ Instructions:
 - Use the same style: institutional, structured, pipe tables where appropriate. Same section formatting (===, ---). No markdown bold, no emojis.
 - No preamble like "Here is the section". Output only the research content."""
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        # Smaller max_tokens — we expect a section, not a full document
-        r = client.messages.create(
+        r = create_with_retry(
             model=RESEARCH_MODEL,
             max_tokens=8000,
             messages=[{"role": "user", "content": prompt}],
@@ -705,8 +705,7 @@ def get_research_brief(domain, research_text):
         return None
 
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        r = client.messages.create(
+        r = create_with_retry(
             model=RESEARCH_MODEL,
             max_tokens=400,
             messages=[{"role": "user", "content": f"""From this research on {domain}, extract a 5-line executive brief:
