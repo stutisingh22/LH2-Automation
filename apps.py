@@ -80,6 +80,24 @@ from linkedin_lookup import (
     run_linkedin_lookup_for_contacts,
     get_linkedin_url_for_contact,
 )
+
+
+def _strip_linkedin_command_prefix(text):
+    """Strip 'find XYZ' / 'FIND XYZ' style prefixes so the table gets the person name, not the command."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    lower = t.lower()
+    prefixes = [
+        "find linkedin for ", "find linkedin ", "get linkedin for ", "get linkedin ",
+        "look up ", "lookup ", "search for ", "find ",
+    ]
+    for p in prefixes:
+        if lower.startswith(p):
+            return t[len(p) :].strip()
+    return t
+
+
 from contact_timeline import build_contact_timeline
 from signalhire_enrichment import (
     get_credits as get_signalhire_credits,
@@ -1034,7 +1052,9 @@ with tabs[1]:  # COMPANIES
                             st.session_state.sel_contact = None
                             st.session_state.session_id = None
                             st.session_state.current_tab = "INTELLIGENCE"
-                        st.rerun()
+                                
+                        unsafe_allow_html=True
+                
                 cts = get_contacts(comp["id"])
                 if cts:
                     with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
@@ -1118,14 +1138,26 @@ with tabs[2]:  # INTELLIGENCE
                 if is_advisor and aid:
                     _fa = get_advisor_company(aid)
                     if _fa:
-                        comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
+                        _adv_ed = _fa.get("extra_data") or {}
+                        if isinstance(_adv_ed, str):
+                            try:
+                                _adv_ed = json.loads(_adv_ed) if (_adv_ed or "").strip() else {}
+                            except Exception:
+                                _adv_ed = {}
+                        comp = {**comp, "extra_data": _adv_ed if isinstance(_adv_ed, dict) else {}}
                 elif cid:
                     _fc = get_company(cid)
                     if _fc:
                         comp = _fc
                 brief_key = f"brief_text_{cache_key}_{ctid}"
                 if st.session_state.get(brief_key) is None:
-                    extra = comp.get("extra_data") or {}
+                    _raw_brief_extra = comp.get("extra_data") or {}
+                    if isinstance(_raw_brief_extra, str):
+                        try:
+                            _raw_brief_extra = json.loads(_raw_brief_extra) if (_raw_brief_extra or "").strip() else {}
+                        except Exception:
+                            _raw_brief_extra = {}
+                    extra = _raw_brief_extra if isinstance(_raw_brief_extra, dict) else {}
                     briefs = extra.get("briefs") or {}
                     saved_brief = ((briefs.get(str(ctid)) or {}).get("content") or "").strip()
                     if not saved_brief:
@@ -1594,33 +1626,6 @@ with tabs[3]:  # STRATEGIST
         else:
             # Research cache: Intelligence uses advisor_{id} for Media Houses, cid for Independent
             research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
-            # ── Conversation dropdown: load chat only when user selects one ──
-            sessions_strat = get_sessions_for_company(cid)
-            session_map_strat = {s["id"]: s for s in sessions_strat}
-            conv_options = [None] + [s["id"] for s in sessions_strat]
-            def _conv_label(sid):
-                if sid is None:
-                    return "— Select conversation —"
-                s = session_map_strat.get(sid)
-                if not s:
-                    return str(sid)
-                ct_label = get_contact(s["contact_id"])
-                name = (ct_label.get("name") or "?") if ct_label else "?"
-                return f"{name} @ {comp.get('domain', '?')}"
-            selected_conv_sid = st.selectbox(
-                "Conversation",
-                options=conv_options,
-                format_func=_conv_label,
-                key="strategist_conv_sel",
-            )
-            # When user picks a conversation from dropdown, sync to it; otherwise use current session
-            if selected_conv_sid is not None and sid != selected_conv_sid:
-                sess = session_map_strat.get(selected_conv_sid)
-                if sess:
-                    st.session_state.session_id = selected_conv_sid
-                    st.session_state.sel_contact = sess["contact_id"]
-                    st.session_state.chat_messages = load_messages(selected_conv_sid)
-                    st.rerun()
             sid = st.session_state.session_id
             ctid = st.session_state.sel_contact
             ct = get_contact(ctid)
@@ -1729,22 +1734,6 @@ with tabs[3]:  # STRATEGIST
                 _email = (ct_ctx.get("email") or "").strip()
                 if not (ct_ctx.get("role") or "").strip() and _email:
                     ct_ctx["role"] = spoc_role_by_email.get(_email) or spoc_role_by_parent_id.get(ctid) or ct_ctx.get("role", "")
-
-                # Debug: show exactly how email was resolved (so we can see why Full Plan works or doesn't)
-                with st.expander("🔍 Why Full Plan works / doesn't (debug)", expanded=False):
-                    ct_name = (ct.get("name") or "").strip()
-                    from_parent = spoc_email_by_parent_id.get(ctid)
-                    from_name = spoc_email_by_name.get(ct_name)
-                    st.code(
-                        f"Contact id (TO): {ctid}\n"
-                        f"Contact name (DB): {repr(ct.get('name'))}\n"
-                        f"Contact email (DB): {repr(ct.get('email'))}\n"
-                        f"Email from SPOC by parent_id: {repr(from_parent)}\n"
-                        f"Email from SPOC by name (exact match): {repr(from_name)}\n"
-                        f"→ ct_ctx['email']: {repr(ct_ctx.get('email'))}\n"
-                        f"→ Full Plan allowed: {bool((ct_ctx.get('email') or '').strip())}\n"
-                        f"SPOC names in map (first 10): {list(spoc_email_by_name.keys())[:10]}"
-                    )
 
                 # ── Contact details & enrichment ──
                 st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
@@ -1863,6 +1852,62 @@ with tabs[3]:  # STRATEGIST
                     if _raw_len != len(_saved_list) and _saved_list:
                         _persist_linkedin_results(_saved_list)
 
+                default_company = (comp.get("domain") or comp.get("name") or "")
+                # ── Look up people (chat): append to same table as Extract; table appears even without running extract ──
+                lookup_chat_key = f"linkedin_lookup_chat_{research_cache_key}"
+                if lookup_chat_key not in st.session_state:
+                    st.session_state[lookup_chat_key] = []
+                st.caption("Look up a person: type a name to find their LinkedIn and add to the table below.")
+                for _msg in st.session_state[lookup_chat_key]:
+                    with st.chat_message(_msg["role"]):
+                        st.markdown(_msg["content"])
+                _lookup_inp = st.chat_input("Name or \"Name — Role\" to look up", key=f"linkedin_lookup_chat_inp_{research_cache_key}")
+                if _lookup_inp and (_lookup_inp or "").strip():
+                    _raw = (_lookup_inp or "").strip()
+                    st.session_state[lookup_chat_key].append({"role": "user", "content": _raw})
+                    _raw = _strip_linkedin_command_prefix(_raw)
+                    if not _raw:
+                        st.session_state[lookup_chat_key].append({"role": "assistant", "content": "No name to look up. Type a person's name (e.g. John Smith or find Jane Doe)."})
+                    else:
+                        _to_add = []
+                        if " and " in _raw:
+                            for _part in _raw.split(" and "):
+                                _part = _part.strip()
+                                if not _part:
+                                    continue
+                                if " — " in _part:
+                                    _nm, _rest = _part.split(" — ", 1)
+                                    _to_add.append((_nm.strip(), _rest.strip(), default_company))
+                                elif ", " in _part:
+                                    _p = re.split(r"\s*,\s*", _part, 1)
+                                    _to_add.append((_p[0].strip(), "", default_company if len(_p) <= 1 else (_p[1] or "").strip()))
+                                else:
+                                    _to_add.append((_part, "", default_company))
+                        else:
+                            if " — " in _raw:
+                                _nm, _rest = _raw.split(" — ", 1)
+                                _to_add.append((_nm.strip(), _rest.strip(), default_company))
+                            elif ", " in _raw:
+                                _p = re.split(r"\s*,\s*", _raw, 1)
+                                _nm = (_p[0] or "").strip()
+                                _company = (_p[1] or "").strip() if len(_p) > 1 else default_company
+                                _to_add.append((_nm, "", _company))
+                            else:
+                                _to_add.append((_raw, "", default_company))
+                        _results_list = st.session_state.get(linkedin_results_key, []) or []
+                        _new_list = list(_results_list)
+                        for _name, _role, _company in _to_add:
+                            _name = (_name or "").strip()
+                            if not _name:
+                                continue
+                            with st.spinner(f"Finding LinkedIn for {_name}…"):
+                                _url = get_linkedin_url_for_contact(_name, _company)
+                            _new_list.append({"name": _name, "role": _role, "company": _company, "linkedin_url": _url or ""})
+                        st.session_state[linkedin_results_key] = _new_list
+                        _persist_linkedin_results(_new_list)
+                        st.session_state[lookup_chat_key].append({"role": "assistant", "content": f"Added {len(_to_add)} contact(s) to the table below."})
+                    st.rerun()
+
                 if linkedin_results_key in st.session_state:
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
@@ -1937,45 +1982,49 @@ with tabs[3]:  # STRATEGIST
                                         st.rerun()
                                 st.warning(f"No contact named \"{name_asked}\" in the list.")
                             else:
-                                to_add = []
-                                if " and " in raw:
-                                    for part in raw.split(" and "):
-                                        part = part.strip()
-                                        if not part:
-                                            continue
-                                        if " — " in part:
-                                            nm, rest = part.split(" — ", 1)
-                                            to_add.append((nm.strip(), rest.strip(), default_company))
-                                        elif ", " in part:
-                                            p = re.split(r"\s*,\s*", part, 1)
-                                            to_add.append((p[0].strip(), "", default_company if len(p) <= 1 else (p[1] or "").strip()))
-                                        else:
-                                            to_add.append((part, "", default_company))
+                                raw = _strip_linkedin_command_prefix(raw)
+                                if not raw:
+                                    st.warning("No name to look up. Type a person's name (e.g. XYZ or John Smith).")
                                 else:
-                                    if " — " in raw:
-                                        nm, rest = raw.split(" — ", 1)
-                                        to_add.append((nm.strip(), rest.strip(), default_company))
-                                    elif ", " in raw:
-                                        p = re.split(r"\s*,\s*", raw, 1)
-                                        nm = (p[0] or "").strip()
-                                        company = (p[1] or "").strip() if len(p) > 1 else default_company
-                                        to_add.append((nm, "", company))
+                                    to_add = []
+                                    if " and " in raw:
+                                        for part in raw.split(" and "):
+                                            part = part.strip()
+                                            if not part:
+                                                continue
+                                            if " — " in part:
+                                                nm, rest = part.split(" — ", 1)
+                                                to_add.append((nm.strip(), rest.strip(), default_company))
+                                            elif ", " in part:
+                                                p = re.split(r"\s*,\s*", part, 1)
+                                                to_add.append((p[0].strip(), "", default_company if len(p) <= 1 else (p[1] or "").strip()))
+                                            else:
+                                                to_add.append((part, "", default_company))
                                     else:
-                                        to_add.append((raw, "", default_company))
+                                        if " — " in raw:
+                                            nm, rest = raw.split(" — ", 1)
+                                            to_add.append((nm.strip(), rest.strip(), default_company))
+                                        elif ", " in raw:
+                                            p = re.split(r"\s*,\s*", raw, 1)
+                                            nm = (p[0] or "").strip()
+                                            company = (p[1] or "").strip() if len(p) > 1 else default_company
+                                            to_add.append((nm, "", company))
+                                        else:
+                                            to_add.append((raw, "", default_company))
 
-                                new_list = list(results_list)
-                                for name, role, company in to_add:
-                                    name = (name or "").strip()
-                                    if not name:
-                                        continue
-                                    with st.spinner(f"Finding LinkedIn for {name}…"):
-                                        new_url = get_linkedin_url_for_contact(name, company)
-                                    new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
-                                if new_list != results_list:
-                                    st.session_state[linkedin_results_key] = new_list
-                                    _persist_linkedin_results(new_list)
-                                    st.success(f"Added {len(to_add)} contact(s).")
-                                    st.rerun()
+                                    new_list = list(results_list)
+                                    for name, role, company in to_add:
+                                        name = (name or "").strip()
+                                        if not name:
+                                            continue
+                                        with st.spinner(f"Finding LinkedIn for {name}…"):
+                                            new_url = get_linkedin_url_for_contact(name, company)
+                                        new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
+                                    if new_list != results_list:
+                                        st.session_state[linkedin_results_key] = new_list
+                                        _persist_linkedin_results(new_list)
+                                        st.success(f"Added {len(to_add)} contact(s).")
+                                        st.rerun()
                         st.caption("Add: name, or \"Name — Role\", or \"Name, Company\". Re-check: **recheck** or **find again** + name.")
                         st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
                         for i, r in enumerate(results_list):
@@ -2807,207 +2856,281 @@ with tabs[7]:  # PIPELINE
 with tabs[8]:  # SPOC TRACKING
     st.markdown(lh2_section_header("SPOC TRACKING"), unsafe_allow_html=True)
     st.caption("SPOCs added to company: pipeline status, messages sent, and next step.")
+    from datetime import datetime, timedelta, timezone
+    _today = datetime.now(timezone.utc).date()
     all_comp_spoc = get_all_companies()
     spoc_rows = []
     for cd in all_comp_spoc:
         for ctd in get_contacts(cd["id"]):
             sub = get_spoc_contacts_by_spoc(ctd["id"])
-            if not sub:
-                continue
             sessions = get_sessions_for_company(cd["id"])
             sess = next((s for s in sessions if s.get("contact_id") == ctd["id"]), None)
             actions = get_session_actions(sess["id"]) if sess else []
             planned = [a for a in actions if (a.get("status") or "").strip().lower() == "planned" and a.get("scheduled_at")]
-            from datetime import datetime
-            today = datetime.utcnow().date()
             next_dates = []
+            planned_past = []
             for a in planned:
                 try:
                     dt = datetime.fromisoformat(a["scheduled_at"].replace("Z", "+00:00"))
-                    if dt.date() >= today:
+                    if dt.date() >= _today:
                         next_dates.append(dt)
+                    else:
+                        planned_past.append((a, dt))
                 except Exception:
                     pass
+            planned_past.sort(key=lambda x: x[1])
+            first_overdue_action = planned_past[0][0] if planned_past else None
+            first_overdue_date_str = planned_past[0][1].strftime("%b %d, %Y") if planned_past else None
             next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
-            # Primary SPOC = first spoc_contacts row under this contact (canonical name/role/email/phone per company)
             primary_spoc = sub[0] if sub else None
+            company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
+            if primary_spoc:
+                _nm = (primary_spoc.get("name") or "—").strip() or "—"
+                _role = (primary_spoc.get("role") or "—").strip() or "—"
+                _em = (primary_spoc.get("email") or "—").strip() or "—"
+                _ph = (primary_spoc.get("phone") or "—")
+                _ph = _ph.strip() if isinstance(_ph, str) else "—"
+            else:
+                _nm = (ctd.get("name") or "—").strip() or "—"
+                _role = (ctd.get("role") or "—").strip() or "—"
+                _em = (ctd.get("email") or "—").strip() or "—"
+                _ph = ((ctd.get("extra_data") or {}).get("phone") or "—")
+                _ph = _ph.strip() if isinstance(_ph, str) else "—"
+            _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
+            _status_lbl = CONTACT_STATUS_LABELS.get(_norm, _norm)
+            _search_text = " ".join([company_display, _nm, _role, _em, _ph, _status_lbl, next_step_date, first_overdue_date_str or ""]).lower()
             spoc_rows.append({
                 "company": cd,
                 "contact": ctd,
                 "session": sess,
                 "actions": actions,
+                "planned": planned,
                 "next_step_date": next_step_date,
                 "sub_count": len(sub),
                 "primary_spoc": primary_spoc,
+                "first_overdue_action": first_overdue_action,
+                "first_overdue_date_str": first_overdue_date_str,
+                "search_text": _search_text,
             })
     if not spoc_rows:
-        st.markdown("<div style='text-align:center;padding:32px;color:var(--text-3);'>No SPOCs added to company yet. Add contacts from Strategist to see them here.</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center;padding:32px;color:var(--text-3);'>No contacts yet. Add contacts to companies (e.g. from Strategist) to see them here.</div>", unsafe_allow_html=True)
     else:
-        # CSS for card-style rows: visual separation, padding, shadow, hover
-        st.markdown("""
+        spoc_search = st.text_input(
+            "Search",
+            placeholder="Company, name, role, email, phone, status…",
+            key="spoc_tracking_search",
+            label_visibility="collapsed",
+        )
+        search_q = (spoc_search or "").strip().lower()
+        if search_q:
+            spoc_rows = [r for r in spoc_rows if search_q in r.get("search_text", "")]
+        if search_q and not spoc_rows:
+            st.info("No matches for your search.")
+        elif spoc_rows:
+            # Light CSS for card-style rows: subtle separation, minimal visual weight
+            st.markdown("""
         <style>
         .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div {
-            border-radius: 10px;
-            padding: 14px 18px;
-            margin-bottom: 10px;
-            background: #f8f9fa;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-            transition: background 0.2s ease, box-shadow 0.2s ease;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            background: #fafbfc;
+            border: 1px solid #eee;
+            transition: background 0.15s ease;
         }
         .spoc-rows-wrap .stMarkdown:has(.spoc-row-card) + div:hover {
-            background: #f0f2f5;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            background: #f5f6f8;
         }
-        .spoc-company { font-weight: 600; color: inherit; }
-        .spoc-name { font-size: 1.05em; font-weight: 500; }
-        .spoc-role { color: #6c757d; font-size: 0.95em; }
-        .spoc-muted { color: #6c757d; font-size: 0.9em; }
+        .spoc-company { font-weight: 600; color: inherit; font-size: 0.95em; }
+        .spoc-name { font-size: 1.02em; font-weight: 500; }
+        .spoc-role { color: #6c757d; font-size: 0.92em; }
+        .spoc-muted { color: #6c757d; font-size: 0.88em; }
         </style>
         """, unsafe_allow_html=True)
-        st.markdown("<div class='spoc-rows-wrap'>", unsafe_allow_html=True)
-        # Header row: ▸ | Company | Name | Role | LinkedIn | Email | Phone number | Status | Next step
-        h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.9, 0.9])
-        for col, label in [
-            (h0, ""),
-            (h1, "Company"),
-            (h2, "Name"),
-            (h3, "Role"),
-            (h4, "LinkedIn"),
-            (h5, "Email"),
-            (h6, "Phone number"),
-            (h7, "Status"),
-            (h8, "Next step"),
-        ]:
-            with col:
-                if label:
-                    st.markdown(f"**{label}**")
-                else:
-                    st.markdown("&nbsp;")
-        st.markdown("<div style='margin:8px 0 16px 0; border-bottom:1px solid #e9ecef;'></div>", unsafe_allow_html=True)
-        for idx, row in enumerate(spoc_rows):
-            cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
-            _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
-            company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
-            # Use name/role/email/linkedin/phone from spoc_contacts (saved under each company) when present
-            ps = row.get("primary_spoc")
-            if ps:
-                name_display = (ps.get("name") or "—").strip() or "—"
-                role_display = (ps.get("role") or "—").strip() or "—"
-                linkedin_val = (ps.get("linkedin_url") or "—").strip() or "—"
-                email_display = (ps.get("email") or "—").strip() or "—"
-                phone_display = (ps.get("phone") or "—")
-                if isinstance(phone_display, str):
-                    phone_display = phone_display.strip() or "—"
-                else:
-                    phone_display = "—"
-            else:
-                name_display = (ctd.get("name") or "—").strip() or "—"
-                role_display = (ctd.get("role") or "—").strip() or "—"
-                linkedin_val = (ctd.get("linkedin") or "—").strip() or "—"
-                email_display = (ctd.get("email") or "—").strip() or "—"
-                phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
-                if isinstance(phone_display, str):
-                    phone_display = phone_display.strip() or "—"
-                else:
-                    phone_display = "—"
-            if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
-                linkedin_display = linkedin_val[:40] + "…" if len(linkedin_val) > 40 else linkedin_val
-            else:
-                linkedin_display = linkedin_val
-            next_step_display = row["next_step_date"]
-
-            # Container-based row with card styling
-            with st.container():
-                st.markdown("<div class='spoc-row-card'></div>", unsafe_allow_html=True)
-                # Better width ratios: Name + Role more prominent; LinkedIn/Email lighter; Status right-aligned
-                arrow_col, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.9, 0.9])
-                open_key = f"spoc_open_{ctd['id']}"
-                is_open = st.session_state.get(open_key, False)
-                with arrow_col:
-                    # Top: expand / collapse for activity details
-                    if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
-                        st.session_state[open_key] = not is_open
-                        st.rerun()
-                    # Bottom: SPOC-level brief / strategist context
-                    if st.button("→", key=f"spoc_brief_{ctd['id']}", help="Open brief for this SPOC", use_container_width=True):
-                        select_contact(cd["id"], ctd["id"])
-                        st.rerun()
-                with c1:
-                    st.markdown(f"<span class='spoc-company'>{html_module.escape(company_display)}</span>", unsafe_allow_html=True)
-                with c2:
-                    st.markdown(f"<span class='spoc-name'>{html_module.escape(name_display)}</span>", unsafe_allow_html=True)
-                with c3:
-                    st.markdown(f"<span class='spoc-role'>{html_module.escape(role_display)}</span>", unsafe_allow_html=True)
-                with c4:
-                    if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
-                        st.markdown(f"<span class='spoc-muted'><a href=\"{html_module.escape(linkedin_val)}\" target=\"_blank\" rel=\"noopener\">Link</a></span>", unsafe_allow_html=True)
+            st.markdown("<div class='spoc-rows-wrap'>", unsafe_allow_html=True)
+            # Header row: ▸ | Company | Name | Role | LinkedIn | Email | Phone number | Status | Next step
+            h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.8, 0.9])
+            for col, label in [
+                (h0, ""),
+                (h1, "Company"),
+                (h2, "Name"),
+                (h3, "Role"),
+                (h4, "LinkedIn"),
+                (h5, "Email"),
+                (h6, "Phone number"),
+                (h7, "Status"),
+                (h8, "Next step"),
+            ]:
+                with col:
+                    if label:
+                        st.markdown(f"**{label}**")
                     else:
-                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(linkedin_display)}</span>", unsafe_allow_html=True)
-                with c5:
-                    st.markdown(f"<span class='spoc-muted'>{html_module.escape(email_display)}</span>", unsafe_allow_html=True)
-                with c6:
-                    st.markdown(f"<span class='spoc-muted'>{html_module.escape(phone_display)}</span>", unsafe_allow_html=True)
-                with c7:
-                    # Status dropdown: vertically centered, reduced width; state binding unchanged
-                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
-                    current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
-                    new_status = st.selectbox(
-                        "Status",
-                        CONTACT_STATUSES,
-                        index=current_index,
-                        format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
-                        key=f"spoc_status_{ctd['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if new_status != _norm:
-                        update_contact_status(ctd["id"], new_status)
-                        st.rerun()
-                with c8:
-                    st.markdown(next_step_display)
+                        st.markdown("&nbsp;")
+            st.markdown("<div style='margin:8px 0 16px 0; border-bottom:1px solid #e9ecef;'></div>", unsafe_allow_html=True)
+            for idx, row in enumerate(spoc_rows):
+                cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
+                _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
+                company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
+                # Use name/role/email/linkedin/phone from spoc_contacts (saved under each company) when present
+                ps = row.get("primary_spoc")
+                if ps:
+                    name_display = (ps.get("name") or "—").strip() or "—"
+                    role_display = (ps.get("role") or "—").strip() or "—"
+                    linkedin_val = (ps.get("linkedin_url") or "—").strip() or "—"
+                    email_display = (ps.get("email") or "—").strip() or "—"
+                    phone_display = (ps.get("phone") or "—")
+                    if isinstance(phone_display, str):
+                        phone_display = phone_display.strip() or "—"
+                    else:
+                        phone_display = "—"
+                else:
+                    name_display = (ctd.get("name") or "—").strip() or "—"
+                    role_display = (ctd.get("role") or "—").strip() or "—"
+                    linkedin_val = (ctd.get("linkedin") or "—").strip() or "—"
+                    email_display = (ctd.get("email") or "—").strip() or "—"
+                    phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
+                    if isinstance(phone_display, str):
+                        phone_display = phone_display.strip() or "—"
+                    else:
+                        phone_display = "—"
+                if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
+                    linkedin_display = linkedin_val[:40] + "…" if len(linkedin_val) > 40 else linkedin_val
+                else:
+                    linkedin_display = linkedin_val
+                next_step_display = row["next_step_date"]
 
-            # Details section directly under the strip when expanded (same info, clearer layout)
-            if is_open:
-                import html
-                link_part = f'<a href="{html.escape(linkedin_val)}">Link</a>' if (linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http")) else html.escape(linkedin_display)
-                top_html = (
-                    f"<div style='margin-top:8px; padding:12px 16px; border-radius:8px; border:1px solid #e0e0e0; background:#fafafa;'>"
-                    f"<p style='margin:4px 0;'><strong>{html.escape(company_display)}</strong></p>"
-                    f"<p style='margin:4px 0;'>{html.escape(name_display)}</p>"
-                    f"<p style='margin:4px 0;'>{html.escape(role_display)}</p>"
-                    f"<p style='margin:4px 0;'>{link_part}</p>"
-                    f"<p style='margin:4px 0;'>{html.escape(email_display)}</p>"
-                    f"<p style='margin:4px 0;'>{html.escape(phone_display)}</p>"
-                    f"<p style='margin:4px 0;'><strong>Status:</strong> {html.escape(CONTACT_STATUS_LABELS.get(_norm, _norm))} · <strong>Next step:</strong> {html.escape(next_step_display)}</p>"
-                    f"<p style='margin:4px 0; font-size:0.9em;'><em>Contacts under this SPOC: {row['sub_count']}</em></p>"
-                    f"<hr style='margin:8px 0;'/></div>"
-                )
-                st.markdown(top_html, unsafe_allow_html=True)
-                completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
-                planned = [a for a in actions if (a.get("status") or "").strip().lower() == "planned"]
-                st.markdown("**What happened**")
-                if completed:
-                    for a in completed[:20]:
-                        done_at = a.get("completed_at") or a.get("created_at") or "—"
-                        if isinstance(done_at, str) and len(done_at) > 10:
-                            done_at = done_at[:10]
-                        desc = (a.get("description") or "").strip() or "(no description)"
-                        content = (a.get("content_sent") or "").strip()
-                        if content:
-                            content_preview = content[:120] + "…" if len(content) > 120 else content
-                            st.markdown(f"- {done_at} · {desc}\n  `{content_preview}`")
+                # Container-based row with card styling
+                with st.container():
+                    st.markdown("<div class='spoc-row-card'></div>", unsafe_allow_html=True)
+                    # Column layout: Name+Role prominent; LinkedIn/Email muted; Status slightly narrower
+                    arrow_col, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.35, 1.1, 1.3, 0.9, 1.2, 1.2, 0.9, 0.8, 0.9])
+                    open_key = f"spoc_open_{ctd['id']}"
+                    is_open = st.session_state.get(open_key, False)
+                    with arrow_col:
+                        # Top: expand / collapse for activity details
+                        if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
+                            st.session_state[open_key] = not is_open
+                            st.rerun()
+                        # Bottom: SPOC-level brief / strategist context
+                        if st.button("→", key=f"spoc_brief_{ctd['id']}", help="Open brief for this SPOC", use_container_width=True):
+                            select_contact(cd["id"], ctd["id"])
+                            st.rerun()
+                    with c1:
+                        st.markdown(f"<span class='spoc-company'>{html_module.escape(company_display)}</span>", unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(f"<span class='spoc-name'>{html_module.escape(name_display)}</span>", unsafe_allow_html=True)
+                    with c3:
+                        st.markdown(f"<span class='spoc-role'>{html_module.escape(role_display)}</span>", unsafe_allow_html=True)
+                    with c4:
+                        if linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http"):
+                            st.markdown(f"<span class='spoc-muted'><a href=\"{html_module.escape(linkedin_val)}\" target=\"_blank\" rel=\"noopener\">Link</a></span>", unsafe_allow_html=True)
                         else:
-                            st.markdown(f"- {done_at} · {desc}")
-                else:
-                    st.markdown("*No completed actions yet.*")
-                st.markdown("**What's planned**")
-                if planned:
-                    for a in planned[:20]:
-                        sch = (a.get("scheduled_at") or "")[:10] if a.get("scheduled_at") else "—"
-                        desc = (a.get("description") or "").strip() or "(no description)"
-                        st.markdown(f"- {sch} · {desc}")
-                else:
-                    st.markdown("*No planned actions.*")
-        st.markdown("</div>", unsafe_allow_html=True)
+                            st.markdown(f"<span class='spoc-muted'>{html_module.escape(linkedin_display)}</span>", unsafe_allow_html=True)
+                    with c5:
+                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(email_display)}</span>", unsafe_allow_html=True)
+                    with c6:
+                        st.markdown(f"<span class='spoc-muted'>{html_module.escape(phone_display)}</span>", unsafe_allow_html=True)
+                    with c7:
+                        # Status dropdown: state binding unchanged
+                        current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
+                        new_status = st.selectbox(
+                            "Status",
+                            CONTACT_STATUSES,
+                            index=current_index,
+                            format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                            key=f"spoc_status_{ctd['id']}",
+                            label_visibility="collapsed",
+                        )
+                        if new_status != _norm:
+                            update_contact_status(ctd["id"], new_status)
+                            st.rerun()
+                    with c8:
+                        if row.get("first_overdue_date_str"):
+                            st.markdown(f"<span style='color:#b85450;'>Overdue (was {html_module.escape(row['first_overdue_date_str'])})</span>", unsafe_allow_html=True)
+                            if row.get("next_step_date") and row["next_step_date"] != "—":
+                                st.caption(f"Next: {row['next_step_date']}")
+                        else:
+                            st.markdown(next_step_display)
+
+                # Details section directly under the strip when expanded (same info, clearer layout)
+                if is_open:
+                    import html
+                    link_part = f'<a href="{html.escape(linkedin_val)}">Link</a>' if (linkedin_val and linkedin_val != "—" and linkedin_val.startswith("http")) else html.escape(linkedin_display)
+                    top_html = (
+                        f"<div style='margin-top:8px; padding:12px 16px; border-radius:8px; border:1px solid #e0e0e0; background:#fafafa;'>"
+                        f"<p style='margin:4px 0;'><strong>{html.escape(company_display)}</strong></p>"
+                        f"<p style='margin:4px 0;'>{html.escape(name_display)}</p>"
+                        f"<p style='margin:4px 0;'>{html.escape(role_display)}</p>"
+                        f"<p style='margin:4px 0;'>{link_part}</p>"
+                        f"<p style='margin:4px 0;'>{html.escape(email_display)}</p>"
+                        f"<p style='margin:4px 0;'>{html.escape(phone_display)}</p>"
+                        f"<p style='margin:4px 0;'><strong>Status:</strong> {html.escape(CONTACT_STATUS_LABELS.get(_norm, _norm))} · <strong>Next step:</strong> {html.escape(next_step_display)}</p>"
+                        f"<p style='margin:4px 0; font-size:0.9em;'><em>Contacts under this SPOC: {row['sub_count']}</em></p>"
+                        f"<hr style='margin:8px 0;'/></div>"
+                    )
+                    st.markdown(top_html, unsafe_allow_html=True)
+                    completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
+                    planned = row.get("planned") or []
+                    st.markdown("**What happened**")
+                    if completed:
+                        for a in completed[:20]:
+                            done_at = a.get("completed_at") or a.get("created_at") or "—"
+                            if isinstance(done_at, str) and len(done_at) > 10:
+                                done_at = done_at[:10]
+                            desc = (a.get("description") or "").strip() or "(no description)"
+                            content = (a.get("content_sent") or "").strip()
+                            if content:
+                                content_preview = content[:120] + "…" if len(content) > 120 else content
+                                st.markdown(f"- {done_at} · {desc}\n  `{content_preview}`")
+                            else:
+                                st.markdown(f"- {done_at} · {desc}")
+                    else:
+                        st.markdown("*No completed actions yet.*")
+                    st.markdown("**What's planned**")
+                    if planned:
+                        for a in planned[:20]:
+                            sch = (a.get("scheduled_at") or "")[:10] if a.get("scheduled_at") else "—"
+                            desc = (a.get("description") or "").strip() or "(no description)"
+                            st.markdown(f"- {sch} · {desc}")
+                    else:
+                        st.markdown("*No planned actions.*")
+                    # Reschedule first overdue and cascade
+                    if row.get("first_overdue_action") and row.get("planned"):
+                        st.markdown("**Reschedule first overdue**")
+                        _resched_key = f"spoc_rd_{ctd['id']}"
+                        _default_d = _today
+                        try:
+                            _fo = row["first_overdue_action"]
+                            _fo_dt = datetime.fromisoformat((_fo.get("scheduled_at") or "").replace("Z", "+00:00"))
+                            _default_d = _fo_dt.date()
+                            if _default_d < _today:
+                                _default_d = _today
+                        except Exception:
+                            pass
+                        _new_date = st.date_input("New date", value=_default_d, key=_resched_key, label_visibility="collapsed")
+                        if st.button("Apply reschedule", key=f"spoc_ra_{ctd['id']}"):
+                            _fo = row["first_overdue_action"]
+                            _planned_sorted = sorted(row["planned"], key=lambda x: (x.get("scheduled_at") or ""))
+                            try:
+                                _old_first = datetime.fromisoformat(_fo["scheduled_at"].replace("Z", "+00:00"))
+                                _new_first = _old_first.replace(year=_new_date.year, month=_new_date.month, day=_new_date.day)
+                                _offset = _new_first - _old_first
+                                for _a in _planned_sorted:
+                                    _s = _a.get("scheduled_at")
+                                    if not _s:
+                                        continue
+                                    _dt = datetime.fromisoformat(_s.replace("Z", "+00:00"))
+                                    if _dt < _old_first:
+                                        continue
+                                    if _a["id"] == _fo["id"]:
+                                        update_action(_a["id"], scheduled_at=_new_first.isoformat())
+                                    else:
+                                        update_action(_a["id"], scheduled_at=(_dt + _offset).isoformat())
+                                st.toast("Rescheduled; later steps shifted.")
+                            except Exception as e:
+                                st.error(f"Reschedule failed: {e}")
+                            st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
 # ════════════════════ HISTORY ════════════════════
 
