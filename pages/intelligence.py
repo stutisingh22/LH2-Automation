@@ -53,10 +53,19 @@ def render():
                         key=f"brief_entry_{cid}_{ctid}",
                         label_visibility="collapsed",
                     )
+                    # Load saved brief from DB first; only generate if nothing saved yet.
                     if st.session_state.auto_brief_text is None:
-                        with st.spinner("Generating brief..."):
-                            brief = auto_brief(comp, ct, user.get("id"), st.session_state.session_id, rn)
-                            st.session_state.auto_brief_text = brief or "Could not generate brief."
+                        extra = comp.get("extra_data") or {}
+                        briefs = extra.get("briefs") or {}
+                        saved_brief = ((briefs.get(str(ctid)) or {}).get("content") or "").strip()
+                        if not saved_brief:
+                            saved_brief = (extra.get("brief") or "").strip()
+                        if saved_brief:
+                            st.session_state.auto_brief_text = saved_brief
+                        else:
+                            with st.spinner("Generating brief..."):
+                                brief = auto_brief(comp, ct, user.get("id"), st.session_state.session_id, rn)
+                                st.session_state.auto_brief_text = brief or "Could not generate brief."
                     st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(st.session_state.auto_brief_text or "") + "</div>", unsafe_allow_html=True)
                     brief_btn1, brief_btn2 = st.columns(2)
                     with brief_btn1:

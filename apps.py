@@ -64,7 +64,7 @@ from db_ops import (
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
 from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children, merge_advisor_company_extra_data
-from drive_sync import list_drive_files, create_doc_in_drive
+from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts
 from ai_engine import (
     compute_lead_score, get_local_time,
     get_strategist_response_stream, auto_brief,
@@ -570,6 +570,11 @@ with st.sidebar:
         "<div style='font-size:12px;font-weight:700;letter-spacing:3px;"
         "color:var(--accent);padding:4px 0 12px;'>◆ LH2</div>",
         unsafe_allow_html=True)
+
+    if st.button("↻ Refresh knowledge", key="refresh_drive_knowledge", use_container_width=True, help="Rebuild Drive knowledge cache"):
+        with st.spinner("Refreshing knowledge from Drive..."):
+            info = refresh_all_drive_contexts()
+        st.toast(f"Knowledge refreshed. Company caches cleared: {info.get('cleared_company_caches', 0)}.")
 
     _src = st.session_state.get("notion_companies_source", "Independent")
     _aid = st.session_state.get("sel_advisor_company_id")
@@ -1212,9 +1217,9 @@ with tabs[2]:  # INTELLIGENCE
                             _briefs = dict(_extra.get("briefs") or {})
                             _briefs[str(ctid)] = {"content": _brief, "updated_at": datetime.utcnow().isoformat()}
                             if is_advisor:
-                                merge_advisor_company_extra_data(aid, {"briefs": _briefs})
+                                merge_advisor_company_extra_data(aid, {"briefs": _briefs, "brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
                             else:
-                                merge_company_extra_data(cid, {"briefs": _briefs})
+                                merge_company_extra_data(cid, {"briefs": _briefs, "brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
                             st.session_state[brief_key] = _brief
                             fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
                             if fid:
@@ -1620,7 +1625,7 @@ with tabs[3]:  # STRATEGIST
     sid = st.session_state.session_id
     _src_s = st.session_state.get("notion_companies_source", "Independent")
     _aid_s = st.session_state.get("sel_advisor_company_id")
-    is_advisor_strategist = (_src_s == "Media Houses" and _aid_s and cid and ctid and sid)
+    is_advisor_strategist = (_src_s == "Media Houses" and _aid_s and cid)
     if not cid:
         st.markdown(
             "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"

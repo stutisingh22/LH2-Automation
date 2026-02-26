@@ -145,6 +145,16 @@ class GlobalInsight(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CachedContext(Base):
+    """Persisted text cache for long-running context builds (Drive, playbooks)."""
+    __tablename__ = "cached_contexts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(255), unique=True, nullable=False, index=True)
+    content = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AdvisorConversation(Base):
     __tablename__ = "advisor_conversations"
     id = Column(Integer, primary_key=True, autoincrement=True)

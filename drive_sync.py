@@ -14,12 +14,14 @@ import logging
 from datetime import datetime
 
 from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAIN_FOLDER_ID, MAX_DRIVE_TOKENS
+from db_ops import get_cached_context, save_cached_context, delete_cached_contexts_with_prefix
 
 log = logging.getLogger(__name__)
 
 _drive_svc = None
 _docs_svc = None
 _file_cache = {}
+_company_context_cache = {}
 
 # Path to OAuth files — look in the same directory as this file, then cwd
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -333,12 +335,70 @@ def fetch_doc_text(file_id, mime):
     return text
 
 
+_COMPANY_CONTEXT_CACHE_TTL_SEC = 12 * 3600
+_COMPANY_CONTEXT_CACHE_KEY_PREFIX = "drive_ctx:company:"
+
+
+def _normalize_cache_token(value: str) -> str:
+    if not value:
+        return ""
+    v = value.strip().lower()
+    v = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in v)
+    return "-".join([p for p in v.split("-") if p])
+
+
+def _drive_company_cache_key(company_name, company_domain=None):
+    if company_domain and str(company_domain).strip():
+        token = _normalize_cache_token(str(company_domain))
+        return f"{_COMPANY_CONTEXT_CACHE_KEY_PREFIX}{token}"
+    if company_name and str(company_name).strip():
+        token = _normalize_cache_token(str(company_name))
+        return f"{_COMPANY_CONTEXT_CACHE_KEY_PREFIX}{token}"
+    return None
+
+
+def _get_cached_company_context(cache_key: str):
+    if not cache_key:
+        return None
+    mem = _company_context_cache.get(cache_key)
+    if mem:
+        age = (datetime.utcnow() - mem["at"]).total_seconds()
+        if age <= _COMPANY_CONTEXT_CACHE_TTL_SEC:
+            return mem.get("text", "")
+    cached = get_cached_context(cache_key, max_age_sec=_COMPANY_CONTEXT_CACHE_TTL_SEC)
+    if cached is not None:
+        _company_context_cache[cache_key] = {"text": cached, "at": datetime.utcnow()}
+    return cached
+
+
+def _set_cached_company_context(cache_key: str, text: str):
+    if not cache_key:
+        return
+    _company_context_cache[cache_key] = {"text": text or "", "at": datetime.utcnow()}
+    save_cached_context(cache_key, text or "")
+
+
+def refresh_all_drive_contexts():
+    """Force refresh of global knowledge and clear company Drive caches."""
+    cleared = delete_cached_contexts_with_prefix(_COMPANY_CONTEXT_CACHE_KEY_PREFIX)
+    _company_context_cache.clear()
+    text = get_lh2_knowledge_context(force_refresh=True)
+    return {"cleared_company_caches": cleared, "lh2_chars": len(text or "")}
+
+
 def build_drive_context(company_name, company_domain=None):
     """Build text context from Drive files for AI strategist."""
+    cache_key = _drive_company_cache_key(company_name, company_domain)
+    if cache_key:
+        cached = _get_cached_company_context(cache_key)
+        if cached is not None:
+            return cached
+
     files = list_drive_files(company_name=company_name)
     if not files and company_domain:
         files = list_drive_files(company_name=company_domain)
     if not files:
+        _set_cached_company_context(cache_key, "")
         return ""
 
     parts = []
@@ -358,7 +418,9 @@ def build_drive_context(company_name, company_domain=None):
         parts.append(f"--- {f['name']} ---\n{text}")
         tokens += ft
 
-    return "\n\n".join(parts)
+    out = "\n\n".join(parts)
+    _set_cached_company_context(cache_key, out)
+    return out
 
 
 def sync_all_drive_pdfs(folder_id=None):
@@ -417,8 +479,9 @@ def sync_all_drive_pdfs(folder_id=None):
 
 _LH2_KNOWLEDGE_CACHE = {}
 _LH2_KNOWLEDGE_CACHE_AT = None
-_LH2_CACHE_TTL_SEC = 3600  # 1 hour
-MAX_LH2_KNOWLEDGE_CHARS = 40000  # cap for global context
+_LH2_CACHE_TTL_SEC = 12 * 3600  # 12 hours
+_LH2_CACHE_KEY = "drive_ctx:lh2_knowledge"
+MAX_LH2_KNOWLEDGE_CHARS = 100000  # cap for global context
 
 
 def _list_all_files_recursive(folder_id, svc, max_files=80):
@@ -453,12 +516,19 @@ def get_lh2_knowledge_context(force_refresh=False):
     """
     Build a single context string from the linked Drive (all folders) describing
     LH2, Accelerate, and offerings. Used so the AI knows what we do when researching
-    people and suggesting targets. Uses MAIN_FOLDER_ID when set, else GOOGLE_DRIVE_FOLDER_ID. Cached for 1 hour.
+    people and suggesting targets. Uses MAIN_FOLDER_ID when set, else GOOGLE_DRIVE_FOLDER_ID. Cached for 12 hours.
     """
     global _LH2_KNOWLEDGE_CACHE, _LH2_KNOWLEDGE_CACHE_AT
     now = datetime.utcnow()
     if not force_refresh and _LH2_KNOWLEDGE_CACHE_AT and (now - _LH2_KNOWLEDGE_CACHE_AT).total_seconds() < _LH2_CACHE_TTL_SEC:
         return _LH2_KNOWLEDGE_CACHE.get("text", "")
+
+    if not force_refresh:
+        cached = get_cached_context(_LH2_CACHE_KEY, max_age_sec=_LH2_CACHE_TTL_SEC)
+        if cached is not None:
+            _LH2_KNOWLEDGE_CACHE["text"] = cached
+            _LH2_KNOWLEDGE_CACHE_AT = now
+            return cached
 
     svc = _drive()
     knowledge_folder_id = MAIN_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID
@@ -484,6 +554,7 @@ def get_lh2_knowledge_context(force_refresh=False):
         out = "\n\n".join(parts) if parts else ""
         _LH2_KNOWLEDGE_CACHE["text"] = out
         _LH2_KNOWLEDGE_CACHE_AT = now
+        save_cached_context(_LH2_CACHE_KEY, out)
         log.info("LH2 knowledge context: %d files, %d chars", len(parts), len(out))
         return out
     except Exception as e:

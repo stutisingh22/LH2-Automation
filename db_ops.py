@@ -23,7 +23,7 @@ from config import DATABASE_URL, CONTACT_STATUSES
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
-    ProcessedGmailMessage, SpocContact,
+    ProcessedGmailMessage, SpocContact, CachedContext,
 )
 
 log = logging.getLogger(__name__)
@@ -94,6 +94,10 @@ def init_db():
                 max_overflow=10, pool_pre_ping=True, pool_recycle=300,
             )
             Base.metadata.create_all(engine)
+            try:
+                CachedContext.__table__.create(bind=engine, checkfirst=True)
+            except Exception:
+                pass
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             log.info("DB connected successfully (PostgreSQL)")
@@ -101,9 +105,17 @@ def init_db():
             log.warning("PostgreSQL unreachable (%s), falling back to SQLite", e)
             engine = _create_sqlite_engine()
             Base.metadata.create_all(engine)
+            try:
+                CachedContext.__table__.create(bind=engine, checkfirst=True)
+            except Exception:
+                pass
     if engine is None:
         engine = _create_sqlite_engine()
         Base.metadata.create_all(engine)
+        try:
+            CachedContext.__table__.create(bind=engine, checkfirst=True)
+        except Exception:
+            pass
     # Add draft_revisions / draft_original columns if missing (existing DBs)
     is_sqlite = "sqlite" in (engine.url.drivername or "")
     for col, typ in (("draft_revisions", "TEXT" if is_sqlite else "JSON"), ("draft_original", "TEXT")):
@@ -1206,6 +1218,90 @@ def get_all_global_insights(limit=20):
                 d["username"] = u.username
             results.append(d)
         return results
+
+
+# ── Cached contexts ────────────────────────────────────────────
+
+_cached_contexts_ready = False
+
+
+def _ensure_cached_contexts_table():
+    """Create cached_contexts table once if missing."""
+    global _cached_contexts_ready
+    if _cached_contexts_ready:
+        return
+    init_db()
+    eng = get_engine()
+    if not eng:
+        return
+    try:
+        CachedContext.__table__.create(bind=eng, checkfirst=True)
+        _cached_contexts_ready = True
+    except Exception:
+        # If creation fails, leave ready as False to retry later.
+        _cached_contexts_ready = False
+
+
+def get_cached_context(key: str, max_age_sec: int | None = None):
+    """Return cached text for key, or None if missing/stale."""
+    if not key:
+        return None
+    _ensure_cached_contexts_table()
+    with db() as s:
+        try:
+            row = s.query(CachedContext).filter_by(key=key).first()
+        except OperationalError as e:
+            if "cached_contexts" in str(e).lower():
+                return None
+            raise
+        if not row:
+            return None
+        if max_age_sec and row.updated_at:
+            age = (datetime.utcnow() - row.updated_at).total_seconds()
+            if age > max_age_sec:
+                return None
+        return row.content or ""
+
+
+def save_cached_context(key: str, content: str):
+    """Upsert cached text for key."""
+    if not key:
+        return False
+    _ensure_cached_contexts_table()
+    with db() as s:
+        try:
+            row = s.query(CachedContext).filter_by(key=key).first()
+        except OperationalError as e:
+            if "cached_contexts" in str(e).lower():
+                return False
+            raise
+        if row:
+            row.content = content or ""
+            row.updated_at = datetime.utcnow()
+        else:
+            row = CachedContext(key=key, content=content or "", updated_at=datetime.utcnow())
+            s.add(row)
+        s.flush()
+        return True
+
+
+def delete_cached_contexts_with_prefix(prefix: str) -> int:
+    """Delete cached contexts whose keys start with prefix."""
+    if not prefix:
+        return 0
+    _ensure_cached_contexts_table()
+    with db() as s:
+        try:
+            rows = s.query(CachedContext).filter(CachedContext.key.like(f"{prefix}%")).all()
+        except OperationalError as e:
+            if "cached_contexts" in str(e).lower():
+                return 0
+            raise
+        count = len(rows)
+        for row in rows:
+            s.delete(row)
+        s.flush()
+        return count
 
 
 # ── Session Summary (L2) ─────────────────────────────────────
