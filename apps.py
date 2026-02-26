@@ -1042,19 +1042,12 @@ with tabs[1]:  # COMPANIES
                         unsafe_allow_html=True)
                 with row_arrow:
                     if st.button("→", key=f"comp_go_{comp['id']}", use_container_width=True, help="Open intelligence/brief for this company"):
-                        # Choose a primary contact (if any) so existing brief logic can run unchanged.
-                        contacts_for_comp = get_contacts(comp["id"])
-                        if contacts_for_comp:
-                            primary_ct = contacts_for_comp[0]
-                            select_contact(comp["id"], primary_ct["id"])
-                        else:
-                            st.session_state.sel_company = comp["id"]
-                            st.session_state.sel_contact = None
-                            st.session_state.session_id = None
-                            st.session_state.current_tab = "INTELLIGENCE"
-                                
-                        unsafe_allow_html=True
-                
+                        st.session_state.sel_company = comp["id"]
+                        st.session_state.sel_contact = None
+                        st.session_state.session_id = None
+                        st.session_state.current_tab = "INTELLIGENCE"
+                        st.rerun()
+
                 cts = get_contacts(comp["id"])
                 if cts:
                     with st.expander(f"👥 {len(cts)} contact(s)", expanded=is_sel):
@@ -1132,8 +1125,15 @@ with tabs[2]:  # INTELLIGENCE
             else:
                 rn = st.session_state.research_cache[cache_key]
 
-        if ctid and st.session_state.session_id:
-            ct = get_contact(ctid)
+        _intel_sid = st.session_state.session_id
+        if not _intel_sid and cid:
+            _intel_sid = get_or_create_session(cid, ctid, user["id"])
+            st.session_state.session_id = _intel_sid
+        _intel_ct = get_contact(ctid) if ctid else None
+        if not _intel_ct:
+            _intel_ct = {"id": None, "name": comp.get("domain", "Company") if comp else "Company", "role": "", "email": "", "linkedin": "", "country": "", "state": "", "city": ""}
+        if _intel_sid and _intel_ct:
+            ct = _intel_ct
             if ct:
                 if is_advisor and aid:
                     _fa = get_advisor_company(aid)
@@ -1603,16 +1603,19 @@ with tabs[3]:  # STRATEGIST
     _src_s = st.session_state.get("notion_companies_source", "Independent")
     _aid_s = st.session_state.get("sel_advisor_company_id")
     is_advisor_strategist = (_src_s == "Media Houses" and _aid_s and cid and ctid and sid)
-    if not cid or not ctid or not sid:
+    if not cid:
         st.markdown(
             "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
             "<div style='font-size:24px;opacity:.2;margin-bottom:12px;'>◆</div>"
-            "<div style='font-size:14px;font-weight:500;'>Select a company and contact to start</div>"
-            "<div style='font-size:13px;margin-top:6px;'>COMPANIES → expand → click →</div></div>",
+            "<div style='font-size:14px;font-weight:500;'>Select a company to start</div>"
+            "<div style='font-size:13px;margin-top:6px;'>COMPANIES → click →</div></div>",
             unsafe_allow_html=True)
     elif not has_perm("can_use_strategist"):
         st.warning("Strategist access required.")
     else:
+        if not sid:
+            sid = get_or_create_session(cid, ctid, user["id"])
+            st.session_state.session_id = sid
         if is_advisor_strategist:
             adv_comp = get_advisor_company(_aid_s)
             comp = {"id": cid, "domain": adv_comp.get("domain", "—"), "name": adv_comp.get("domain") or "—", "publisher_type": adv_comp.get("parent_name") or "—", "content_type": "—", "monthly_visits": None, "research_status": "—", "notion_page_id": adv_comp.get("notion_page_id"), "extra_data": adv_comp.get("extra_data") or {}} if adv_comp else None
@@ -1621,17 +1624,19 @@ with tabs[3]:  # STRATEGIST
         else:
             comp = get_company(cid)
             ct = get_contact(ctid)
-        if not comp or not ct:
-            st.error("Not found.")
+        if not ct:
+            ct = {"id": None, "name": comp.get("domain", "Company") if comp else "Company", "role": "", "email": "", "linkedin": "", "country": "", "state": "", "city": ""}
+        if not comp:
+            st.error("Company not found.")
         else:
             # Research cache: Intelligence uses advisor_{id} for Media Houses, cid for Independent
             research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
             sid = st.session_state.session_id
             ctid = st.session_state.sel_contact
-            ct = get_contact(ctid)
+            ct = get_contact(ctid) if ctid else None
             if not ct:
-                st.error("Contact not found.")
-            else:
+                ct = {"id": None, "name": comp.get("domain", "Company"), "role": "", "email": "", "linkedin": "", "country": "", "state": "", "city": ""}
+            if ct:
                 # ── FROM / TO selectors ──
                 # FROM: only registered users, displayed by email
                 # TO: only contacts that have an email for this company, displayed by email
@@ -1696,16 +1701,23 @@ with tabs[3]:  # STRATEGIST
                     contacts_with_email = [c for c in contacts if _has_email(c)]
                     to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
                     ct_display = {c["id"]: _recipient_display(c) for c in contacts}
-                    to_index = to_options.index(ctid) if ctid in to_options else 0
+                    to_options_with_company = [None] + to_options
+                    ct_display[None] = "Company level (no contact)"
+                    to_index = to_options_with_company.index(ctid) if ctid in to_options_with_company else 0
                     to_id = st.selectbox(
                         "TO (recipient)",
-                        options=to_options,
-                        format_func=lambda x: f"📨 {ct_display.get(x, '?')}",
+                        options=to_options_with_company,
+                        format_func=lambda x: f"🏢 {ct_display.get(x, '?')}" if x is None else f"📨 {ct_display.get(x, '?')}",
                         index=to_index,
                         key="to_sel",
                     )
                     if to_id != ctid:
-                        select_contact(cid, to_id)
+                        if to_id is not None:
+                            select_contact(cid, to_id)
+                        else:
+                            st.session_state.sel_contact = None
+                            st.session_state.session_id = get_or_create_session(cid, None, user["id"])
+                            st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
                         st.rerun()
 
                 with sel3:
@@ -2490,9 +2502,12 @@ with tabs[4]:  # ACTIONS
     ctid = st.session_state.sel_contact
     _src_a = st.session_state.get("notion_companies_source", "Independent")
     _aid_a = st.session_state.get("sel_advisor_company_id")
-    if not sid:
-        st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Select a company and contact first.</div>", unsafe_allow_html=True)
+    if not cid:
+        st.markdown("<div style='text-align:center;padding:60px 0;color:var(--text-3);'>Select a company first.</div>", unsafe_allow_html=True)
     else:
+        if not sid:
+            sid = get_or_create_session(cid, ctid, user["id"])
+            st.session_state.session_id = sid
         if _src_a == "Media Houses" and _aid_a:
             adv_a = get_advisor_company(_aid_a) or {}
             comp = {"domain": adv_a.get("domain", "—"), "name": adv_a.get("domain") or "—", "extra_data": adv_a.get("extra_data") or {}}

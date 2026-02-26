@@ -741,8 +741,16 @@ def get_user_sessions(user_id):
         results = []
         for sess in s.query(Session).filter_by(owner_user_id=user_id).order_by(Session.updated_at.desc()).all():
             d = _sess_dict(sess)
-            comp = s.get(Company, sess.company_id)
-            ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+            try:
+                comp = s.get(Company, sess.company_id) if sess.company_id else None
+            except Exception as e:
+                log.error("get_user_sessions: failed to load Company %s for session %s: %s", sess.company_id, sess.id, e)
+                comp = None
+            try:
+                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+            except Exception as e:
+                log.error("get_user_sessions: failed to load Contact %s for session %s: %s", sess.contact_id, sess.id, e)
+                ct = None
             if comp:
                 d["company_domain"] = comp.domain
                 d["company_name"] = comp.name
