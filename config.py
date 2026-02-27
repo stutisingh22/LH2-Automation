@@ -16,6 +16,12 @@ load_dotenv(_config_dir / ".env")
 # ── Database ──────────────────────────────────────────────────
 # Use same DATABASE_URL (e.g. Supabase) on all systems so data is shared (laptop + server).
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+if not DATABASE_URL:
+    try:
+        import streamlit as st
+        DATABASE_URL = (st.secrets.get("DATABASE_URL") or "").strip()
+    except Exception:
+        pass
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 if not DATABASE_URL:
