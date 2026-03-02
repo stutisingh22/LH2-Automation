@@ -56,6 +56,46 @@ def render():
                 on_change=on_history_select,
                 index=0,
             )
+    
+    # ── Sender selection for outreach tone/voice ──
+    st.markdown("---")
+    from sender_profiles import get_all_sender_profiles, format_sender_display_name
+    sender_profiles = get_all_sender_profiles()
+    sender_emails = [None] + [p["email"] for p in sender_profiles]
+    
+    if "selected_sender" not in st.session_state:
+        st.session_state.selected_sender = None
+    
+    sender_col1, sender_col2 = st.columns([2, 1])
+    with sender_col1:
+        selected_sender_email = st.selectbox(
+            "🎭 Outreach Voice (for AI-generated drafts)",
+            options=sender_emails,
+            format_func=lambda x: "Select sender for outreach..." if x is None else format_sender_display_name(
+                next((p for p in sender_profiles if p["email"] == x), None)
+            ),
+            index=sender_emails.index(st.session_state.selected_sender) if st.session_state.selected_sender in sender_emails else 0,
+            key="sender_voice_select_advisor",
+            help="Choose who is sending the outreach. This affects the tone, voice, and signature in AI-generated drafts."
+        )
+        st.session_state.selected_sender = selected_sender_email
+    
+    with sender_col2:
+        if st.session_state.selected_sender:
+            selected_profile = next((p for p in sender_profiles if p["email"] == st.session_state.selected_sender), None)
+            if selected_profile:
+                st.markdown(
+                    f"<div style='padding:12px 0;'>"
+                    f"<div style='font-size:11px;color:var(--text-3);'>{selected_profile.get('voice_type', 'professional').replace('_', ' ').title()}</div>"
+                    f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>Source: {selected_profile.get('source', 'unknown')}</div></div>",
+                    unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f"<div style='padding:12px 0;'>"
+                f"<div style='font-size:11px;color:var(--text-warning);'>⚠️ No sender selected</div>"
+                f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>Select a sender for outreach drafts</div></div>",
+                unsafe_allow_html=True)
+    st.markdown("---")
 
     if "advisor_messages" not in st.session_state:
         st.session_state.advisor_messages = []
@@ -73,6 +113,7 @@ def render():
                     uid,
                     prompt,
                     [{"role": m["role"], "content": m["content"]} for m in st.session_state.advisor_messages[:-1]],
+                    sender_email=st.session_state.selected_sender,
                 )
             st.markdown(reply)
         st.session_state.advisor_messages.append({"role": "assistant", "content": reply})

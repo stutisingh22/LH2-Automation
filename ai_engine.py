@@ -30,7 +30,7 @@ from db_ops import (
     get_global_insights, get_all_global_insights, save_global_insight, get_session_actions,
     get_pipeline_stats, get_all_companies, get_all_sessions,
 )
-from drive_sync import build_drive_context, get_lh2_knowledge_context
+from drive_sync import build_drive_context, get_lh2_knowledge_context, get_context_folder_files
 
 log = logging.getLogger(__name__)
 
@@ -108,8 +108,8 @@ def compute_lead_score(comp, ct=None):
 
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
-def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
-    """Build the full context system prompt."""
+def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None):
+    """Build the full context system prompt. If sender_email provided, includes training docs and sender profile."""
     summary, _ = get_session_summary(sid)
     summary_block = f"\n{summary}" if summary else "(None yet.)"
 
@@ -160,6 +160,30 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None):
 
     drive_ctx = build_drive_context(comp.get("name", ""), comp.get("domain", ""))
     lh2_knowledge = get_lh2_knowledge_context()
+    
+    # Load sender-specific context if sender_email is provided
+    sender_context = ""
+    if sender_email:
+        from sender_profiles import get_sender_profile
+        sender_profile = get_sender_profile(sender_email)
+        if sender_profile:
+            sender_context = f"""
+== SENDER CONTEXT ==
+You are drafting on behalf of: {sender_profile.get('name', 'Unknown')} ({sender_profile.get('title', 'LH2 Holdings')})
+Voice type: {sender_profile.get('voice_type', 'professional')}
+Voice notes: {sender_profile.get('voice_notes', '')}
+
+Signature to use:
+{sender_profile.get('signature', '')}
+"""
+        
+        # Load training docs from Context folder (includes outreach guidelines)
+        training_docs = get_context_folder_files()
+        if training_docs:
+            sender_context += f"""
+== OUTREACH TRAINING & GUIDELINES ==
+{training_docs}
+"""
 
     actions = get_session_actions(sid)
     action_history = (
@@ -200,6 +224,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
 {"== LH2 OFFERINGS (reference when positioning value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
+{sender_context}
 
 == ACTION HISTORY ==
 {action_history}
@@ -209,10 +234,14 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 == OUTPUT RULES ==
 1. Cite research: Name the specific finding, data point, or pattern you're basing each recommendation on.
-2. Message drafts: Human tone, professional, smart. No corporate jargon ("synergy", "leverage", "excited to connect"). No filler sentences.
-3. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
-4. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
-5. Be directive: State what to do and why. Never say "you could" or "consider" — say "do this because."
+2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis): Be directive. State what to do and why. Never say "you could" or "consider" — say "do this because."
+3. MESSAGE DRAFTS (emails, LinkedIn messages written on behalf of the sender): Completely different register. Warm, human, professional — never pushy, never rude, never demanding. The sender sounds like a real person, not a sales machine.
+   - Opener: ONE brief line acknowledging something specific about the contact or their work. Not flattery — a real observation.
+   - Substance: Lead with a concrete data point or specific research finding. Numbers over vague claims.
+   - Close: Low-pressure, generous, open-ended. E.g. "Happy to share more whenever it works for you." or "Let me know what questions come up." NEVER "Looking forward to hearing from you" or "Would you be open to a quick call?"
+   - Forbidden in ALL message drafts: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "at your earliest convenience", "would you be open to", "just following up", "I think we could add value".
+4. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
+5. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
 6. Action format: ACTION: [channel] [day, date, time TZ] — [what to send and why]"""
 
     return system
@@ -220,13 +249,13 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 # ── Auto-Brief (triggered on contact select) ──────────────────
 
-def auto_brief(comp, ct, uid, sid, research_notes=None):
+def auto_brief(comp, ct, uid, sid, research_notes=None, sender_email=None):
     """
     Generate an instant strategic brief when a contact is selected.
     Output includes a SPOC table (3-5 C-suite/founder only; 1-3 if company <100 employees)
     and standard brief sections. All in proper tabular/structured format.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
     domain = comp.get("domain") or "this company"
 
     prompt = f"""Produce a strategic outreach brief for {comp.get('domain','this company')}.
@@ -516,9 +545,35 @@ Tone: institutional, factual. No filler. Output only the brief."""
         return None
 
 
-def get_advisor_system_prompt(uid):
+def get_advisor_system_prompt(uid, sender_email=None):
     """Build system prompt for the Advisor bot: LH2 knowledge + pipeline + companies + recent sessions."""
     lh2 = get_lh2_knowledge_context()
+    
+    # Load sender-specific context if sender_email is provided
+    sender_context = ""
+    if sender_email:
+        from sender_profiles import get_sender_profile
+        from drive_sync import get_context_folder_files
+        sender_profile = get_sender_profile(sender_email)
+        if sender_profile:
+            sender_context = f"""
+== SENDER CONTEXT (for outreach drafts) ==
+You are drafting on behalf of: {sender_profile.get('name', 'Unknown')} ({sender_profile.get('title', 'LH2 Holdings')})
+Voice type: {sender_profile.get('voice_type', 'professional')}
+Voice notes: {sender_profile.get('voice_notes', '')}
+
+Signature to use:
+{sender_profile.get('signature', '')}
+"""
+        
+        # Load training docs from Context folder (includes outreach guidelines)
+        training_docs = get_context_folder_files()
+        if training_docs:
+            sender_context += f"""
+== OUTREACH TRAINING & GUIDELINES ==
+{training_docs[:15000]}
+"""
+    
     stats = get_pipeline_stats()
     companies = get_all_companies()
     sessions = get_all_sessions()[:20]
@@ -534,6 +589,7 @@ def get_advisor_system_prompt(uid):
 
 == LH2 OFFERINGS ==
 {lh2[:14000] if lh2 else '(No Drive context loaded. Tell them to link a Drive folder with LH2/Accelerate materials.)'}
+{sender_context}
 
 == PIPELINE ==
 Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent', 0)} | Meetings booked: {stats.get('meeting_booked', 0)} | Active partnerships: {stats.get('partnership_active', 0)}
@@ -551,12 +607,12 @@ Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent',
 4. No filler, no preamble, no restating the question."""
 
 
-def advisor_chat(uid, user_message, history):
+def advisor_chat(uid, user_message, history, sender_email=None):
     """
     One turn of Advisor chat. history is list of {"role": "user"|"assistant", "content": str}.
     Returns assistant reply text.
     """
-    system = get_advisor_system_prompt(uid)
+    system = get_advisor_system_prompt(uid, sender_email=sender_email)
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
     messages.append({"role": "user", "content": user_message})
     try:
@@ -677,12 +733,12 @@ def parse_ai_actions(text):
 
 # ── Main Strategist (with optional streaming) ─────────────────
 
-def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None):
+def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None):
     """
     FIX: The user_msg is already in `messages` (appended by the caller).
     We do NOT append again to avoid sending it twice.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
 
     # Add retrieved memories for this specific query
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
@@ -706,11 +762,11 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
         return f"Error: {e}"
 
 
-def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None):
+def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None):
     """
     Streaming version of the strategist. Yields text chunks.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
 
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
@@ -775,12 +831,12 @@ def export_session_csv(sid, domain):
 
 # ── Outreach Sequence Generation ──────────────────────────────
 
-def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None):
+def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None, sender_email=None):
     """
     Generate a structured outreach sequence.
     Returns list of dicts: [{step, channel, day_offset, description, content_draft, timing_note}, ...]
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
 
     sender_line = f"Sender name: {sender_name}" if sender_name else ""
 
@@ -795,9 +851,40 @@ Output each step in this exact pipe-delimited format, separated by blank lines:
 STEP|<number>|<LinkedIn or Email>|Day <offset>|<what this touch accomplishes>|<optimal send time with TZ>
 CONTENT: <full message text>
 
-Example:
+== TONE GUIDANCE FOR DRAFTS ==
+Every message draft must match the sender's voice (see Sender Context above).
+General rules regardless of sender:
+- Opener: One brief, specific observation about the contact or their company. Not flattery — a real finding.
+- Body: Lead with a concrete data point. Numbers and specifics beat vague claims every time.
+- Close: Warm, low-pressure, open-ended. Offer to share more — don't demand a meeting.
+- NEVER use: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you"
+
+== EXAMPLES OF CORRECT TONE ==
+
+GOOD LinkedIn (cold, 280 chars):
+"Hi [Name] — noticed [Company] has been growing editorial output fast over the last year. At LH2 we've helped similar publishers 2–3x revenue with no upfront fees. Worth a look? Happy to share details."
+
+BAD LinkedIn (do NOT write like this):
+"Hi [Name], I came across your profile and I'd love to connect! I'm excited to share how LH2 Holdings could potentially add value to your organization. Would you be open to a quick call?"
+
+GOOD Email opener (cold outreach):
+"Hi [Name],
+
+Reached out because [specific observation — e.g. traffic growth in a particular niche, a content gap, or a monetization pattern we've seen before].
+
+At LH2 we partner with digital media brands to grow revenue — no upfront fees, we participate only in the incremental profits we generate. Founded by Upneet and Shobhit, both second-time founders. Across live partnerships we've averaged 2.5–3x revenue growth in year one.
+
+Happy to share full details whenever it works for you. Let me know what questions come up."
+
+BAD Email opener (do NOT write like this):
+"Hi [Name],
+
+Hope this email finds you well! I'm excited to reach out because I believe there could be great synergy between our organizations. I'd love to connect and explore how we could potentially add value to your business. Would you be open to a quick 15-minute call at your earliest convenience?"
+
+== FORMAT ==
+
 STEP|1|LinkedIn|Day 0|Initial connection with research hook|Tuesday 9:00 AM EST
-CONTENT: Hi [name], I noticed [specific research finding]. We work with similar publishers at LH2...
+CONTENT: Hi [name], [one specific research finding about their company]. At LH2 we've helped similar publishers [specific outcome]. Happy to share details if useful.
 
 Constraints:
 - Step 1: Always LinkedIn connection request. Hard limit 300 characters.
@@ -805,7 +892,6 @@ Constraints:
 - Every step must have complete message text after CONTENT: — no placeholders.
 - Emails: First line of CONTENT must be "Subject: <subject line>", then body.
 - Reference specific research findings from the context above in at least 2 steps.
-- Each message must sound like a real person wrote it. No "I'd love to connect" or "hope this finds you well."
 - Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn."""
 
     try:
@@ -888,12 +974,12 @@ def _parse_sequence_response(text):
     return steps if steps else None
 
 
-def replan_on_response(comp, ct, uid, sid, completed_action, response_text, remaining_actions, research_notes=None):
+def replan_on_response(comp, ct, uid, sid, completed_action, response_text, remaining_actions, research_notes=None, sender_email=None):
     """
     When a response is received, replan remaining sequence steps.
     Returns updated action dicts for remaining steps.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
 
     remaining_desc = "\n".join([
         f"  Step {a['sequence_step']}: {a['channel']} — {a['description'][:100]}"
@@ -939,6 +1025,13 @@ def refine_email_draft(current_draft, instruction, draft_type="email"):
         return None
     is_linkedin = (draft_type or "").lower() == "linkedin"
     system = """You are an outreach copy editor. Apply the user's edit instruction to the draft.
+
+TONE PRINCIPLES (always maintain these, even when applying edits):
+- Warm, human, professional. Never pushy, never demanding, never rude.
+- Opener: One specific observation — not flattery.
+- Body: Numbers and specifics over vague claims.
+- Close: Low-pressure. "Happy to share more whenever it works for you." NOT "Looking forward to hearing from you."
+- NEVER introduce: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you"
 
 OUTPUT RULES — strictly enforced:
 - Output ONLY the rewritten draft text. Nothing else.

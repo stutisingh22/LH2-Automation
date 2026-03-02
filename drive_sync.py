@@ -13,7 +13,7 @@ import os
 import logging
 from datetime import datetime
 
-from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAIN_FOLDER_ID, MAX_DRIVE_TOKENS
+from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAIN_FOLDER_ID, CONTEXT_FOLDER_ID, MAX_DRIVE_TOKENS
 from db_ops import get_cached_context, save_cached_context, delete_cached_contexts_with_prefix
 
 log = logging.getLogger(__name__)
@@ -559,4 +559,81 @@ def get_lh2_knowledge_context(force_refresh=False):
         return out
     except Exception as e:
         log.error("get_lh2_knowledge_context failed: %s", e)
+        return ""
+
+
+# ── Context Folder Files (Training Docs, Outreach Guidelines, etc.) ──
+
+_CONTEXT_CACHE = {}
+_CONTEXT_CACHE_AT = None
+_CONTEXT_CACHE_TTL_SEC = 12 * 3600  # 12 hours
+_CONTEXT_CACHE_KEY = "drive_ctx:context_folder"
+
+
+def get_context_folder_files(force_refresh=False):
+    """
+    Load ALL files from the Context folder (CONTEXT_FOLDER_ID).
+    Returns a single text string with all files concatenated.
+    Includes training docs, outreach guidelines, and any other context docs.
+    Used for AI prompt caching - fetched once, cached in Anthropic prompt cache.
+    """
+    global _CONTEXT_CACHE, _CONTEXT_CACHE_AT
+    now = datetime.utcnow()
+    
+    # Check in-memory cache
+    if not force_refresh and _CONTEXT_CACHE_AT and (now - _CONTEXT_CACHE_AT).total_seconds() < _CONTEXT_CACHE_TTL_SEC:
+        return _CONTEXT_CACHE.get("text", "")
+    
+    # Check database cache
+    if not force_refresh:
+        cached = get_cached_context(_CONTEXT_CACHE_KEY, max_age_sec=_CONTEXT_CACHE_TTL_SEC)
+        if cached is not None:
+            _CONTEXT_CACHE["text"] = cached
+            _CONTEXT_CACHE_AT = now
+            return cached
+    
+    # Load from Drive
+    svc = _drive()
+    if not svc or not CONTEXT_FOLDER_ID:
+        log.warning("Context folder not configured (CONTEXT_FOLDER_ID missing)")
+        return ""
+    
+    try:
+        # List all files in Context folder (non-recursive)
+        r = svc.files().list(
+            q=f"'{CONTEXT_FOLDER_ID}' in parents and trashed = false",
+            pageSize=100,
+            fields="files(id,name,mimeType)",
+        ).execute()
+        files = r.get("files", [])
+        
+        if not files:
+            log.info("No files found in Context folder")
+            return ""
+        
+        # Fetch text from each file
+        parts = []
+        for f in files:
+            mime = f.get("mimeType", "")
+            if "document" not in mime and mime != "application/pdf":
+                continue  # Skip non-doc/PDF files
+            
+            text = fetch_doc_text(f["id"], mime)
+            if not text or len(text) < 50:
+                continue
+            
+            parts.append(f"--- {f['name']} ---\n{text}")
+        
+        out = "\n\n".join(parts) if parts else ""
+        
+        # Cache the result
+        _CONTEXT_CACHE["text"] = out
+        _CONTEXT_CACHE_AT = now
+        save_cached_context(_CONTEXT_CACHE_KEY, out)
+        
+        log.info("Context folder loaded: %d files, %d chars", len(parts), len(out))
+        return out
+    
+    except Exception as e:
+        log.error("get_context_folder_files failed: %s", e)
         return ""

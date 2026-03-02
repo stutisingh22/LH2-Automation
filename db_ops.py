@@ -16,7 +16,7 @@ import streamlit as st
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import create_engine, or_, text
 from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.pool import QueuePool, StaticPool, NullPool
 from sqlalchemy.exc import OperationalError
 
 from config import DATABASE_URL, CONTACT_STATUSES
@@ -77,10 +77,13 @@ _engine = None  # Set by init_db(); use get_engine() for code that needs the eng
 def _create_sqlite_engine():
     _db_dir, db_path = _get_writable_sqlite_path()
     log.info("Using SQLite at %s", db_path)
+    # NullPool: each db() call opens a fresh connection from the file.
+    # This ensures the Streamlit app sees writes made by the callback server
+    # (which runs as a separate process with its own SQLite connection).
     return create_engine(
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        poolclass=NullPool,
     )
 
 
@@ -639,6 +642,8 @@ def upsert_spoc_contact(company_id, spoc_contact_id, name, role=None, email=None
     Create or update a contact under a SPOC in spoc_contacts. Match by (company_id, spoc_contact_id, name).
     Returns the spoc_contact row id.
     """
+    if not spoc_contact_id:
+        return None
     with db() as s:
         _ensure_spoc_contacts_table(s)
         row = s.query(SpocContact).filter_by(

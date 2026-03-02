@@ -19,6 +19,7 @@ from db_ops import (
     upsert_contact,
     log_action,
 )
+from sender_profiles import get_all_sender_profiles
 from ai_engine import (
     compute_lead_score,
     get_local_time,
@@ -57,24 +58,38 @@ def render():
         if not comp or not ct:
             st.error("Not found.")
         else:
-            # ── FROM / TO selectors (FROM = registered user emails, TO = company contacts with email) ──
+            # ── FROM / TO selectors (FROM = sender profiles for planning, TO = company contacts with email) ──
             sel1, sel2, sel3 = st.columns([1.5, 1.5, 1])
             with sel1:
-                all_users = get_all_users()
-                user_emails = {u["id"]: (u.get("email") or "").strip() or (u.get("username") or "?") for u in all_users}
-                from_options = [u["id"] for u in all_users if (u.get("email") or "").strip()]
-                if not from_options:
-                    from_options = [u["id"] for u in all_users]
-                from_index = from_options.index(st.session_state.sender_id) if st.session_state.sender_id in from_options else 0
-                sender_id = st.selectbox(
+                all_senders = get_all_sender_profiles()
+                sender_emails_map = {p["email"]: p["name"] for p in all_senders}
+                from_options = [p["email"] for p in all_senders]
+                
+                # Try to find current sender_id in the list, fallback to first
+                current_sender_id = st.session_state.get("sender_id")
+                from_index = 0
+                if current_sender_id:
+                    # Check if current sender_id is an email (new format)
+                    if current_sender_id in from_options:
+                        from_index = from_options.index(current_sender_id)
+                    else:
+                        # Old format: sender_id was a user ID, try to find by matching email
+                        all_users = get_all_users()
+                        old_user = next((u for u in all_users if u["id"] == current_sender_id), None)
+                        if old_user and old_user.get("email"):
+                            old_email = old_user["email"].strip().lower()
+                            if old_email in from_options:
+                                from_index = from_options.index(old_email)
+                
+                sender_email = st.selectbox(
                     "FROM (sender)",
                     options=from_options,
-                    format_func=lambda x: f"📧 {user_emails.get(x, '?')}",
+                    format_func=lambda x: f"📧 {sender_emails_map.get(x, '?')}",
                     index=from_index,
                     key="from_sel",
                 )
-                st.session_state.sender_id = sender_id
-                sender_name = user_emails.get(sender_id, "")
+                st.session_state.sender_id = sender_email  # Store email now instead of user ID
+                sender_name = sender_emails_map.get(sender_email, "")
 
             with sel2:
                 contacts = get_contacts(cid)
@@ -123,6 +138,46 @@ def render():
                     f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
                     f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
                     unsafe_allow_html=True)
+            
+            # ── Sender selection for outreach tone/voice ──
+            st.markdown("---")
+            from sender_profiles import get_all_sender_profiles, format_sender_display_name
+            sender_profiles = get_all_sender_profiles()
+            sender_emails = [None] + [p["email"] for p in sender_profiles]
+            
+            if "selected_sender" not in st.session_state:
+                st.session_state.selected_sender = None
+            
+            sender_col1, sender_col2 = st.columns([2, 1])
+            with sender_col1:
+                selected_sender_email = st.selectbox(
+                    "🎭 Outreach Voice (select sender for AI-generated messages)",
+                    options=sender_emails,
+                    format_func=lambda x: "Select sender for outreach..." if x is None else format_sender_display_name(
+                        next((p for p in sender_profiles if p["email"] == x), None)
+                    ),
+                    index=sender_emails.index(st.session_state.selected_sender) if st.session_state.selected_sender in sender_emails else 0,
+                    key="sender_voice_select",
+                    help="Choose who is sending the outreach. This affects the tone, voice, and signature in AI-generated emails and LinkedIn messages."
+                )
+                st.session_state.selected_sender = selected_sender_email
+            
+            with sender_col2:
+                if st.session_state.selected_sender:
+                    selected_profile = next((p for p in sender_profiles if p["email"] == st.session_state.selected_sender), None)
+                    if selected_profile:
+                        st.markdown(
+                            f"<div style='padding:12px 0;'>"
+                            f"<div style='font-size:11px;color:var(--text-3);'>{selected_profile.get('voice_type', 'professional').replace('_', ' ').title()}</div>"
+                            f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>Source: {selected_profile.get('source', 'unknown')}</div></div>",
+                            unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f"<div style='padding:12px 0;'>"
+                        f"<div style='font-size:11px;color:var(--text-warning);'>⚠️ No sender selected</div>"
+                        f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>Select a sender to generate outreach</div></div>",
+                        unsafe_allow_html=True)
+            st.markdown("---")
 
             # ── Contact details & enrichment ──
             st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
@@ -341,7 +396,7 @@ def render():
                 with st.chat_message("assistant"):
                     chunks = []
                     ph = st.empty()
-                    for chunk in get_strategist_response_stream(comp, ct, st.session_state.chat_messages, prompt, user["id"], sid, rn):
+                    for chunk in get_strategist_response_stream(comp, ct, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=st.session_state.selected_sender):
                         chunks.append(chunk)
                         ph.markdown("".join(chunks) + "▌")
                     response = "".join(chunks)

@@ -2073,9 +2073,14 @@ with tabs[3]:  # STRATEGIST
                                             upsert_spoc_contact(cid, ctid, _nm, role=(_r.get("role") or "").strip() or None, email=_email or None, phone=_phone or None, linkedin_url=_link or None)
                                         pending_updated = True
                         _new_list.append(_r)
+                    still_pending = any(_r.get("enrichment_status") == "pending" for _r in _new_list)
                     if pending_updated:
                         st.session_state[linkedin_results_key] = _new_list
                         _persist_linkedin_results(_new_list)
+                        st.rerun()
+                    elif still_pending:
+                        import time as _time
+                        _time.sleep(2)
                         st.rerun()
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
