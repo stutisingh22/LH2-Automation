@@ -48,6 +48,7 @@ from db_ops import (
     upsert_company, upsert_contact,
     upsert_spoc_contact, get_spoc_contacts_by_spoc, get_spoc_contacts_by_company,
     get_contacts, get_contact, update_contact_status, update_contact,
+    delete_spoc_contact,
     get_or_create_session, get_session, get_sessions_for_company,
     get_all_sessions, get_user_sessions, delete_session,
     save_message, load_messages, get_message_count,
@@ -3026,9 +3027,9 @@ with tabs[8]:  # SPOC TRACKING
                 open_key = f"spoc_open_{ctd['id']}"
                 is_open = st.session_state.get(open_key, False)
 
-                # ── Card row: expand button | company+name+role+contacts | status | next step ──
+                # ── Card row: expand button | company+name+role+contacts | status | next step | delete ──
                 with st.container():
-                    c_btn, c_info, c_status, c_next = st.columns([0.4, 4.0, 1.0, 1.0])
+                    c_btn, c_info, c_status, c_next, c_del = st.columns([0.4, 4.0, 1.0, 1.0, 0.4])
                     with c_btn:
                         if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
                             st.session_state[open_key] = not is_open
@@ -3065,6 +3066,12 @@ with tabs[8]:  # SPOC TRACKING
                                 st.caption(f"Next: {row['next_step_date']}")
                         else:
                             st.markdown(f"<div class='spoc-card-next'>{html_module.escape(next_step_display)}</div>", unsafe_allow_html=True)
+                    with c_del:
+                        if ps and st.button("🗑️", key=f"spoc_del_{ps.get('id')}_{ctd['id']}", help="Delete this SPOC", use_container_width=True):
+                            if delete_spoc_contact(ps.get("id")):
+                                st.success("✓")
+                                time.sleep(0.5)
+                                st.rerun()
 
                 # ── Expanded: action history only (contact info already visible above) ──
                 if is_open:

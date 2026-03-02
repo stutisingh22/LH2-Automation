@@ -700,6 +700,20 @@ def get_spoc_contacts_by_company(company_id):
         ]
 
 
+def delete_spoc_contact(spoc_contact_id: int):
+    """Delete a SPOC contact by its spoc_contacts.id."""
+    if not spoc_contact_id:
+        return False
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        row = s.get(SpocContact, spoc_contact_id)
+        if not row:
+            return False
+        s.delete(row)
+        s.flush()
+        return True
+
+
 # ── Sessions ──────────────────────────────────────────────────
 
 def get_or_create_session(company_id, contact_id, user_id, score=0):
