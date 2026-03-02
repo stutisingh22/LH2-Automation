@@ -1328,12 +1328,22 @@ def get_session_summary(sid):
         return (None, 0)
 
 
-def save_session_summary(sid, summary, msg_count):
+def save_session_summary(sid, summary, msg_count=0):
+    """
+    Save strategic summary to sessions table.
+    
+    Args:
+        sid: Session ID
+        summary: Strategic summary text
+        msg_count: Message count (default: 0)
+    """
     with db() as s:
         sess = s.get(Session, sid)
         if sess:
             sess.strategic_summary = summary
             sess.summary_msg_count = msg_count
+            s.flush()  # Ensure changes are committed
+        # Context manager auto-commits on exit
 
 
 # ── Users ─────────────────────────────────────────────────────
@@ -1417,8 +1427,39 @@ def get_active_sequences(sid):
 
 # ── Pipeline Stats ────────────────────────────────────────────
 
-def get_pipeline_stats():
-    """Counts by pipeline status. 'outreach_sent' includes legacy awaiting_reply/replied_negative."""
+def get_pipeline_stats(use_cache=True):
+    """
+    Counts by pipeline status. 'outreach_sent' includes legacy awaiting_reply/replied_negative.
+    
+    Args:
+        use_cache: If True and DATABASE_URL is set (PostgreSQL), use materialized view.
+                   If False or SQLite, fall back to direct query.
+    
+    Returns:
+        Dict mapping status -> count
+    """
+    # Use materialized view if PostgreSQL and cache is enabled
+    if use_cache and DATABASE_URL and DATABASE_URL.startswith("postgresql"):
+        try:
+            with db() as s:
+                # Query the materialized view for fast cached results
+                result = s.execute(text(
+                    "SELECT status, contact_count FROM mv_pipeline_stats WHERE status != '_metadata'"
+                ))
+                counts = {row[0]: int(row[1]) for row in result}
+                
+                # Ensure all expected statuses are present
+                for status in CONTACT_STATUSES:
+                    if status not in counts:
+                        counts[status] = 0
+                
+                return counts
+        except Exception as e:
+            # Fallback to direct query if view doesn't exist yet
+            import logging
+            logging.warning(f"Failed to query mv_pipeline_stats, falling back to direct query: {e}")
+    
+    # Fallback: Direct query (SQLite or if materialized view unavailable)
     with db() as s:
         counts = {}
         for status in CONTACT_STATUSES:
@@ -1429,6 +1470,47 @@ def get_pipeline_stats():
             else:
                 counts[status] = s.query(Contact).filter_by(status=status).count()
         return counts
+
+
+def refresh_pipeline_stats():
+    """
+    Refresh the materialized view mv_pipeline_stats.
+    
+    This function should be called after bulk contact updates to ensure
+    pipeline statistics are current. For PostgreSQL/Supabase only.
+    
+    Architecture: Implements the performance optimization strategy from
+    .cursorrules by using cached aggregates instead of live queries.
+    
+    Usage:
+        # After bulk status updates
+        for contact in contacts:
+            update_contact_status(contact.id, "replied_positive")
+        refresh_pipeline_stats()  # Update cached stats
+        
+        # Or from services/ui_data_loader.py
+        from db_ops import refresh_pipeline_stats
+        clear_ui_cache()
+        refresh_pipeline_stats()
+    
+    Returns:
+        bool: True if refresh succeeded, False if not PostgreSQL or view doesn't exist
+    """
+    if not DATABASE_URL or not DATABASE_URL.startswith("postgresql"):
+        # SQLite doesn't support materialized views
+        return False
+    
+    try:
+        with db() as s:
+            # Use CONCURRENTLY to avoid locking the view during refresh
+            # This allows reads to continue using stale data while refresh is in progress
+            s.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_pipeline_stats"))
+            s.commit()
+        return True
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to refresh mv_pipeline_stats: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════════════════════

@@ -57,7 +57,7 @@ from db_ops import (
     update_action, delete_action,
     get_overdue_followups, get_todays_scheduled, get_recent_activity,
     get_memory_events, get_all_global_insights, get_global_insights,
-    get_session_summary, get_pipeline_stats,
+    get_session_summary, save_session_summary, get_pipeline_stats,
     merge_company_extra_data,
     save_advisor_conversation, get_all_advisor_conversations, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
     get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id, get_completed_enrichment_by_identifier,
@@ -1108,11 +1108,20 @@ with tabs[1]:  # COMPANIES
 # ════════════════════ INTELLIGENCE ════════════════════
 
 with tabs[2]:  # INTELLIGENCE
+    # ── Initial Load: Use cached service layer for fast page load (<100ms) ──
+    from services.ui_data_loader import (
+        load_company_profile,
+        load_strategic_brief,
+        load_action_history,
+        force_refresh_research
+    )
+    
     cid = st.session_state.sel_company
     ctid = st.session_state.sel_contact
     _src = st.session_state.get("notion_companies_source", "Independent")
     aid = st.session_state.get("sel_advisor_company_id")
     is_advisor = (_src == "Media Houses" and aid is not None)
+    
     if is_advisor:
         comp = get_advisor_company(aid)
         if not comp:
@@ -1256,47 +1265,93 @@ with tabs[2]:  # INTELLIGENCE
             if _fresh_comp:
                 comp = _fresh_comp
         st.markdown(sh_small("Research document"), unsafe_allow_html=True)
-        _raw_extra = comp.get("extra_data")
-        if isinstance(_raw_extra, str):
-            try:
-                extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
-            except Exception:
-                extra = {}
-        else:
-            extra = _raw_extra if isinstance(_raw_extra, dict) else {}
-        research_full_db = (extra.get("research_full") or "").strip()
+        
+        # Load research from CANONICAL location first: sessions.strategic_summary
+        research_full_db = None
+        
+        # Priority 1: Load from sessions.strategic_summary (canonical)
+        if _intel_sid:
+            print(f"[DEBUG] Loading research for session_id: {_intel_sid}")
+            session_summary, _ = get_session_summary(_intel_sid)
+            if session_summary and session_summary.strip():
+                research_full_db = session_summary.strip()
+                print(f"[DEBUG] Loaded from sessions.strategic_summary: {len(research_full_db)} chars")
+        
+        # Priority 2: Fallback to company.extra_data (backward compatibility)
+        if not research_full_db:
+            _raw_extra = comp.get("extra_data")
+            if isinstance(_raw_extra, str):
+                try:
+                    extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
+                except Exception:
+                    extra = {}
+            else:
+                extra = _raw_extra if isinstance(_raw_extra, dict) else {}
+            research_full_db = (extra.get("research_full") or "").strip()
+            if research_full_db:
+                print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
+        
+        # Priority 3: Check session_state for fresh results (immediate post-save)
         _fresh_key = f"research_fresh_result_{cache_key}"
         _from_session = (st.session_state.get(_fresh_key) or "").strip()
         if _from_session:
             research_full_db = _from_session
-        if research_full_db and (extra.get("research_full") or "").strip():
-            st.session_state.pop(_fresh_key, None)
+            print(f"[DEBUG] Loaded from session_state: {len(research_full_db)} chars")
+            # Clear session_state after first display (DB is source of truth now)
+            if research_full_db:
+                st.session_state.pop(_fresh_key, None)
+        
         research_full_display = research_full_db
 
         if not research_full_display:
             st.caption("No research yet. Run **deep research** below (same prompt as the Notion research bot). Saves to Command Center only until you click **Save** (DB + Notion + Drive).")
             if has_perm("can_use_strategist") and st.button("🔬 Run deep research", key="run_res_doc", type="primary"):
+                # Deep Research Trigger: NOT cached, always runs live
                 err_msg = None
                 result = None
                 try:
                     pb = st.progress(0, text="Starting…")
                     def _prog(c, e):
                         pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                    
+                    # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
                     result = run_research(comp.get("domain", ""), progress_callback=_prog)
                 except Exception as e:
                     err_msg = str(e)
+                
                 if result:
+                    # Get or create session for this company
+                    session_id = _intel_sid if _intel_sid else get_or_create_session(cid, ctid, user["id"])
+                    
+                    # Debug: Verify session_id
+                    print(f"[DEBUG] Saving research for session_id: {session_id}")
+                    
+                    # Save to CANONICAL location: sessions.strategic_summary
+                    save_session_summary(session_id, result, msg_count=0)
+                    
+                    # Also save to company.extra_data for backward compatibility
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                    
+                    # Clear old caches
                     if cache_key in st.session_state.get("research_cache", {}):
                         del st.session_state.research_cache[cache_key]
                     st.session_state.pop(f"research_wysiwyg_html_{cache_key}", None)
                     st.session_state.pop("research_command_result", None)
                     st.session_state.pop("research_command_result_cid", None)
                     st.session_state[f"research_fresh_result_{cache_key}"] = result
+                    
+                    # Update session_state with session_id for next load
+                    st.session_state.session_id = session_id
+                    
+                    # Deep Research Safety Valve: Kill the old cache
+                    force_refresh_research(session_id)
+                    
                     st.success("Research saved to Command Center. Edit below if needed, then click **Save** to write to DB, Notion, and Drive.")
+                    
+                    # st.rerun() to show the brand new research results
                     st.rerun()
                 else:
                     st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
@@ -1305,20 +1360,36 @@ with tabs[2]:  # INTELLIGENCE
             ref_col1, ref_col2, ref_col3 = st.columns([1, 1, 1])
             with ref_col1:
                 if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
+                    # Deep Research Trigger: NOT cached, always runs live
                     err_msg = None
                     result = None
                     try:
                         pb = st.progress(0, text="Re-running deep research…")
                         def _prog(c, e):
                             pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
+                        
+                        # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
                         result = run_research(comp.get("domain", ""), progress_callback=_prog)
                     except Exception as e:
                         err_msg = str(e)
+                    
                     if result:
+                        # Get or create session for this company
+                        session_id = _intel_sid if _intel_sid else get_or_create_session(cid, ctid, user["id"])
+                        
+                        # Debug: Verify session_id
+                        print(f"[DEBUG] Re-running research for session_id: {session_id}")
+                        
+                        # Save to CANONICAL location: sessions.strategic_summary
+                        save_session_summary(session_id, result, msg_count=0)
+                        
+                        # Also save to company.extra_data for backward compatibility
                         if is_advisor:
                             merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
                         else:
                             merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        
+                        # Clear old caches
                         if cache_key in st.session_state.get("research_cache", {}):
                             del st.session_state.research_cache[cache_key]
                         st.session_state.auto_brief_text = None
@@ -1326,17 +1397,37 @@ with tabs[2]:  # INTELLIGENCE
                         st.session_state.pop("research_command_result", None)
                         st.session_state.pop("research_command_result_cid", None)
                         st.session_state[f"research_fresh_result_{cache_key}"] = result
+                        
+                        # Update session_state with session_id for next load
+                        st.session_state.session_id = session_id
+                        
+                        # Deep Research Safety Valve: Kill the old cache
+                        force_refresh_research(session_id)
+                        
                         st.success("Research re-run complete. Edit below if needed, then **Save** to write to DB, Notion, and Drive.")
+                        
+                        # st.rerun() to show the brand new research results
                         st.rerun()
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             with ref_col2:
                 if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", use_container_width=False, help="Delete deep research (DB + session); Run deep research will be available again"):
+                    # Delete from sessions.strategic_summary (canonical)
+                    if _intel_sid:
+                        save_session_summary(_intel_sid, "", msg_count=0)
+                    
+                    # Delete from company.extra_data (backward compatibility)
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                    
                     st.session_state.pop(_fresh_key, None)
+                    
+                    # Targeted cache invalidation
+                    from services.cache_registry import invalidate_group
+                    invalidate_group("research")
+                    
                     st.toast("Deep research deleted.")
                     st.rerun()
             # Always use expandable sections for deep research (format we use for pipeline / Command Center)
@@ -1948,12 +2039,14 @@ with tabs[3]:  # STRATEGIST
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
 
+                    # Separation: Action tracking (SignalHire) remains LIVE for real-time status
                     # Check pending SignalHire enrichments and merge if completed
+                    # This is NOT cached - always queries DB directly to show real-time pending/completed status
                     pending_updated = False
                     _new_list = []
                     for _r in results_list:
                         if _r.get("enrichment_status") == "pending" and _r.get("enrichment_request_id"):
-                            _er = get_enrichment_by_request_id(_r["enrichment_request_id"])
+                            _er = get_enrichment_by_request_id(_r["enrichment_request_id"])  # LIVE query
                             if _er and _er.get("status") == "completed" and _er.get("result_json"):
                                 _res = _er["result_json"]
                                 _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
@@ -2197,14 +2290,16 @@ with tabs[3]:  # STRATEGIST
                 # ── Contacts under this SPOC (from spoc_contacts table) ──
                 st.markdown(sh_small("Contacts under this SPOC"), unsafe_allow_html=True)
                 spoc_list = get_spoc_contacts_by_spoc(ctid)
+                # Separation: Action tracking (SignalHire) remains LIVE for real-time status
                 # Check pending SignalHire enrichments for saved contacts and merge if completed
+                # This is NOT cached - always queries DB directly to show real-time pending/completed status
                 _spoc_callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
                 _spoc_updated = False
                 for _s in spoc_list:
                     _ed = _s.get("extra_data") or {}
                     _req_id = _ed.get("enrichment_request_id") if isinstance(_ed, dict) else None
                     if _req_id:
-                        _er = get_enrichment_by_request_id(_req_id)
+                        _er = get_enrichment_by_request_id(_req_id)  # LIVE query
                         if _er and _er.get("status") == "completed" and _er.get("result_json"):
                             _res = _er["result_json"]
                             _email = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
@@ -2892,17 +2987,198 @@ with tabs[7]:  # PIPELINE
 
 # ════════════════════ SPOC TRACKING ════════════════════
 
+def render_spoc_row(row, today):
+    """
+    Pure UI component: renders a single SPOC tracking row.
+    
+    Architecture: No database calls, only st.* rendering components.
+    All data must be pre-loaded and passed via the row parameter.
+    
+    Args:
+        row: Dict with company, contact, session, actions, etc.
+        today: datetime.date object for comparison
+    """
+    cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
+    _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
+    company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
+    ps = row.get("primary_spoc")
+    subs = row.get("subs") or []
+    
+    # Collect any emails/phones from all saved SPOC contacts under this person
+    emails_from_subs = [(s.get("email") or "").strip() for s in subs if (s.get("email") or "").strip()]
+    phones_from_subs = [(s.get("phone") or "").strip() for s in subs if (s.get("phone") or "").strip()]
+    
+    if ps:
+        name_display = (ps.get("name") or "—").strip() or "—"
+        role_display = (ps.get("role") or "—").strip() or "—"
+        linkedin_val = (ps.get("linkedin_url") or "").strip()
+        email_display = (
+            (ps.get("email") or "").strip()
+            or (emails_from_subs[0] if emails_from_subs else "")
+            or (ctd.get("email") or "").strip()
+            or "—"
+        )
+        phone_display = (
+            (ps.get("phone") or "").strip()
+            or (phones_from_subs[0] if phones_from_subs else "")
+            or ((ctd.get("extra_data") or {}).get("phone") or "").strip()
+            or "—"
+        )
+        phone_display = phone_display or "—"
+    else:
+        name_display = (ctd.get("name") or "—").strip() or "—"
+        role_display = (ctd.get("role") or "—").strip() or "—"
+        linkedin_val = (ctd.get("linkedin") or "").strip()
+        email_display = (ctd.get("email") or "—").strip() or "—"
+        phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
+        if isinstance(phone_display, str):
+            phone_display = phone_display.strip() or "—"
+        else:
+            phone_display = "—"
+    
+    linkedin_html = f"<a href='{html_module.escape(linkedin_val)}' target='_blank'>Profile</a>" if linkedin_val and linkedin_val.startswith("http") else "—"
+    next_step_display = row["next_step_date"]
+    open_key = f"spoc_open_{ctd['id']}"
+    is_open = st.session_state.get(open_key, False)
+
+    # ── Card row: expand button | company+name+role+contacts | status | next step | delete ──
+    with st.container():
+        c_btn, c_info, c_status, c_next, c_del = st.columns([0.4, 4.0, 1.0, 1.0, 0.4])
+        with c_btn:
+            if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
+                st.session_state[open_key] = not is_open
+                st.rerun()
+        with c_info:
+            st.markdown(
+                f"<div class='spoc-card'>"
+                f"<div class='spoc-card-company'>{html_module.escape(company_display)}</div>"
+                f"<div class='spoc-card-name'>{html_module.escape(name_display)}"
+                f" <span class='spoc-card-role'>· {html_module.escape(role_display)}</span></div>"
+                f"<div class='spoc-card-contacts'>"
+                f"📧 {html_module.escape(email_display)}"
+                f" &nbsp;·&nbsp; 🔗 {linkedin_html}"
+                f" &nbsp;·&nbsp; 📞 {html_module.escape(phone_display)}"
+                f"</div></div>",
+                unsafe_allow_html=True)
+        with c_status:
+            current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
+            new_status = st.selectbox(
+                "Status",
+                CONTACT_STATUSES,
+                index=current_index,
+                format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
+                key=f"spoc_status_{ctd['id']}",
+                label_visibility="collapsed",
+            )
+            if new_status != _norm:
+                # Surgical cache invalidation
+                from services.cache_registry import invalidate_multiple
+                update_contact_status(ctd["id"], new_status)
+                invalidate_multiple("contact", "pipeline")  # Status affects both
+                st.rerun()
+        with c_next:
+            if row.get("first_overdue_date_str"):
+                st.markdown(f"<div class='spoc-card-overdue'>⚠ Overdue ({html_module.escape(row['first_overdue_date_str'])})</div>", unsafe_allow_html=True)
+                if row.get("next_step_date") and row["next_step_date"] != "—":
+                    st.caption(f"Next: {row['next_step_date']}")
+            else:
+                st.markdown(f"<div class='spoc-card-next'>{html_module.escape(next_step_display)}</div>", unsafe_allow_html=True)
+        with c_del:
+            if ps and st.button("🗑️", key=f"spoc_del_{ps.get('id')}_{ctd['id']}", help="Delete this SPOC", use_container_width=True):
+                from services.cache_registry import invalidate_group
+                if delete_spoc_contact(ps.get("id")):
+                    invalidate_group("spoc")  # Only clear SPOC caches
+                    st.success("✓")
+                    time.sleep(0.5)
+                    st.rerun()
+
+    # ── Expanded: action history only (contact info already visible above) ──
+    if is_open:
+        st.markdown("<div class='spoc-detail'>", unsafe_allow_html=True)
+        st.markdown(f"*Contacts under this SPOC: {row['sub_count']}*")
+        completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
+        planned = row.get("planned") or []
+        st.markdown("**What happened**")
+        if completed:
+            for a in completed[:20]:
+                done_at = a.get("completed_at") or a.get("created_at") or "—"
+                if isinstance(done_at, str) and len(done_at) > 10:
+                    done_at = done_at[:10]
+                desc = (a.get("description") or "").strip() or "(no description)"
+                content = (a.get("content_sent") or "").strip()
+                if content:
+                    content_preview = content[:120] + "…" if len(content) > 120 else content
+                    st.markdown(f"- {done_at} · {desc}\n  `{content_preview}`")
+                else:
+                    st.markdown(f"- {done_at} · {desc}")
+        else:
+            st.markdown("*No completed actions yet.*")
+        st.markdown("**What's planned**")
+        if planned:
+            for a in planned[:20]:
+                sch = (a.get("scheduled_at") or "")[:10] if a.get("scheduled_at") else "—"
+                desc = (a.get("description") or "").strip() or "(no description)"
+                st.markdown(f"- {sch} · {desc}")
+        else:
+            st.markdown("*No planned actions.*")
+        # Reschedule first overdue and cascade
+        if row.get("first_overdue_action") and row.get("planned"):
+            from datetime import datetime
+            st.markdown("**Reschedule first overdue**")
+            _resched_key = f"spoc_rd_{ctd['id']}"
+            _default_d = today
+            try:
+                _fo = row["first_overdue_action"]
+                _fo_dt = datetime.fromisoformat((_fo.get("scheduled_at") or "").replace("Z", "+00:00"))
+                _default_d = _fo_dt.date()
+                if _default_d < today:
+                    _default_d = today
+            except Exception:
+                pass
+            _new_date = st.date_input("New date", value=_default_d, key=_resched_key, label_visibility="collapsed")
+            if st.button("Apply reschedule", key=f"spoc_ra_{ctd['id']}"):
+                _fo = row["first_overdue_action"]
+                _planned_sorted = sorted(row["planned"], key=lambda x: (x.get("scheduled_at") or ""))
+                try:
+                    _old_first = datetime.fromisoformat(_fo["scheduled_at"].replace("Z", "+00:00"))
+                    _new_first = _old_first.replace(year=_new_date.year, month=_new_date.month, day=_new_date.day)
+                    _offset = _new_first - _old_first
+                    for _a in _planned_sorted:
+                        _s = _a.get("scheduled_at")
+                        if not _s:
+                            continue
+                        _dt = datetime.fromisoformat(_s.replace("Z", "+00:00"))
+                        if _dt < _old_first:
+                            continue
+                        if _a["id"] == _fo["id"]:
+                            update_action(_a["id"], scheduled_at=_new_first.isoformat())
+                        else:
+                            update_action(_a["id"], scheduled_at=(_dt + _offset).isoformat())
+                    from services.cache_registry import invalidate_group
+                    invalidate_group("action")  # Only clear action caches
+                    st.toast("Rescheduled; later steps shifted.")
+                except Exception as e:
+                    st.error(f"Reschedule failed: {e}")
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 with tabs[8]:  # SPOC TRACKING
     st.markdown(lh2_section_header("SPOC TRACKING"), unsafe_allow_html=True)
     st.caption("SPOCs added to company: pipeline status, messages sent, and next step.")
+    
+    # ── DATA HOISTING: Load all data at top via caching layer ──
     from datetime import datetime, timedelta, timezone
+    from services.ui_data_loader import load_all_companies
+    
     _today = datetime.now(timezone.utc).date()
-    all_comp_spoc = get_all_companies()
+    all_comp_spoc = load_all_companies()  # Use cached loader
+    
+    # Build SPOC rows with all necessary data
     spoc_rows = []
     for cd in all_comp_spoc:
         for ctd in get_contacts(cd["id"]):
             sub = get_spoc_contacts_by_spoc(ctd["id"])
-            # Show only SPOCs you have explicitly saved under a company (via Strategist/spoc_contacts)
             if not sub:
                 continue
             sessions = get_sessions_for_company(cd["id"])
@@ -2925,21 +3201,21 @@ with tabs[8]:  # SPOC TRACKING
             first_overdue_date_str = planned_past[0][1].strftime("%b %d, %Y") if planned_past else None
             next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
             primary_spoc = sub[0] if sub else None
-            # ── Filter: skip rows with no real SPOC data ──
+            
+            # Filter: skip rows with no real SPOC data
             if primary_spoc:
                 _has_real = (primary_spoc.get("name") or "").strip() or (primary_spoc.get("email") or "").strip() or (primary_spoc.get("linkedin_url") or "").strip()
                 if not _has_real:
                     continue
             else:
-                # No sub-contacts: check if the contact itself has real data
                 _ct_name = (ctd.get("name") or "").strip()
                 _ct_email = (ctd.get("email") or "").strip()
                 _ct_li = (ctd.get("linkedin") or "").strip()
                 _ct_domain = (cd.get("domain") or "").strip().lower()
-                # Skip if name is empty, matches domain, or has no email+linkedin
                 _name_is_placeholder = (not _ct_name) or (_ct_name.lower() == _ct_domain) or (_ct_name.lower().replace("www.", "") == _ct_domain.replace("www.", ""))
                 if _name_is_placeholder and not _ct_email and not _ct_li:
                     continue
+            
             company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
             if primary_spoc:
                 _nm = (primary_spoc.get("name") or "—").strip() or "—"
@@ -2956,6 +3232,7 @@ with tabs[8]:  # SPOC TRACKING
             _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
             _status_lbl = CONTACT_STATUS_LABELS.get(_norm, _norm)
             _search_text = " ".join([company_display, _nm, _role, _em, _ph, _status_lbl, next_step_date, first_overdue_date_str or ""]).lower()
+            
             spoc_rows.append({
                 "company": cd,
                 "contact": ctd,
@@ -2970,6 +3247,8 @@ with tabs[8]:  # SPOC TRACKING
                 "first_overdue_date_str": first_overdue_date_str,
                 "search_text": _search_text,
             })
+    
+    # ── RENDER UI ──
     if not spoc_rows:
         st.markdown("<div style='text-align:center;padding:32px;color:var(--text-3);'>No contacts yet. Add contacts to companies (e.g. from Strategist) to see them here.</div>", unsafe_allow_html=True)
     else:
@@ -2985,160 +3264,9 @@ with tabs[8]:  # SPOC TRACKING
         if search_q and not spoc_rows:
             st.info("No matches for your search.")
         elif spoc_rows:
-            for idx, row in enumerate(spoc_rows):
-                cd, ctd, sess, actions = row["company"], row["contact"], row["session"], row["actions"]
-                _norm = normalize_contact_status(ctd.get("status", "not_contacted"))
-                company_display = (cd.get("name") or cd.get("domain") or "—").strip() or "—"
-                ps = row.get("primary_spoc")
-                subs = row.get("subs") or []
-                # Collect any emails/phones from all saved SPOC contacts under this person
-                emails_from_subs = [(s.get("email") or "").strip() for s in subs if (s.get("email") or "").strip()]
-                phones_from_subs = [(s.get("phone") or "").strip() for s in subs if (s.get("phone") or "").strip()]
-                if ps:
-                    name_display = (ps.get("name") or "—").strip() or "—"
-                    role_display = (ps.get("role") or "—").strip() or "—"
-                    linkedin_val = (ps.get("linkedin_url") or "").strip()
-                    # Prefer SPOC-level email/phone; fall back to any sub-contact, then contact record
-                    email_display = (
-                        (ps.get("email") or "").strip()
-                        or (emails_from_subs[0] if emails_from_subs else "")
-                        or (ctd.get("email") or "").strip()
-                        or "—"
-                    )
-                    phone_display = (
-                        (ps.get("phone") or "").strip()
-                        or (phones_from_subs[0] if phones_from_subs else "")
-                        or ((ctd.get("extra_data") or {}).get("phone") or "").strip()
-                        or "—"
-                    )
-                    phone_display = phone_display or "—"
-                else:
-                    name_display = (ctd.get("name") or "—").strip() or "—"
-                    role_display = (ctd.get("role") or "—").strip() or "—"
-                    linkedin_val = (ctd.get("linkedin") or "").strip()
-                    email_display = (ctd.get("email") or "—").strip() or "—"
-                    phone_display = ((ctd.get("extra_data") or {}).get("phone") or "—")
-                    if isinstance(phone_display, str):
-                        phone_display = phone_display.strip() or "—"
-                    else:
-                        phone_display = "—"
-                linkedin_html = f"<a href='{html_module.escape(linkedin_val)}' target='_blank'>Profile</a>" if linkedin_val and linkedin_val.startswith("http") else "—"
-                next_step_display = row["next_step_date"]
-                open_key = f"spoc_open_{ctd['id']}"
-                is_open = st.session_state.get(open_key, False)
-
-                # ── Card row: expand button | company+name+role+contacts | status | next step | delete ──
-                with st.container():
-                    c_btn, c_info, c_status, c_next, c_del = st.columns([0.4, 4.0, 1.0, 1.0, 0.4])
-                    with c_btn:
-                        if st.button("▾" if is_open else "▸", key=f"spoc_toggle_{ctd['id']}", help="Show/hide details"):
-                            st.session_state[open_key] = not is_open
-                            st.rerun()
-                    with c_info:
-                        st.markdown(
-                            f"<div class='spoc-card'>"
-                            f"<div class='spoc-card-company'>{html_module.escape(company_display)}</div>"
-                            f"<div class='spoc-card-name'>{html_module.escape(name_display)}"
-                            f" <span class='spoc-card-role'>· {html_module.escape(role_display)}</span></div>"
-                            f"<div class='spoc-card-contacts'>"
-                            f"📧 {html_module.escape(email_display)}"
-                            f" &nbsp;·&nbsp; 🔗 {linkedin_html}"
-                            f" &nbsp;·&nbsp; 📞 {html_module.escape(phone_display)}"
-                            f"</div></div>",
-                            unsafe_allow_html=True)
-                    with c_status:
-                        current_index = CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0
-                        new_status = st.selectbox(
-                            "Status",
-                            CONTACT_STATUSES,
-                            index=current_index,
-                            format_func=lambda x: CONTACT_STATUS_LABELS.get(x, x),
-                            key=f"spoc_status_{ctd['id']}",
-                            label_visibility="collapsed",
-                        )
-                        if new_status != _norm:
-                            update_contact_status(ctd["id"], new_status)
-                            st.rerun()
-                    with c_next:
-                        if row.get("first_overdue_date_str"):
-                            st.markdown(f"<div class='spoc-card-overdue'>⚠ Overdue ({html_module.escape(row['first_overdue_date_str'])})</div>", unsafe_allow_html=True)
-                            if row.get("next_step_date") and row["next_step_date"] != "—":
-                                st.caption(f"Next: {row['next_step_date']}")
-                        else:
-                            st.markdown(f"<div class='spoc-card-next'>{html_module.escape(next_step_display)}</div>", unsafe_allow_html=True)
-                    with c_del:
-                        if ps and st.button("🗑️", key=f"spoc_del_{ps.get('id')}_{ctd['id']}", help="Delete this SPOC", use_container_width=True):
-                            if delete_spoc_contact(ps.get("id")):
-                                st.success("✓")
-                                time.sleep(0.5)
-                                st.rerun()
-
-                # ── Expanded: action history only (contact info already visible above) ──
-                if is_open:
-                    st.markdown("<div class='spoc-detail'>", unsafe_allow_html=True)
-                    st.markdown(f"*Contacts under this SPOC: {row['sub_count']}*")
-                    completed = [a for a in actions if a.get("status") and (a.get("status") or "").strip().lower() not in ("", "planned")]
-                    planned = row.get("planned") or []
-                    st.markdown("**What happened**")
-                    if completed:
-                        for a in completed[:20]:
-                            done_at = a.get("completed_at") or a.get("created_at") or "—"
-                            if isinstance(done_at, str) and len(done_at) > 10:
-                                done_at = done_at[:10]
-                            desc = (a.get("description") or "").strip() or "(no description)"
-                            content = (a.get("content_sent") or "").strip()
-                            if content:
-                                content_preview = content[:120] + "…" if len(content) > 120 else content
-                                st.markdown(f"- {done_at} · {desc}\n  `{content_preview}`")
-                            else:
-                                st.markdown(f"- {done_at} · {desc}")
-                    else:
-                        st.markdown("*No completed actions yet.*")
-                    st.markdown("**What's planned**")
-                    if planned:
-                        for a in planned[:20]:
-                            sch = (a.get("scheduled_at") or "")[:10] if a.get("scheduled_at") else "—"
-                            desc = (a.get("description") or "").strip() or "(no description)"
-                            st.markdown(f"- {sch} · {desc}")
-                    else:
-                        st.markdown("*No planned actions.*")
-                    # Reschedule first overdue and cascade
-                    if row.get("first_overdue_action") and row.get("planned"):
-                        st.markdown("**Reschedule first overdue**")
-                        _resched_key = f"spoc_rd_{ctd['id']}"
-                        _default_d = _today
-                        try:
-                            _fo = row["first_overdue_action"]
-                            _fo_dt = datetime.fromisoformat((_fo.get("scheduled_at") or "").replace("Z", "+00:00"))
-                            _default_d = _fo_dt.date()
-                            if _default_d < _today:
-                                _default_d = _today
-                        except Exception:
-                            pass
-                        _new_date = st.date_input("New date", value=_default_d, key=_resched_key, label_visibility="collapsed")
-                        if st.button("Apply reschedule", key=f"spoc_ra_{ctd['id']}"):
-                            _fo = row["first_overdue_action"]
-                            _planned_sorted = sorted(row["planned"], key=lambda x: (x.get("scheduled_at") or ""))
-                            try:
-                                _old_first = datetime.fromisoformat(_fo["scheduled_at"].replace("Z", "+00:00"))
-                                _new_first = _old_first.replace(year=_new_date.year, month=_new_date.month, day=_new_date.day)
-                                _offset = _new_first - _old_first
-                                for _a in _planned_sorted:
-                                    _s = _a.get("scheduled_at")
-                                    if not _s:
-                                        continue
-                                    _dt = datetime.fromisoformat(_s.replace("Z", "+00:00"))
-                                    if _dt < _old_first:
-                                        continue
-                                    if _a["id"] == _fo["id"]:
-                                        update_action(_a["id"], scheduled_at=_new_first.isoformat())
-                                    else:
-                                        update_action(_a["id"], scheduled_at=(_dt + _offset).isoformat())
-                                st.toast("Rescheduled; later steps shifted.")
-                            except Exception as e:
-                                st.error(f"Reschedule failed: {e}")
-                            st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
+            # COMPONENTIZED RENDERING: Pure UI, no DB calls in loop
+            for row in spoc_rows:
+                render_spoc_row(row, _today)
 
 # ════════════════════ HISTORY ════════════════════
 

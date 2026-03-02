@@ -1,0 +1,310 @@
+# LH2 Platform - Cursor AI Rules
+
+## Architectural Constraints
+
+### Data Access Patterns
+- **Caching Layer Requirement**: All UI-facing database reads MUST go through a caching layer
+- **NEVER call `db_ops` functions directly inside a Streamlit for loop**
+- Always use `@st.cache_data` or `@st.cache_resource` decorators for database queries called from UI components
+- Batch database operations outside of rendering loops whenever possible
+
+### Research vs. Display Boundary (CRITICAL)
+
+#### The 'Active' Rule - NEVER Cache External API Calls
+- **NEVER wrap functions that perform external API calls in `@st.cache_data`**
+- External API calls MUST always run live to ensure deep research accuracy
+- Functions that must NEVER be cached:
+  - **Anthropic/AI calls**: `ai_engine.py` functions (compute_lead_score, get_strategist_response_stream, intelligence_request, advisor_chat, etc.)
+  - **SignalHire enrichment**: `signalhire_enrichment.py` functions (request_enrichment, has_verified_email)
+  - **Google Drive**: `drive_sync.py` functions (list_drive_files, create_doc_in_drive, refresh_all_drive_contexts)
+  - **Notion API**: `notion_sync.py` functions (sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page)
+  - **Gmail API**: `gmail_service.py` functions (create_gmail_draft, parse_email_content)
+  - **Web Research**: `research.py`, `web_search.py` functions
+- These operations are intentionally "expensive" because they fetch fresh, authoritative data
+
+#### The 'Display' Rule - Only Cache Database Reads
+- **Only wrap functions that FETCH already-saved data from PostgreSQL for UI display**
+- Safe to cache (examples):
+  - `db_ops.get_all_companies()` → Use `services/ui_data_loader.load_all_companies()`
+  - `db_ops.get_contacts(company_id)` → Cached read of stored contacts
+  - `db_ops.get_session_actions(session_id)` → Cached read of stored actions
+  - `db_ops.get_pipeline_stats()` → Materialized view (already cached in DB)
+- Cache TTL should be 60 seconds or less for frequently changing data
+- Clear cache immediately after writes using `services.ui_data_loader.clear_ui_cache()`
+
+#### The 'In-Memory' Rule - Progress Tracking Without Caching
+- **For Deep Research operations, use `st.session_state` to track progress, NOT `@st.cache_data`**
+- Use session state for:
+  - Live scan progress indicators
+  - Intermediate research results during active operations
+  - Streaming AI responses
+  - Multi-step enrichment workflows
+- Example pattern:
+  ```python
+  # CORRECT: Track research progress in session state
+  if 'research_progress' not in st.session_state:
+      st.session_state.research_progress = []
+  
+  # Run live research (NOT cached)
+  result = research_person_for_company(company_id)  # Always fresh
+  st.session_state.research_progress.append(result)
+  
+  # Only cache AFTER user explicitly saves
+  if st.button("Save Research"):
+      save_to_database(st.session_state.research_progress)
+      clear_ui_cache()  # Refresh display cache
+  ```
+- Do NOT cache the final research result until the user explicitly saves it to the database
+- This prevents flickering UI while maintaining research accuracy
+
+### Regional Latency Considerations
+- **Assume a 200ms latency floor for ALL database operations**
+- Prioritize `@st.cache_data` for any metadata or list views
+- Pre-fetch and cache frequently accessed data
+- Design UI interactions with latency in mind - avoid chatty back-and-forth patterns
+
+### Separation of Concerns
+- **UI files should ONLY handle `st.` components** (Streamlit rendering)
+- Business logic MUST remain in dedicated service files
+- API calls (Gmail, Notion, AI) MUST remain in their respective service files:
+  - Gmail operations → `gmail_service.py`
+  - Notion operations → `notion_sync.py`, `notion_sync_advisor.py`
+  - AI operations → `ai_engine.py`
+  - Database operations → `db_ops.py`
+- UI files should call service layer functions, never implement business logic directly
+
+### PostgreSQL Best Practices
+- **Use GIN indexes for `extra_data` JSONB queries**
+  - Example: `CREATE INDEX idx_extra_data_gin ON table_name USING GIN (extra_data);`
+- **Avoid N+1 query patterns**
+  - Always use `joinedload` in SQLAlchemy for related data:
+    ```python
+    from sqlalchemy.orm import joinedload
+    query = session.query(Model).options(joinedload(Model.related_field))
+    ```
+- Prefer bulk operations over iterative single-record operations
+- Use `defer()` or `load_only()` to limit column loads when appropriate
+
+## Code Quality Guidelines
+
+### Caching Decision Tree
+
+Use this decision tree when deciding whether to cache a function:
+
+```
+Does the function call an external API (Anthropic, SignalHire, Drive, Notion, Gmail)?
+├─ YES → ❌ NEVER cache with @st.cache_data
+│         → Use st.session_state for progress tracking only
+│         → Examples: ai_engine.*, notion_sync.*, gmail_service.*
+│
+└─ NO → Does it read from PostgreSQL/SQLite?
+        ├─ YES → ✅ Safe to cache with @st.cache_data(ttl=60)
+        │         → Examples: db_ops.get_*, services.ui_data_loader.load_*
+        │         → Remember to clear cache after writes!
+        │
+        └─ NO → Is it a pure computation with no side effects?
+                ├─ YES → ✅ Safe to cache with @st.cache_data
+                │         → Examples: data transformation, formatting
+                │
+                └─ NO → ❌ Do not cache
+                        → Examples: file I/O, random generation
+```
+
+### Practical Examples
+
+#### ❌ INCORRECT - Caching External API Calls
+
+```python
+# WRONG: Caching AI research results
+@st.cache_data(ttl=3600)  # ❌ Never do this!
+def get_research_for_company(company_id):
+    # This calls Anthropic API - must run live
+    return intelligence_request(company_id, "deep research")
+
+# WRONG: Caching enrichment
+@st.cache_data  # ❌ Never do this!
+def enrich_contact(linkedin_url):
+    # This calls SignalHire API - must run live
+    return request_enrichment(linkedin_url)
+```
+
+#### ✅ CORRECT - Live API Calls with Progress Tracking
+
+```python
+# CORRECT: Live research with session state progress
+def research_company_ui(company_id):
+    # Track progress in session state (no caching)
+    if 'research_status' not in st.session_state:
+        st.session_state.research_status = "Starting..."
+    
+    progress_placeholder = st.empty()
+    
+    # Run live research (NOT cached)
+    st.session_state.research_status = "Fetching from AI..."
+    progress_placeholder.info(st.session_state.research_status)
+    
+    result = intelligence_request(company_id, "research")  # Always fresh
+    
+    st.session_state.research_status = "Complete"
+    progress_placeholder.success(st.session_state.research_status)
+    
+    # Show result (not cached until saved)
+    st.write(result)
+    
+    # User must explicitly save
+    if st.button("Save to Database"):
+        save_research_to_db(company_id, result)
+        clear_ui_cache()  # Refresh cached displays
+        st.success("Saved!")
+
+# CORRECT: Cached database read
+@st.cache_data(ttl=60)
+def load_saved_research(company_id):
+    # Only reading saved data - safe to cache
+    return db_ops.get_company_research(company_id)
+```
+
+#### ✅ CORRECT - Separation of Live Research and Display
+
+```python
+# research.py - NO caching (live API calls)
+def run_deep_research(company_domain):
+    """Live research - NEVER cached."""
+    # Calls external APIs
+    web_data = web_search(company_domain)  # Live
+    ai_analysis = ai_engine.analyze(web_data)  # Live
+    notion_data = notion_sync.lookup(company_domain)  # Live
+    return combine_results(web_data, ai_analysis, notion_data)
+
+# services/ui_data_loader.py - WITH caching (database reads)
+@st.cache_data(ttl=60)
+def load_company_research_history(company_id):
+    """Display saved research - safe to cache."""
+    # Only reads from database
+    return db_ops.get_research_history(company_id)
+
+# UI usage
+def render_research_tab():
+    company_id = st.selectbox("Select company", ...)
+    
+    # Show cached history (fast)
+    history = load_company_research_history(company_id)
+    st.write("Previous research:", history)
+    
+    # Run new research (live, not cached)
+    if st.button("Run New Research"):
+        with st.spinner("Researching..."):
+            result = run_deep_research(company.domain)  # Always fresh
+            st.write(result)
+            
+            if st.button("Save This Research"):
+                save_research(company_id, result)
+                clear_ui_cache()  # Show in history on next load
+```
+
+### Performance
+- Profile database queries during development
+- Monitor query counts and execution times
+- Use database connection pooling appropriately
+- Implement pagination for large result sets
+- **Balance caching vs. freshness**: Cache database reads (fast), run APIs live (accurate)
+
+### Common Caching Pitfalls to Avoid
+
+#### ⚠️ Pitfall #1: Caching Streaming Functions
+```python
+# ❌ WRONG: Caching AI streaming responses
+@st.cache_data
+def get_ai_stream():
+    return get_strategist_response_stream(...)  # Returns generator
+
+# ✅ CORRECT: Never cache streaming functions
+def get_ai_stream():
+    return get_strategist_response_stream(...)  # Always live
+```
+
+#### ⚠️ Pitfall #2: Caching Functions with Side Effects
+```python
+# ❌ WRONG: Caching function that writes to database
+@st.cache_data
+def save_and_return_contact(contact_data):
+    upsert_contact(...)  # Side effect!
+    return get_contact(...)
+
+# ✅ CORRECT: Separate write and read operations
+def save_contact(contact_data):
+    upsert_contact(...)  # Write operation (not cached)
+    clear_ui_cache()  # Invalidate caches
+
+@st.cache_data(ttl=60)
+def load_contact(contact_id):
+    return get_contact(contact_id)  # Read-only (safe to cache)
+```
+
+#### ⚠️ Pitfall #3: Forgetting to Clear Cache After Writes
+```python
+# ❌ WRONG: Cache not cleared after update
+def update_company_status(company_id, status):
+    update_company(company_id, status=status)
+    # Cache is now stale!
+
+# ✅ CORRECT: Always clear cache after writes
+def update_company_status(company_id, status):
+    update_company(company_id, status=status)
+    clear_ui_cache()  # Ensure UI reflects changes
+```
+
+#### ⚠️ Pitfall #4: Mixing Research and Display in One Function
+```python
+# ❌ WRONG: Function does both research AND display
+@st.cache_data  # Should this be cached or not? Unclear!
+def get_company_with_research(company_id):
+    company = db_ops.get_company(company_id)  # Database read (cacheable)
+    research = ai_engine.research(company.domain)  # API call (NOT cacheable)
+    return {**company, "research": research}
+
+# ✅ CORRECT: Separate research and display
+def load_company(company_id):
+    """Display saved data - cached."""
+    return db_ops.get_company(company_id)
+
+def run_live_research(company_domain):
+    """Live research - NOT cached."""
+    return ai_engine.research(company_domain)
+
+# In UI
+company = load_company(company_id)  # Fast cached read
+if st.button("Research"):
+    research = run_live_research(company.domain)  # Fresh API call
+```
+
+#### ⚠️ Pitfall #5: Over-caching with Long TTL
+```python
+# ❌ WRONG: Long TTL on frequently changing data
+@st.cache_data(ttl=3600)  # 1 hour - too long!
+def load_pipeline_stats():
+    return get_pipeline_stats()
+
+# ✅ CORRECT: Short TTL or rely on materialized view
+@st.cache_data(ttl=60)  # 1 minute - reasonable
+def load_pipeline_stats():
+    return get_pipeline_stats()  # Uses materialized view internally
+
+# ✅ EVEN BETTER: Let the database handle caching
+def load_pipeline_stats():
+    # get_pipeline_stats() uses mv_pipeline_stats (DB-level cache)
+    # No Streamlit cache needed
+    return get_pipeline_stats()
+```
+
+### Error Handling
+- Wrap database operations in try-except blocks
+- Log errors with sufficient context for debugging
+- Provide user-friendly error messages in UI
+- Never expose raw database errors to users
+
+### Testing
+- Write integration tests for service layer functions
+- Mock external API calls (Gmail, Notion) in tests
+- Test cache invalidation logic
+- Verify query performance with realistic data volumes
