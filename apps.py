@@ -75,6 +75,7 @@ from ai_engine import (
     intelligence_request, research_person_for_company, summarize_research_to_context,
     advisor_chat, refine_email_draft,
 )
+from product_profiles import get_product_options
 from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
 from linkedin_lookup import (
     extract_spoc_table_contacts,
@@ -1772,6 +1773,7 @@ with tabs[3]:  # STRATEGIST
                     )
                     st.session_state.sender_id = sender_id
                     sender_name = user_emails.get(sender_id, "")
+                    sender_email = user_emails.get(sender_id, "").strip()  # Get email for sender profile lookup
 
                 with sel2:
                     contacts = get_contacts(cid)
@@ -1861,6 +1863,45 @@ with tabs[3]:  # STRATEGIST
                 _email = (ct_ctx.get("email") or "").strip()
                 if not (ct_ctx.get("role") or "").strip() and _email:
                     ct_ctx["role"] = spoc_role_by_email.get(_email) or spoc_role_by_parent_id.get(ctid) or ct_ctx.get("role", "")
+
+                # ── Product / Offering selector ──
+                st.markdown("---")
+                if "selected_product" not in st.session_state:
+                    st.session_state.selected_product = None
+
+                product_options = get_product_options()
+                product_labels = {k: lbl for k, lbl in product_options}
+                product_keys = [None] + [k for k, _ in product_options]
+
+                # Get sender profile name for display
+                from sender_profiles import get_sender_profile
+                sender_profile = get_sender_profile(sender_email) if sender_email else None
+                display_sender_name = sender_profile.get("name") if sender_profile else sender_name
+
+                pr1, pr2 = st.columns([3, 2])
+                with pr1:
+                    selected_product = st.radio(
+                        "Pitching:",
+                        options=product_keys,
+                        format_func=lambda x: "Not selected" if x is None else product_labels.get(x, x),
+                        horizontal=True,
+                        key="product_radio",
+                        help="Select which LH2 product to pitch. Changes the angle, framing, and key facts in all generated messages.",
+                        index=product_keys.index(st.session_state.selected_product) if st.session_state.selected_product in product_keys else 0,
+                    )
+                    st.session_state.selected_product = selected_product
+                with pr2:
+                    if selected_product:
+                        st.markdown(
+                            f"<div style='padding:6px 0;font-size:11px;color:var(--text-3);'>"
+                            f"✓ {product_labels.get(selected_product, '')} · sending as {display_sender_name}</div>",
+                            unsafe_allow_html=True)
+                    else:
+                        st.markdown(
+                            "<div style='padding:6px 0;font-size:11px;color:var(--text-warning);'>"
+                            "⚠️ Select a product before generating outreach</div>",
+                            unsafe_allow_html=True)
+                st.markdown("---")
 
                 # ── Contact details & enrichment ──
                 st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
@@ -2468,7 +2509,87 @@ with tabs[3]:  # STRATEGIST
                                 st.session_state.pop(enrich_result_key, None)
                                 st.rerun()
 
+                # ── Recipient Research ──
+                st.markdown("---")
+                from recipient_research import research_recipient, format_time_ago
+                
+                # Initialize or load research
+                research_key = f"recipient_research_{ctid}"
+                if research_key not in st.session_state:
+                    # Check if we should auto-load research
+                    if db_email:  # Only research if recipient has email
+                        with st.spinner("Researching recipient..."):
+                            st.session_state[research_key] = research_recipient(ctid)
+                    else:
+                        st.session_state[research_key] = None
+                
+                research = st.session_state.get(research_key)
+                
+                if research and research.get("status") == "completed":
+                    recipient_name = ct_ctx.get("name", "Contact")
+                    time_ago = format_time_ago(research)
+                    
+                    with st.expander(
+                        f"📊 Recipient Brief: {recipient_name} · Updated {time_ago}",
+                        expanded=False
+                    ):
+                        # Brief summary
+                        brief = research.get("brief", "")
+                        if brief:
+                            st.markdown(
+                                f"<div style='background:var(--accent-bg);padding:12px;border-radius:6px;margin-bottom:12px;'>"
+                                f"<strong>Quick Context:</strong> {brief}</div>",
+                                unsafe_allow_html=True
+                            )
+                        
+                        # LinkedIn section
+                        linkedin_data = research.get("linkedin", {})
+                        if linkedin_data and linkedin_data.get("recent_activity"):
+                            st.markdown("**Recent LinkedIn Focus:**")
+                            for topic in linkedin_data.get("recent_activity", [])[:3]:
+                                if topic:
+                                    st.markdown(f"• {topic}")
+                            
+                            prof_focus = linkedin_data.get("professional_focus", "")
+                            if prof_focus:
+                                st.caption(f"_{prof_focus}_")
+                        
+                        # Twitter section
+                        twitter_data = research.get("twitter", {})
+                        if twitter_data and twitter_data.get("handle") and twitter_data.get("topics"):
+                            st.markdown(f"**Twitter ({twitter_data.get('handle')}):**")
+                            topics = twitter_data.get("topics", [])
+                            if topics:
+                                st.markdown(f"Discusses: {', '.join(topics[:3])}")
+                        
+                        # Blog posts
+                        blog_posts = research.get("blog_posts", [])
+                        if blog_posts:
+                            st.markdown("**Recent Content:**")
+                            for post in blog_posts[:2]:
+                                title = post.get("title", "Untitled")
+                                topic = post.get("topic", "")
+                                url = post.get("url")
+                                if url:
+                                    st.markdown(f"• [{title}]({url}) · {topic}")
+                                else:
+                                    st.markdown(f"• {title} · {topic}")
+                        
+                        # Refresh button
+                        if st.button("🔄 Refresh Research", key="refresh_recipient_research"):
+                            with st.spinner("Researching recipient..."):
+                                st.session_state[research_key] = research_recipient(ctid, force_refresh=True)
+                                st.rerun()
+                elif db_email:
+                    # Show manual trigger if no research yet
+                    st.caption("💡 Recipient research helps personalize your outreach")
+                    if st.button("🔍 Research Recipient", key="trigger_recipient_research"):
+                        with st.spinner("Researching recipient..."):
+                            st.session_state[research_key] = research_recipient(ctid, force_refresh=True)
+                            st.rerun()
+
                 # ── Quick actions + Sequence builder ──
+                st.markdown("---")
                 q1, q2, q3, q4, q5 = st.columns(5)
                 with q1:
                     if st.button("💬 LinkedIn", key="qa1", use_container_width=True):
@@ -2489,7 +2610,8 @@ with tabs[3]:  # STRATEGIST
                         else:
                             with st.spinner("Building outreach plan..."):
                                 rn = st.session_state.research_cache.get(research_cache_key, [])
-                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn)
+                                recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
+                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=st.session_state.selected_product, recipient_research=recipient_research_data)
                                 if plan:
                                     st.session_state.pending_plan = plan
 
@@ -2593,10 +2715,11 @@ with tabs[3]:  # STRATEGIST
                         save_message(sid, "user", prompt)
                         st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
                         rn = st.session_state.research_cache.get(research_cache_key, [])
+                        recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
                         with st.chat_message("assistant"):
                             chunks = []
                             ph = st.empty()
-                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn):
+                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=st.session_state.selected_product, recipient_research=recipient_research_data):
                                 chunks.append(chunk)
                                 ph.markdown("".join(chunks) + "▌")
                             response = "".join(chunks)

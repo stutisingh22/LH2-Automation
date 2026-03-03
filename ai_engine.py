@@ -106,10 +106,26 @@ def compute_lead_score(comp, ct=None):
     return min(score, 100)
 
 
+# ── Product context helper ─────────────────────────────────────────
+
+def _get_product_context_block(product_key: str) -> str:
+    """Return the PRODUCT FOCUS block for the given product_key, or empty string."""
+    if not product_key:
+        return ""
+    try:
+        from product_profiles import format_product_context_block
+        return format_product_context_block(product_key)
+    except Exception as e:
+        log.warning("Failed to load product profile '%s': %s", product_key, e)
+        return ""
+
+
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
-def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None):
-    """Build the full context system prompt. If sender_email provided, includes training docs and sender profile."""
+def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+    """Build the full context system prompt. If sender_email provided, includes training docs and sender profile.
+    If product_key provided ('accelerate' or 'mediaos'), injects focused product pitch context.
+    If recipient_research provided, includes social research on the recipient."""
     summary, _ = get_session_summary(sid)
     summary_block = f"\n{summary}" if summary else "(None yet.)"
 
@@ -197,6 +213,36 @@ Signature to use:
 
     local_time, tz_str = get_local_time(ct.get("country", ""), ct.get("state", ""))
     score = compute_lead_score(comp, ct)
+    
+    # Build recipient research context if available
+    recipient_context = ""
+    if recipient_research and recipient_research.get("status") == "completed":
+        brief = recipient_research.get("brief", "")
+        linkedin_data = recipient_research.get("linkedin", {})
+        twitter_data = recipient_research.get("twitter", {})
+        blog_posts = recipient_research.get("blog_posts", [])
+        
+        recipient_context = "\n== RECIPIENT SOCIAL RESEARCH ==\n"
+        if brief:
+            recipient_context += f"Brief: {brief}\n\n"
+        
+        if linkedin_data.get("recent_activity"):
+            topics = ", ".join(linkedin_data.get("recent_activity", [])[:3])
+            recipient_context += f"LinkedIn Activity: Recently engaged with {topics}.\n"
+            if linkedin_data.get("professional_focus"):
+                recipient_context += f"Professional Focus: {linkedin_data['professional_focus']}\n"
+        
+        if twitter_data.get("handle") and twitter_data.get("topics"):
+            topics = ", ".join(twitter_data.get("topics", [])[:3])
+            recipient_context += f"Twitter ({twitter_data['handle']}): Discusses {topics}.\n"
+        
+        if blog_posts:
+            recipient_context += f"Recent Content: {blog_posts[0].get('title', 'Untitled')} ({blog_posts[0].get('topic', '')})"
+            if len(blog_posts) > 1:
+                recipient_context += f", {blog_posts[1].get('title', 'Untitled')}"
+            recipient_context += "\n"
+        
+        recipient_context += "\nUSE THIS: Reference these topics/interests when drafting messages. Personalize based on their recent activity and professional focus.\n"
 
     system = f"""You are the LH2 Strategic Outreach Advisor — a digital media partnership strategist with persistent memory.
 
@@ -210,6 +256,7 @@ Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('r
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
 LinkedIn: {ct.get('linkedin','N/A')} | Location: {ct.get('city','')}, {ct.get('state','')} {ct.get('country','')}
 Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','not_contacted')}
+{recipient_context}
 {f'''== CHILD COMPANY RULE ==
 This target is a child company/brand. Stick to the leadership of THIS child company (the target domain). Prioritize decision-makers at the child; do not default to parent-company leadership. All outreach and strategy must focus on the child's leadership.''' if comp.get('_child_company_focus') else ''}
 
@@ -224,6 +271,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
 {"== LH2 OFFERINGS (reference when positioning value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
+{_get_product_context_block(product_key)}
 {sender_context}
 
 == ACTION HISTORY ==
@@ -240,22 +288,23 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Substance: Lead with a concrete data point or specific research finding. Numbers over vague claims.
    - Close: Low-pressure, generous, open-ended. E.g. "Happy to share more whenever it works for you." or "Let me know what questions come up." NEVER "Looking forward to hearing from you" or "Would you be open to a quick call?"
    - Forbidden in ALL message drafts: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "at your earliest convenience", "would you be open to", "just following up", "I think we could add value".
-4. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
-5. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
-6. Action format: ACTION: [channel] [day, date, time TZ] — [what to send and why]"""
+4. CHANNEL INDEPENDENCE: Each channel is self-contained. A LinkedIn message must never reference an email sent, and an email must never reference a LinkedIn message sent. Every message reads as if it is the first time the person is hearing from us on that channel. LinkedIn follow-ups follow up on LinkedIn only. Email follow-ups follow up on email only.
+5. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
+6. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
+7. Action format: ACTION: [channel] [day, date, time TZ] — [what to send and why]"""
 
     return system
 
 
 # ── Auto-Brief (triggered on contact select) ──────────────────
 
-def auto_brief(comp, ct, uid, sid, research_notes=None, sender_email=None):
+def auto_brief(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
     """
     Generate an instant strategic brief when a contact is selected.
     Output includes a SPOC table (3-5 C-suite/founder only; 1-3 if company <100 employees)
     and standard brief sections. All in proper tabular/structured format.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
     domain = comp.get("domain") or "this company"
 
     prompt = f"""Produce a strategic outreach brief for {comp.get('domain','this company')}.
@@ -733,12 +782,12 @@ def parse_ai_actions(text):
 
 # ── Main Strategist (with optional streaming) ─────────────────
 
-def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None):
+def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None):
     """
     FIX: The user_msg is already in `messages` (appended by the caller).
     We do NOT append again to avoid sending it twice.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key)
 
     # Add retrieved memories for this specific query
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
@@ -762,11 +811,11 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
         return f"Error: {e}"
 
 
-def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None):
+def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
     """
     Streaming version of the strategist. Yields text chunks.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
 
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
@@ -831,12 +880,12 @@ def export_session_csv(sid, domain):
 
 # ── Outreach Sequence Generation ──────────────────────────────
 
-def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None, sender_email=None):
+def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None, sender_email=None, product_key=None, recipient_research=None):
     """
     Generate a structured outreach sequence.
     Returns list of dicts: [{step, channel, day_offset, description, content_draft, timing_note}, ...]
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
 
     sender_line = f"Sender name: {sender_name}" if sender_name else ""
 
@@ -892,7 +941,15 @@ Constraints:
 - Every step must have complete message text after CONTENT: — no placeholders.
 - Emails: First line of CONTENT must be "Subject: <subject line>", then body.
 - Reference specific research findings from the context above in at least 2 steps.
-- Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn."""
+- Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn.
+
+== CHANNEL INDEPENDENCE RULE (strictly enforced) ==
+Each channel (LinkedIn and Email) operates independently. Messages must NEVER reference activity on a different channel.
+- A LinkedIn message must NEVER mention "my email", "I sent you an email", "as I mentioned in my message", or any reference to email contact.
+- An email must NEVER mention "my LinkedIn message", "I connected with you on LinkedIn", "I reached out on LinkedIn", or any reference to LinkedIn contact.
+- Every message must stand entirely on its own — written as if it is the first time this person is hearing from you on that channel.
+- LinkedIn follow-ups build on prior LinkedIn interaction only. Email follow-ups build on prior email interaction only.
+- The reader of any single message should have no idea they were also contacted on another platform."""
 
     try:
         r = create_with_retry(
@@ -974,12 +1031,12 @@ def _parse_sequence_response(text):
     return steps if steps else None
 
 
-def replan_on_response(comp, ct, uid, sid, completed_action, response_text, remaining_actions, research_notes=None, sender_email=None):
+def replan_on_response(comp, ct, uid, sid, completed_action, response_text, remaining_actions, research_notes=None, sender_email=None, product_key=None):
     """
     When a response is received, replan remaining sequence steps.
     Returns updated action dicts for remaining steps.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key)
 
     remaining_desc = "\n".join([
         f"  Step {a['sequence_step']}: {a['channel']} — {a['description'][:100]}"
@@ -1000,6 +1057,10 @@ REMAINING PLANNED STEPS:
 
 For each remaining step, output one line:
 REVISED|<step_number>|<keep/skip/modify>|<new description if modified>|<new message content if modified>
+
+CHANNEL INDEPENDENCE RULE: Any revised message draft must NEVER reference activity on a different channel.
+A LinkedIn message must not mention emails sent. An email must not mention LinkedIn messages sent.
+Each message stands alone — as if it is the first time they are hearing from us on that channel.
 
 Then:
 STRATEGY NOTE: [1-2 sentences. What does their reply signal? Are we accelerating to a meeting, pivoting angle, or staying course? Why?]"""

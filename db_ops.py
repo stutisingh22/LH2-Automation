@@ -458,6 +458,17 @@ def update_contact(contact_id, **kw):
         c.updated_at = datetime.utcnow()
 
 
+def update_contact_extra_data(contact_id, extra_data):
+    """Update contact's extra_data field (replaces entire field, not merged)."""
+    with db() as s:
+        c = s.get(Contact, contact_id)
+        if not c:
+            return False
+        c.extra_data = extra_data
+        c.updated_at = datetime.utcnow()
+        return True
+
+
 def get_user_by_email(email):
     """Return user dict (id, username, email) for the given email, or None. Email match is case-insensitive."""
     if not (email or "").strip():
