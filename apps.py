@@ -1112,7 +1112,6 @@ with tabs[2]:  # INTELLIGENCE
     # ── Initial Load: Use cached service layer for fast page load (<100ms) ──
     from services.ui_data_loader import (
         load_company_profile,
-        load_strategic_brief,
         load_action_history,
         force_refresh_research
     )
@@ -1183,61 +1182,6 @@ with tabs[2]:  # INTELLIGENCE
                     _fc = get_company(cid)
                     if _fc:
                         comp = _fc
-                brief_key = f"brief_text_{cache_key}_{ctid}"
-                if st.session_state.get(brief_key) is None:
-                    _raw_brief_extra = comp.get("extra_data") or {}
-                    if isinstance(_raw_brief_extra, str):
-                        try:
-                            _raw_brief_extra = json.loads(_raw_brief_extra) if (_raw_brief_extra or "").strip() else {}
-                        except Exception:
-                            _raw_brief_extra = {}
-                    extra = _raw_brief_extra if isinstance(_raw_brief_extra, dict) else {}
-                    briefs = extra.get("briefs") or {}
-                    saved_brief = ((briefs.get(str(ctid)) or {}).get("content") or "").strip()
-                    if not saved_brief:
-                        saved_brief = (extra.get("brief") or "").strip()
-                    if saved_brief:
-                        st.session_state[brief_key] = saved_brief
-                    else:
-                        with st.spinner("Generating brief..."):
-                            brief = auto_brief(comp, ct, user["id"], st.session_state.session_id, rn)
-                            st.session_state[brief_key] = brief or "Could not generate brief."
-                brief_display = st.session_state.get(brief_key) or ""
-                st.markdown(sh_small(f"Brief — {ct['name']}"), unsafe_allow_html=True)
-                st.caption("One entry for the brief: optional focus or instruction, then Improve brief.")
-                brief_entry = st.text_input(
-                    "Brief",
-                    placeholder="e.g. Focus on power mapping · or leave blank for full brief",
-                    key=f"brief_entry_{cache_key}_{ctid}",
-                    label_visibility="collapsed",
-                )
-                st.markdown("<div class='brief-card'>" + render_research_with_proper_tables(brief_display) + "</div>", unsafe_allow_html=True)
-                brief_btn_col1, brief_btn_col2 = st.columns(2)
-                with brief_btn_col1:
-                    if st.button("✨ Improve brief", key="rb", help="Regenerate the strategic brief using current research"):
-                        st.session_state.pop(brief_key, None)
-                        st.rerun()
-                with brief_btn_col2:
-                    if st.button("💾 Save", key="brief_save_all", help="Save brief to DB and Drive"):
-                        _brief = (brief_display or "").strip()
-                        if not _brief:
-                            st.warning("No brief to save.")
-                        else:
-                            _doc_name = comp.get("domain") or comp.get("name", "Company")
-                            _extra = comp.get("extra_data") or {}
-                            _briefs = dict(_extra.get("briefs") or {})
-                            _briefs[str(ctid)] = {"content": _brief, "updated_at": datetime.utcnow().isoformat()}
-                            if is_advisor:
-                                merge_advisor_company_extra_data(aid, {"briefs": _briefs, "brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
-                            else:
-                                merge_company_extra_data(cid, {"briefs": _briefs, "brief": _brief, "brief_updated_at": datetime.utcnow().isoformat()})
-                            st.session_state[brief_key] = _brief
-                            fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Brief", _brief)
-                            if fid:
-                                st.toast("Brief saved to DB and Drive.")
-                            else:
-                                st.toast("Brief saved to DB." + (" Drive: " + (err_drive or "failed") if err_drive else ""))
-                            st.rerun()
 
         st.markdown(sh_small("Company profile"), unsafe_allow_html=True)
         r1 = st.columns(5)
@@ -1924,8 +1868,8 @@ with tabs[3]:  # STRATEGIST
                 else:
                     st.caption("Enrichment uses mock data when no API/callback")
 
-                # ── Contacts from brief/research: extract names → find LinkedIn URLs ──
-                st.markdown(sh_small("Contacts from brief & research"), unsafe_allow_html=True)
+                # ── Contacts from deep research: extract names → find LinkedIn URLs ──
+                st.markdown(sh_small("Contacts from research"), unsafe_allow_html=True)
                 linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
                 if is_advisor_strategist and _aid_s:
                     _fa = get_advisor_company(_aid_s)
@@ -1946,7 +1890,7 @@ with tabs[3]:  # STRATEGIST
                     key="btn_linkedin_lookup",
                     type="secondary",
                     use_container_width=True,
-                    help="Parse brief and research for people, then find their LinkedIn profiles via search.",
+                    help="Parse deep research for people (SPOC/stakeholder tables), then find their LinkedIn profiles via search.",
                 )
                 if do_linkedin_lookup:
                     rn = st.session_state.research_cache.get(research_cache_key, [])
@@ -1955,13 +1899,13 @@ with tabs[3]:  # STRATEGIST
                             rn = fetch_research_from_notion(comp["notion_page_id"])
                             if rn:
                                 st.session_state.research_cache[research_cache_key] = rn
-                    saved_brief_for_extract = (comp.get("extra_data") or {}).get("brief") or ""
-                    if (saved_brief_for_extract or "").strip():
-                        brief_text = saved_brief_for_extract.strip()
-                    else:
-                        with st.spinner("Generating brief…"):
-                            brief_text = auto_brief(comp, ct_ctx, user["id"], sid, rn) or ""
-                    research_full = (comp.get("extra_data") or {}).get("research_full") or ""
+                    # Same source order as Intelligence: company.extra_data → session strategic_summary → session_state
+                    research_full = ((comp.get("extra_data") or {}).get("research_full") or "").strip()
+                    if not research_full and sid:
+                        _sess_summary, _ = get_session_summary(sid)
+                        research_full = (_sess_summary or "").strip()
+                    if not research_full:
+                        research_full = (st.session_state.get(f"research_fresh_result_{research_cache_key}") or "").strip()
                     research_notes_text = "\n\n".join(
                         f"{(n.get('title') or 'Section')}\n{(n.get('content') or '').strip()}"
                         for n in (rn or [])
@@ -1969,9 +1913,9 @@ with tabs[3]:  # STRATEGIST
                     research_combined = (research_full or research_notes_text or "").strip()
                     company_name = comp.get("domain") or comp.get("name") or "this company"
                     with st.spinner("Extracting names from SPOC tables…"):
-                        contacts = extract_spoc_table_contacts(brief_text, research_combined, company_name)
+                        contacts = extract_spoc_table_contacts("", research_combined, company_name)
                     if not contacts:
-                        st.info("No SPOC table found in brief or research. Generate a brief or run deep research to get a SPOC/stakeholder table first.")
+                        st.info("No SPOC table found in research. Run deep research in Intelligence to get a SPOC/stakeholder table first.")
                     else:
                         progress = st.progress(0, text=f"Finding LinkedIn URLs (0/{len(contacts)})…")
                         def _prog(i, total, name):
