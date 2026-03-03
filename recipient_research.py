@@ -149,18 +149,18 @@ def _run_recipient_research_ai(contact):
         log.warning("No Anthropic API key, skipping recipient research")
         return None
     
-    # Extract contact details
-    name = contact.get("name", "").strip()
-    email = contact.get("email", "").strip()
-    role = contact.get("role", "").strip()
-    linkedin_url = contact.get("linkedin", "").strip()
+    # Extract contact details (use "or ''" so None never gets .strip())
+    name = (contact.get("name") or "").strip()
+    email = (contact.get("email") or "").strip()
+    role = (contact.get("role") or "").strip()
+    linkedin_url = (contact.get("linkedin") or "").strip()
     
     # Get company details
     from db_ops import get_company
     company_id = contact.get("company_id")
     company = get_company(company_id) if company_id else None
-    company_name = company.get("name", "") if company else ""
-    company_domain = company.get("domain", "") if company else ""
+    company_name = (company.get("name") or "") if company else ""
+    company_domain = (company.get("domain") or "") if company else ""
     
     if not name:
         log.warning("Contact has no name, cannot research")
@@ -184,7 +184,7 @@ def _run_recipient_research_ai(contact):
             messages=[{"role": "user", "content": prompt}],
         )
         
-        result_text = response.content[0].text.strip()
+        result_text = (response.content[0].text or "").strip()
         
         # Parse JSON response
         research_data = _parse_research_response(result_text)
@@ -204,50 +204,52 @@ def _run_recipient_research_ai(contact):
 
 
 def _build_research_prompt(name, email, role, linkedin_url, company_name, company_domain):
-    """Build the AI research prompt."""
-    return f"""You are conducting social research on an email recipient to help personalize outreach.
+    """Build the AI research prompt. Demands real post-level data or minimal honest output."""
+    return f"""You are researching an email recipient. Your output must be EITHER (A) specific post/tweet/article content you actually know, OR (B) minimal honest output when you only know name/role/company.
 
-RECIPIENT DETAILS:
+RECIPIENT:
 Name: {name}
 Role: {role or "Unknown"}
 Company: {company_name} ({company_domain})
 LinkedIn: {linkedin_url or "Not provided"}
 Email: {email or "Not provided"}
 
-RESEARCH OBJECTIVES:
-1. **LinkedIn Activity**: What topics do they discuss or engage with? What are their recent professional interests?
-2. **Professional Focus**: Based on their role and company, what are their likely priorities, challenges, and areas of interest?
-3. **Twitter/X Presence**: Do they have a public Twitter/X account? If so, what topics do they tweet about?
-4. **Content Authorship**: Have they written blog posts, articles, or thought leadership pieces? What topics?
+CRITICAL RULE — No job-title filler:
+- If you know SPECIFIC posts, tweets, or articles by this person (what they said, wrote, or shared): include them as snippets in recent_posts / recent_tweets / blog_posts and write a brief that cites that activity.
+- If you ONLY know their name, role, and company (no specific posts/tweets/articles): you MUST output the MINIMAL template below. Do NOT invent "themes" or "priorities" from their job title. Do NOT write "likely prioritizes...", "would be most receptive to...", "focuses on internet culture/digital media trends/online communities" or similar. That is forbidden when you have no actual post-level data.
 
-RESEARCH GUIDELINES:
-- Base insights on your knowledge of publicly available information
-- If specific data is unavailable, infer likely interests based on role, industry, and company context
-- Focus on actionable insights for email personalization
-- Be concise but specific
-- Prioritize recent activity and current professional interests
+When you have NO specific posts/tweets/articles, your output MUST be:
+- linkedin.recent_posts: []
+- linkedin.recent_activity: []   (do NOT list "internet culture", "digital media trends", "online communities" or other job-inferred topics)
+- linkedin.professional_focus: null
+- twitter.handle: null
+- twitter.recent_tweets: []
+- twitter.topics: []
+- blog_posts: []
+- brief: "No specific recent posts found. " + one short factual sentence only, e.g. "Editor at Daily Dot." or "Works at {company_name}." No pitches, no "prioritizes", no "receptive to".
 
-OUTPUT FORMAT:
-Return ONLY a valid JSON object (no markdown, no code blocks) with this exact structure:
+When you HAVE specific content: put real snippets in recent_posts/recent_tweets, real themes tied to those in recent_activity/topics, and a brief that leads with that content.
+
+OUTPUT FORMAT — Return ONLY valid JSON, no markdown or code fences:
 
 {{
   "linkedin": {{
-    "recent_activity": ["topic 1", "topic 2", "topic 3"],
-    "professional_focus": "1-2 sentence summary of their current professional focus",
+    "recent_posts": [{{"snippet": "quote or close paraphrase of actual post", "date_if_known": "e.g. last week or null"}}],
+    "recent_activity": [],
+    "professional_focus": null,
     "engagement_style": "active/moderate/minimal"
   }},
   "twitter": {{
-    "handle": "@username or null",
-    "topics": ["topic 1", "topic 2", "topic 3"],
+    "handle": null,
+    "recent_tweets": [{{"snippet": "actual tweet or paraphrase", "date_if_known": "or null"}}],
+    "topics": [],
     "activity_level": "active/moderate/minimal"
   }},
-  "blog_posts": [
-    {{"title": "Article title", "topic": "Main theme", "date": "approx date or null"}}
-  ],
-  "brief": "2-3 sentence synthesis focusing on what matters for email personalization: their current interests, professional priorities, and recent activity"
+  "blog_posts": [{{"title": "Exact title", "topic": "theme", "date": null, "url": null}}],
+  "brief": "No specific recent posts found. One short factual sentence only."
 }}
 
-IMPORTANT: Return ONLY the JSON object, no other text."""
+Fill arrays and brief only when you have real content. Otherwise leave arrays empty and use the exact brief format above. Return ONLY the JSON object."""
     
 
 def _parse_research_response(response_text):

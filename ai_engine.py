@@ -226,23 +226,38 @@ Signature to use:
         if brief:
             recipient_context += f"Brief: {brief}\n\n"
         
+        # Prefer specific post/tweet snippets when present
+        recent_posts = linkedin_data.get("recent_posts") or []
+        if recent_posts:
+            recipient_context += "LinkedIn (specific recent posts):\n"
+            for p in recent_posts[:5]:
+                snip = (p.get("snippet") or "").strip()
+                if snip:
+                    recipient_context += f"  - {snip}\n"
         if linkedin_data.get("recent_activity"):
             topics = ", ".join(linkedin_data.get("recent_activity", [])[:3])
-            recipient_context += f"LinkedIn Activity: Recently engaged with {topics}.\n"
-            if linkedin_data.get("professional_focus"):
-                recipient_context += f"Professional Focus: {linkedin_data['professional_focus']}\n"
+            recipient_context += f"LinkedIn themes: {topics}.\n"
+        if linkedin_data.get("professional_focus"):
+            recipient_context += f"Professional focus: {linkedin_data['professional_focus']}\n"
         
-        if twitter_data.get("handle") and twitter_data.get("topics"):
+        recent_tweets = twitter_data.get("recent_tweets") or []
+        if recent_tweets:
+            recipient_context += "Twitter (specific recent tweets):\n"
+            for t in recent_tweets[:5]:
+                snip = (t.get("snippet") or "").strip()
+                if snip:
+                    recipient_context += f"  - {snip}\n"
+        elif twitter_data.get("handle") and twitter_data.get("topics"):
             topics = ", ".join(twitter_data.get("topics", [])[:3])
-            recipient_context += f"Twitter ({twitter_data['handle']}): Discusses {topics}.\n"
+            recipient_context += f"Twitter ({twitter_data['handle']}): {topics}.\n"
         
         if blog_posts:
-            recipient_context += f"Recent Content: {blog_posts[0].get('title', 'Untitled')} ({blog_posts[0].get('topic', '')})"
+            recipient_context += f"Recent content: {blog_posts[0].get('title', 'Untitled')} ({blog_posts[0].get('topic', '')})"
             if len(blog_posts) > 1:
                 recipient_context += f", {blog_posts[1].get('title', 'Untitled')}"
             recipient_context += "\n"
         
-        recipient_context += "\nUSE THIS: Reference these topics/interests when drafting messages. Personalize based on their recent activity and professional focus.\n"
+        recipient_context += "\nUSE THIS: Reference specific posts/tweets when drafting. If only themes or brief are present, personalize from those.\n"
 
     system = f"""You are the LH2 Strategic Outreach Advisor — a digital media partnership strategist with persistent memory.
 
@@ -284,6 +299,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 1. Cite research: Name the specific finding, data point, or pattern you're basing each recommendation on.
 2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis): Be directive. State what to do and why. Never say "you could" or "consider" — say "do this because."
 3. MESSAGE DRAFTS (emails, LinkedIn messages written on behalf of the sender): Completely different register. Warm, human, professional — never pushy, never rude, never demanding. The sender sounds like a real person, not a sales machine.
+   - When RECIPIENT SOCIAL RESEARCH is present above, use it to personalize: reference their interests, recent LinkedIn/Twitter activity, or content in the opener and body.
    - Opener: ONE brief line acknowledging something specific about the contact or their work. Not flattery — a real observation.
    - Substance: Lead with a concrete data point or specific research finding. Numbers over vague claims.
    - Close: Low-pressure, generous, open-ended. E.g. "Happy to share more whenever it works for you." or "Let me know what questions come up." NEVER "Looking forward to hearing from you" or "Would you be open to a quick call?"

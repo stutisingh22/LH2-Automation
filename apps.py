@@ -1266,42 +1266,39 @@ with tabs[2]:  # INTELLIGENCE
             if _fresh_comp:
                 comp = _fresh_comp
         st.markdown(sh_small("Research document"), unsafe_allow_html=True)
+        _fresh_key = f"research_fresh_result_{cache_key}"
         
-        # Load research from CANONICAL location first: sessions.strategic_summary
+        # Load research for display. Company is primary so revisit/refresh always shows saved deep research.
         research_full_db = None
-        
-        # Priority 1: Load from sessions.strategic_summary (canonical)
-        if _intel_sid:
-            print(f"[DEBUG] Loading research for session_id: {_intel_sid}")
+        _raw_extra = comp.get("extra_data")
+        if isinstance(_raw_extra, str):
+            try:
+                extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
+            except Exception:
+                extra = {}
+        else:
+            extra = _raw_extra if isinstance(_raw_extra, dict) else {}
+
+        # Priority 1: company.extra_data (so refresh/revisit same company shows research)
+        research_full_db = (extra.get("research_full") or "").strip()
+        if research_full_db:
+            print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
+
+        # Priority 2: session strategic_summary when company has none (e.g. old data)
+        if not research_full_db and _intel_sid:
             session_summary, _ = get_session_summary(_intel_sid)
             if session_summary and session_summary.strip():
                 research_full_db = session_summary.strip()
                 print(f"[DEBUG] Loaded from sessions.strategic_summary: {len(research_full_db)} chars")
-        
-        # Priority 2: Fallback to company.extra_data (backward compatibility)
+
+        # Priority 3: session_state for immediate post-save display before next rerun
         if not research_full_db:
-            _raw_extra = comp.get("extra_data")
-            if isinstance(_raw_extra, str):
-                try:
-                    extra = json.loads(_raw_extra) if (_raw_extra or "").strip() else {}
-                except Exception:
-                    extra = {}
-            else:
-                extra = _raw_extra if isinstance(_raw_extra, dict) else {}
-            research_full_db = (extra.get("research_full") or "").strip()
-            if research_full_db:
-                print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
-        
-        # Priority 3: Check session_state for fresh results (immediate post-save)
-        _fresh_key = f"research_fresh_result_{cache_key}"
-        _from_session = (st.session_state.get(_fresh_key) or "").strip()
-        if _from_session:
-            research_full_db = _from_session
-            print(f"[DEBUG] Loaded from session_state: {len(research_full_db)} chars")
-            # Clear session_state after first display (DB is source of truth now)
-            if research_full_db:
+            _from_session = (st.session_state.get(_fresh_key) or "").strip()
+            if _from_session:
+                research_full_db = _from_session
+                print(f"[DEBUG] Loaded from session_state: {len(research_full_db)} chars")
                 st.session_state.pop(_fresh_key, None)
-        
+
         research_full_display = research_full_db
 
         if not research_full_display:
@@ -2511,19 +2508,27 @@ with tabs[3]:  # STRATEGIST
 
                 # ── Recipient Research ──
                 st.markdown("---")
-                from recipient_research import research_recipient, format_time_ago
-                
-                # Initialize or load research
+                st.markdown(sh_small("Recipient research"), unsafe_allow_html=True)
                 research_key = f"recipient_research_{ctid}"
-                if research_key not in st.session_state:
-                    # Check if we should auto-load research
-                    if db_email:  # Only research if recipient has email
-                        with st.spinner("Researching recipient..."):
-                            st.session_state[research_key] = research_recipient(ctid)
-                    else:
-                        st.session_state[research_key] = None
-                
-                research = st.session_state.get(research_key)
+                research = None
+                try:
+                    from recipient_research import research_recipient, format_time_ago
+                    
+                    # Initialize or load research
+                    if research_key not in st.session_state:
+                        # Check if we should auto-load research
+                        if db_email:  # Only research if recipient has email
+                            with st.spinner("Researching recipient..."):
+                                st.session_state[research_key] = research_recipient(ctid)
+                        else:
+                            st.session_state[research_key] = None
+                    
+                    research = st.session_state.get(research_key)
+                except Exception as _e:
+                    research = None
+                    if f"recipient_research_{ctid}" in st.session_state:
+                        st.session_state.pop(f"recipient_research_{ctid}", None)
+                    st.caption("Recipient research unavailable. You can still use the strategist below.")
                 
                 if research and research.get("status") == "completed":
                     recipient_name = ct_ctx.get("name", "Contact")
@@ -2542,38 +2547,55 @@ with tabs[3]:  # STRATEGIST
                                 unsafe_allow_html=True
                             )
                         
-                        # LinkedIn section
+                        # LinkedIn: show actual recent posts first, then themes
                         linkedin_data = research.get("linkedin", {})
-                        if linkedin_data and linkedin_data.get("recent_activity"):
-                            st.markdown("**Recent LinkedIn Focus:**")
+                        recent_posts = linkedin_data.get("recent_posts") or []
+                        if recent_posts:
+                            st.markdown("**Recent LinkedIn (specific):**")
+                            for p in recent_posts[:5]:
+                                snip = (p.get("snippet") or "").strip()
+                                date = (p.get("date_if_known") or "").strip()
+                                if snip:
+                                    st.markdown(f"• {snip}" + (f" _{date}_" if date else ""))
+                        if linkedin_data and (linkedin_data.get("recent_activity") or linkedin_data.get("professional_focus")):
+                            if not recent_posts:
+                                st.markdown("**LinkedIn themes:**")
                             for topic in linkedin_data.get("recent_activity", [])[:3]:
                                 if topic:
                                     st.markdown(f"• {topic}")
-                            
-                            prof_focus = linkedin_data.get("professional_focus", "")
+                            prof_focus = (linkedin_data.get("professional_focus") or "").strip()
                             if prof_focus:
                                 st.caption(f"_{prof_focus}_")
                         
-                        # Twitter section
+                        # Twitter: show actual recent tweets first, then handle/topics
                         twitter_data = research.get("twitter", {})
-                        if twitter_data and twitter_data.get("handle") and twitter_data.get("topics"):
-                            st.markdown(f"**Twitter ({twitter_data.get('handle')}):**")
-                            topics = twitter_data.get("topics", [])
-                            if topics:
-                                st.markdown(f"Discusses: {', '.join(topics[:3])}")
+                        recent_tweets = twitter_data.get("recent_tweets") or []
+                        if recent_tweets:
+                            handle = (twitter_data.get("handle") or "").strip()
+                            st.markdown(f"**Twitter{' (' + handle + ')' if handle else ''} (specific):**")
+                            for t in recent_tweets[:5]:
+                                snip = (t.get("snippet") or "").strip()
+                                date = (t.get("date_if_known") or "").strip()
+                                if snip:
+                                    st.markdown(f"• {snip}" + (f" _{date}_" if date else ""))
+                        elif twitter_data and (twitter_data.get("handle") or twitter_data.get("topics")):
+                            if twitter_data.get("handle") and twitter_data.get("topics"):
+                                st.markdown(f"**Twitter ({twitter_data.get('handle')}):**")
+                                st.markdown(f"Discusses: {', '.join(twitter_data.get('topics', [])[:3])}")
                         
-                        # Blog posts
+                        # Blog posts (only when we have real titles, not generic)
                         blog_posts = research.get("blog_posts", [])
                         if blog_posts:
-                            st.markdown("**Recent Content:**")
-                            for post in blog_posts[:2]:
-                                title = post.get("title", "Untitled")
-                                topic = post.get("topic", "")
+                            st.markdown("**Recent content:**")
+                            for post in blog_posts[:3]:
+                                title = (post.get("title") or "").strip()
+                                topic = (post.get("topic") or "").strip()
                                 url = post.get("url")
-                                if url:
-                                    st.markdown(f"• [{title}]({url}) · {topic}")
-                                else:
-                                    st.markdown(f"• {title} · {topic}")
+                                if title and "various" not in title.lower() and "editorial" not in title.lower():
+                                    if url:
+                                        st.markdown(f"• [{title}]({url})" + (f" · {topic}" if topic else ""))
+                                    else:
+                                        st.markdown(f"• {title}" + (f" · {topic}" if topic else ""))
                         
                         # Refresh button
                         if st.button("🔄 Refresh Research", key="refresh_recipient_research"):
@@ -2587,6 +2609,8 @@ with tabs[3]:  # STRATEGIST
                         with st.spinner("Researching recipient..."):
                             st.session_state[research_key] = research_recipient(ctid, force_refresh=True)
                             st.rerun()
+                else:
+                    st.caption("Select a contact with an email to enable recipient research.")
 
                 # ── Quick actions + Sequence builder ──
                 st.markdown("---")
