@@ -115,8 +115,8 @@ def render():
                     return em or f"{c.get('name', '?')} (no email)"
                 def _has_email(c):
                     return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
-                contacts_with_email = [c for c in contacts if _has_email(c)]
-                to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
+                # Show all contacts in TO; email required only at draft/send
+                to_options = [c["id"] for c in contacts]
                 ct_display = {c["id"]: _recipient_display(c) for c in contacts}
                 to_index = to_options.index(ctid) if ctid in to_options else 0
                 to_id = st.selectbox(

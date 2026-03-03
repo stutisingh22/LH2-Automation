@@ -358,6 +358,61 @@ Use proper Markdown tables only where specified. Do not use or cite Notion for c
         return None
 
 
+def recommend_offering_for_company(company_research_text: str, lh2_knowledge: str, company_domain: str = None) -> dict:
+    """
+    Given company research and LH2 offerings context from Drive, recommend either MediaOS or Accelerate.
+    Returns {"product_key": "mediaos"|"accelerate", "rationale": "..."} or {"product_key": None, "rationale": "..."} on failure.
+    """
+    company_domain = (company_domain or "").strip() or "this company"
+    research_snippet = (company_research_text or "").strip()[:15000]
+    lh2_snippet = (lh2_knowledge or "").strip()[:12000]
+    if not lh2_snippet:
+        return {"product_key": None, "rationale": "No LH2 offerings context from Drive. Link a Drive folder with LH2/Accelerate/MediaOS materials."}
+    user_content = f"""Company (domain): {company_domain}
+
+Company research and positioning:
+{research_snippet if research_snippet else "(No company research yet. Run deep research in Intelligence first for a better recommendation.)"}
+
+LH2 offerings context (from Drive):
+{lh2_snippet}
+
+Based only on the company research and the LH2 offerings context above, recommend which single offering we should lead with for this company: MediaOS or LH2 Accelerate.
+
+Reply with exactly two lines:
+product_key: mediaos
+rationale: [One or two sentences explaining why this offering fits this company's situation, citing specific signals from the research.]
+
+Use product_key "mediaos" or "accelerate" only. Rationale must reference the research or Drive context."""
+    try:
+        r = create_with_retry(
+            model=AI_MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        raw = (r.content[0].text or "").strip()
+        product_key = None
+        rationale = ""
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.lower().startswith("product_key:"):
+                val = line.split(":", 1)[-1].strip().lower()
+                if val in ("mediaos", "accelerate"):
+                    product_key = val
+            elif line.lower().startswith("rationale:"):
+                rationale = line.split(":", 1)[-1].strip()
+        if not product_key and raw:
+            raw_lower = raw.lower()
+            for choice in ("mediaos", "accelerate"):
+                if choice in raw_lower:
+                    product_key = choice
+                    break
+        if not rationale and raw:
+            rationale = raw[:400]
+        return {"product_key": product_key, "rationale": rationale or "No rationale returned."}
+    except Exception as e:
+        log.error("recommend_offering_for_company failed: %s", e)
+        return {"product_key": None, "rationale": str(e)}
+
 # ── L2: Rolling Summary ──────────────────────────────────────
 
 def maybe_update_summary(sid, comp, ct):
@@ -486,7 +541,7 @@ User request:
 
 Respond based on the request type:
 
-A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible. For leads or contacts, use only your knowledge of publicly available information (LinkedIn, company pages, press). Completely ignore any contact details in Notion — do not reference the user's Notion database or contact lists.
+A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible. For leads or contacts, use only your knowledge of publicly available information (LinkedIn, company pages, press). Completely ignore any contact details in Notion — do not reference the user's Notion database or contact lists. Make sure that when asked to research on power-mapping, stakeholders, SPOCs, etc. you run deep into the research. Make sure to go through their official website when asked for more SPOCs or when promoted that certain people are missing. If nothing is in the official website, make sure to go through the Linkedin of the company or their public forums where names might be mentioned. Always give proper person mapping.
 
 B) "Research this topic/person" (no URL provided) → Draft a 1-2 paragraph research section based on what you can infer from context. Flag what you're inferring vs. what needs verification. For person/lead suggestions, base recommendations only on publicly findable information; do not use Notion or contact lists.
 

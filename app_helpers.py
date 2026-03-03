@@ -184,7 +184,10 @@ def render_save_to_gmail(to_email, subject, body, draft_id):
             label_visibility="collapsed",
         )
     with gcol2:
-        disabled = not (subject or body)
+        has_to_email = bool((to_email or "").strip())
+        disabled = not (subject or body) or not has_to_email
+        if not has_to_email:
+            st.caption("Add email for this contact to create draft.")
         if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
             out = create_gmail_draft(gmail_sel, to_email or "", subject or "", body or "")
             if out.get("success"):

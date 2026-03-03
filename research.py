@@ -472,7 +472,183 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-Conduct proper SPOC research using your knowledge of publicly available information (LinkedIn, company pages, press, executive profiles, job postings). Completely ignore any contact details or SPOC data stored in Notion. This section must be highly aligned to the company context: ownership structure, content type, strategic signal, and execution gaps already identified in this research. Do not use generic placeholders — name real individuals where knowable, with titles and roles that match this specific company's structure. The stakeholder table must reflect who actually holds economic and editorial authority at this target, based on your knowledge of the web.
+You are conducting stakeholder mapping using publicly available information only.
+
+You must perform exhaustive research before producing output. Do not stop after identifying 2–3 executives. You must return 5–6 high-leverage stakeholders unless the company is demonstrably too small to support that many (in which case explicitly justify why).
+
+You are strictly prohibited from referencing internal CRM systems, Notion, or private databases.
+
+Before moving to mid-level or secondary roles, you must prioritize identifying the highest-ranking authority figures first. Prioritization order:
+
+Founder / Co-Founder
+
+Owner / Principal
+
+CEO / President
+
+Publisher / GM
+
+COO / CFO
+
+CTO / Chief Product Officer
+
+Chief Content Officer / Editor-in-Chief
+
+VP-level leadership (Operations, Product, Audience, Revenue, Technology, Editorial)
+
+Director / Head-level roles (only if higher authority roles are unavailable or insufficient)
+
+You must exhaust all attempts to identify individuals in tiers 1–7 before expanding into Director or Head-level roles.
+
+Research Scope (Mandatory Sources)
+
+You must systematically check the following:
+
+Company official website:
+
+About
+Team / Leadership
+Masthead
+Press
+Careers
+Footer / disclosures
+Investor Relations (if applicable)
+
+Company LinkedIn page:
+
+Employees tab
+Filter by seniority: Owner, Founder, CXO, VP, Director, Head
+Cross-check tenure and scope via individual LinkedIn profiles
+
+Press mentions, interviews, and bylines
+
+Podcast appearances
+
+Conference speaker listings
+
+Job postings (to infer missing leadership roles)
+
+Parent company / network / holding structure pages (if applicable)
+
+Organizational filings (if PE-backed or part of a larger group)
+
+You may not finalize output until all relevant public sources have been reviewed.
+
+Required Research Sequence
+
+Step 1: Establish ownership structure
+Determine whether the company is:
+
+Independent
+PE-backed
+Family-owned
+Network-affiliated
+Subsidiary
+
+If network-affiliated or PE-backed:
+
+Determine whether economic authority sits locally or at the parent level.
+
+Escalate stakeholder search to parent-level executives or operating partners where relevant.
+
+When a parent or holding company exists, you must prioritize identifying decision-makers at the level where economic authority truly resides (local vs parent). Do not assume decisions are local without verification.
+
+Step 2: Identify Economic Authority
+Identify who controls:
+
+Budget
+Vendor relationships
+Technology spend
+Strategic partnerships
+
+Acceptable titles include:
+Founder, CEO, Publisher, GM, COO, CFO, VP Operations, Operating Partner (PE), Network Executive
+
+You must identify at least one economic buyer.
+
+Economic authority roles must be prioritized over purely operational or advisory roles.
+
+Step 3: Identify Editorial Authority
+Identify who controls:
+
+Content strategy
+Publishing workflow
+Distribution decisions
+Editorial roadmap
+
+Acceptable titles include:
+Editor-in-Chief, Head of Content, Chief Content Officer, Managing Editor, Director of Audience, Founder (if lean organization)
+
+You must identify at least one editorial authority.
+
+If editorial leadership appears consolidated under a founder or CEO, explicitly note that overlap.
+
+Step 4: Identify Technical Authority
+Identify who manages:
+
+CMS
+Ad stack
+Analytics
+Product or engineering teams
+In-house tooling
+
+Acceptable titles include:
+CTO, VP Engineering, Head of Product, Director of Technology, Product Lead
+
+You must prioritize CTO or executive-level technical leadership before considering Director-level roles.
+
+If no technical authority is publicly visible:
+
+Explicitly flag the gap
+Infer responsibility overlap
+Mark as requiring enrichment
+
+You must identify at least one technical authority unless company size clearly prevents it.
+
+Step 5: Distinguish Champion vs Decision-Maker
+For each authority dimension:
+
+Identify who signs contracts (decision-maker)
+Identify who likely feels operational pain (champion)
+
+Decision-makers must be senior economic or executive authorities.
+
+Champions may be VP or Director-level roles with operational ownership.
+
+At least one stakeholder must be identified as an operational champion.
+
+Coverage Requirement
+
+Return 5–6 real individuals with verifiable public signals.
+
+Stakeholders must collectively cover:
+
+Economic authority
+Editorial authority
+Technical authority
+
+At least three stakeholders must be executive-level (Founder, Owner, CXO, Publisher, GM, or VP-level).
+
+Do not pad the output with low-leverage or irrelevant names.
+
+If fewer than 5 stakeholders are identified:
+
+Explicitly explain why (company size, lack of public data, founder-led structure)
+
+Identify expected role titles that likely hold authority
+
+Flag those roles as requiring enrichment
+
+Hard Constraints
+
+No speculative org chart assumptions.
+No generic filler.
+No internal data references.
+No stopping after identifying only top 2–3 executives.
+Must check parent or holding structure before concluding research.
+Must prioritize highest-ranking authority roles before mapping secondary stakeholders.
+
+If verification_checklist cannot be fully satisfied, continue research before producing final output.
 
 3A. Organizational Reality
 3B. Identified Power Center
@@ -483,7 +659,7 @@ Conduct proper SPOC research using your knowledge of publicly available informat
 4. INDIVIDUAL STRATEGIC INTERPRETATION
 ============================================================
 
-Profile TOP TWO stakeholders with: Background, Incentive Structure, Likely Objections, Deal Sensitivity, How They Will Perceive LH2, Personalization Angle
+Profile TOP THREE stakeholders with: Background, Incentive Structure, Likely Objections, Deal Sensitivity, How They Will Perceive LH2, Personalization Angle
 
 ============================================================
 5. FIT ASSESSMENT

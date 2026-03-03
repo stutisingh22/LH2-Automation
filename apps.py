@@ -65,11 +65,12 @@ from db_ops import (
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
 from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children, merge_advisor_company_extra_data
-from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts
+from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts, get_lh2_knowledge_context
 from ai_engine import (
     compute_lead_score, get_local_time,
     get_strategist_response_stream, auto_brief,
     generate_outreach_plan, replan_on_response,
+    recommend_offering_for_company,
     maybe_update_summary, extract_episodic_memories,
     generate_insight_from_outcome, parse_ai_actions, export_session_csv,
     intelligence_request, research_person_for_company, summarize_research_to_context,
@@ -308,12 +309,15 @@ for k, d in defaults.items():
 
 
 def _is_placeholder_contact(ct, comp):
-    """Block plan/draft only when there is no email — no SPOC, no real person. Email present = real contact; name is resolved from SPOC."""
+    """Placeholder = no real identity (no email, no LinkedIn, no real name). Plan/strategist run for any SPOC with name or LinkedIn; email required only at Gmail draft/send."""
     if not ct:
         return True
-    if (ct.get("email") or "").strip():
-        return False  # email = SPOC present = real contact; name is tracked down from SPOC
-    return True
+    email = (ct.get("email") or "").strip()
+    linkedin = (ct.get("linkedin") or "").strip()
+    name = (ct.get("name") or "").strip()
+    domain_like = not name or name in ("—", "?") or "@" in name or ".com" in name.lower()
+    has_identity = email or linkedin or (name and not domain_like)
+    return not has_identity
 
 
 def select_contact(comp_id, ct_id):
@@ -409,7 +413,10 @@ def _render_save_to_gmail(to_email, subject, body, draft_id):
             label_visibility="collapsed",
         )
     with gcol2:
-        disabled = not (subject or body)
+        has_to_email = bool((to_email or "").strip())
+        disabled = not (subject or body) or not has_to_email
+        if not has_to_email:
+            st.caption("Add email for this contact to create draft.")
         if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
             out = create_gmail_draft(gmail_sel, to_email or "", subject or "", body or "")
             if out.get("success"):
@@ -1055,15 +1062,18 @@ with tabs[1]:  # COMPANIES
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
                 border = "border-left:3px solid var(--accent);" if is_sel else ""
-                # Same row: company name/card + arrow button
+                has_research = bool(((comp.get("extra_data") or {}).get("research_full") or "").strip())
+                # Right side of card: one slot — "researched" (dark green) or visits/–
+                right_label = "researched" if has_research else fmt_v(comp.get("monthly_visits"))
+                right_style = "font-size:11px;font-weight:500;color:#166534;" if has_research else "font-size:12px;color:var(--text-2);"
                 row_name, row_arrow = st.columns([4, 0.5])
                 with row_name:
                     st.markdown(
                         f"<div class='c' style='padding:10px 14px;{border}'>"
-                        f"<div style='display:flex;justify-content:space-between;'>"
+                        f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
                         f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
                         f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
-                        f"<span style='font-size:12px;color:var(--text-2);'>{fmt_v(comp.get('monthly_visits'))}</span></div></div>",
+                        f"<span style='{right_style}'>{right_label}</span></div></div>",
                         unsafe_allow_html=True)
                 with row_arrow:
                     if st.button("→", key=f"comp_go_{comp['id']}", use_container_width=True, help="Open intelligence/brief for this company"):
@@ -1192,6 +1202,54 @@ with tabs[2]:  # INTELLIGENCE
         ]):
             with col:
                 st.markdown(crd(l, v), unsafe_allow_html=True)
+
+        # ── Offering recommendation: AI suggests MediaOS vs Accelerate from research + Drive; stored per company ──
+        _extra_offering = comp.get("extra_data") or {}
+        if isinstance(_extra_offering, str):
+            try:
+                _extra_offering = json.loads(_extra_offering) if (_extra_offering or "").strip() else {}
+            except Exception:
+                _extra_offering = {}
+        _recommended = _extra_offering.get("recommended_offering") or {}
+        if st.session_state.get("offering_recommendation_just_saved_cid") == cid and st.session_state.get("offering_recommendation_just_saved"):
+            _recommended = st.session_state.pop("offering_recommendation_just_saved", _recommended)
+            st.session_state.pop("offering_recommendation_just_saved_cid", None)
+        _stored_key = (_recommended.get("product_key") or "").strip().lower()
+        if _stored_key not in ("mediaos", "accelerate"):
+            _stored_key = None
+        _stored_rationale = (_recommended.get("rationale") or "").strip()
+        st.markdown(sh_small("Offering recommendation"), unsafe_allow_html=True)
+        if _stored_key:
+            _label = "MediaOS" if _stored_key == "mediaos" else "LH2 Accelerate"
+            st.caption(f"Recommended: **{_label}**")
+            if _stored_rationale:
+                st.markdown(f"<div style='font-size:12px;color:var(--text-2);margin-bottom:8px;'>{_stored_rationale}</div>", unsafe_allow_html=True)
+        if has_perm("can_use_strategist") and st.button("Get recommendation" if not _stored_key else "Refresh recommendation", key="btn_offering_recommend", use_container_width=False, help="AI suggests MediaOS or Accelerate from company research and Drive context"):
+            try:
+                with st.spinner("Checking research and Drive..."):
+                    _research_for_offering = (_extra_offering.get("research_full") or "").strip()
+                    if not _research_for_offering and _intel_sid:
+                        _sess_sum, _ = get_session_summary(_intel_sid)
+                        _research_for_offering = (_sess_sum or "").strip()
+                    if not _research_for_offering:
+                        _research_for_offering = (st.session_state.get(f"research_fresh_result_{cache_key}") or "").strip()
+                    _lh2 = get_lh2_knowledge_context()
+                with st.spinner("Recommending offering..."):
+                    _result = recommend_offering_for_company(_research_for_offering, _lh2, comp.get("domain"))
+                _pk = (_result.get("product_key") or "").strip().lower() if _result else None
+                if _pk in ("mediaos", "accelerate"):
+                    _ro = {"product_key": _pk, "rationale": (_result.get("rationale") or "").strip() or "No rationale.", "updated_at": datetime.utcnow().isoformat()}
+                    if is_advisor:
+                        merge_advisor_company_extra_data(aid, {"recommended_offering": _ro})
+                    else:
+                        merge_company_extra_data(cid, {"recommended_offering": _ro})
+                    st.session_state["offering_recommendation_just_saved"] = _ro
+                    st.session_state["offering_recommendation_just_saved_cid"] = cid
+                    st.rerun()
+                else:
+                    st.warning(_result.get("rationale", "Could not get a recommendation. Run deep research and ensure Drive has LH2/offerings context."))
+            except Exception as _e:
+                st.error(f"Get recommendation failed: {_e}")
 
         # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
         # Re-fetch comp so extra_data (research_full) is fresh after save/run
@@ -1690,6 +1748,10 @@ with tabs[3]:  # STRATEGIST
             research_cache_key = f"advisor_{_aid_s}" if is_advisor_strategist else cid
             sid = st.session_state.session_id
             ctid = st.session_state.sel_contact
+            _ro = (comp.get("extra_data") or {}).get("recommended_offering") or {}
+            recommended_product_key = (_ro.get("product_key") or "").strip().lower()
+            if recommended_product_key not in ("mediaos", "accelerate"):
+                recommended_product_key = None
             ct = get_contact(ctid) if ctid else None
             if not ct:
                 ct = {"id": None, "name": comp.get("domain", "Company"), "role": "", "email": "", "linkedin": "", "country": "", "state": "", "city": ""}
@@ -1756,8 +1818,8 @@ with tabs[3]:  # STRATEGIST
                         return em or f"{c.get('name', '?')} (no email)"
                     def _has_email(c):
                         return (c.get("email") or "").strip() or spoc_email_by_name.get((c.get("name") or "").strip()) or spoc_email_by_parent_id.get(c["id"])
-                    contacts_with_email = [c for c in contacts if _has_email(c)]
-                    to_options = [c["id"] for c in contacts_with_email] if contacts_with_email else [c["id"] for c in contacts]
+                    # Show all contacts in TO; email required only at draft/send
+                    to_options = [c["id"] for c in contacts]
                     ct_display = {c["id"]: _recipient_display(c) for c in contacts}
                     to_options_with_company = [None] + to_options
                     ct_display[None] = "Company level (no contact)"
@@ -1805,45 +1867,8 @@ with tabs[3]:  # STRATEGIST
                 if not (ct_ctx.get("role") or "").strip() and _email:
                     ct_ctx["role"] = spoc_role_by_email.get(_email) or spoc_role_by_parent_id.get(ctid) or ct_ctx.get("role", "")
 
-                # ── Product / Offering selector ──
-                st.markdown("---")
-                if "selected_product" not in st.session_state:
-                    st.session_state.selected_product = None
-
-                product_options = get_product_options()
-                product_labels = {k: lbl for k, lbl in product_options}
-                product_keys = [None] + [k for k, _ in product_options]
-
-                # Get sender profile name for display
-                from sender_profiles import get_sender_profile
-                sender_profile = get_sender_profile(sender_email) if sender_email else None
-                display_sender_name = sender_profile.get("name") if sender_profile else sender_name
-
-                pr1, pr2 = st.columns([3, 2])
-                with pr1:
-                    selected_product = st.radio(
-                        "Pitching:",
-                        options=product_keys,
-                        format_func=lambda x: "Not selected" if x is None else product_labels.get(x, x),
-                        horizontal=True,
-                        key="product_radio",
-                        help="Select which LH2 product to pitch. Changes the angle, framing, and key facts in all generated messages.",
-                        index=product_keys.index(st.session_state.selected_product) if st.session_state.selected_product in product_keys else 0,
-                    )
-                    st.session_state.selected_product = selected_product
-                with pr2:
-                    if selected_product:
-                        st.markdown(
-                            f"<div style='padding:6px 0;font-size:11px;color:var(--text-3);'>"
-                            f"✓ {product_labels.get(selected_product, '')} · sending as {display_sender_name}</div>",
-                            unsafe_allow_html=True)
-                    else:
-                        st.markdown(
-                            "<div style='padding:6px 0;font-size:11px;color:var(--text-warning);'>"
-                            "⚠️ Select a product before generating outreach</div>",
-                            unsafe_allow_html=True)
-                st.markdown("---")
-
+                if not recommended_product_key:
+                    st.warning("Run offering recommendation in Intelligence first so outreach uses the right product (MediaOS or Accelerate).")
                 # ── Contact details & enrichment ──
                 st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
                 enrich_result_key = f"enrich_result_{ctid}"
@@ -2579,7 +2604,7 @@ with tabs[3]:  # STRATEGIST
                             with st.spinner("Building outreach plan..."):
                                 rn = st.session_state.research_cache.get(research_cache_key, [])
                                 recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
-                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=st.session_state.selected_product, recipient_research=recipient_research_data)
+                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=recommended_product_key, recipient_research=recipient_research_data)
                                 if plan:
                                     st.session_state.pending_plan = plan
 
@@ -2687,7 +2712,7 @@ with tabs[3]:  # STRATEGIST
                         with st.chat_message("assistant"):
                             chunks = []
                             ph = st.empty()
-                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=st.session_state.selected_product, recipient_research=recipient_research_data):
+                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=recommended_product_key, recipient_research=recipient_research_data):
                                 chunks.append(chunk)
                                 ph.markdown("".join(chunks) + "▌")
                             response = "".join(chunks)
