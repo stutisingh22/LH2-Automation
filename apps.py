@@ -1059,6 +1059,8 @@ with tabs[1]:  # COMPANIES
                 unsafe_allow_html=True)
         else:
             st.markdown(sh(f"{len(companies)} COMPANIES"), unsafe_allow_html=True)
+            from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+            _tracker_map = load_domain_to_platforms()
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
                 border = "border-left:3px solid var(--accent);" if is_sel else ""
@@ -1114,6 +1116,22 @@ with tabs[1]:  # COMPANIES
                                     st.session_state.timeline_company_id = comp["id"]
                                     st.session_state.timeline_contact_name = ct.get("name", "Contact")
                                     st.rerun()
+                        # Platform presence: from DB if saved; else from CSV for display (e.g. before first "Update from CSV")
+                        ed = comp.get("extra_data") or {}
+                        pp = ed.get("platform_presence") or {}
+                        if not pp:
+                            pp = get_presence_for_domain(comp.get("domain") or "", _tracker_map)
+                        msn = pp.get("msn", False)
+                        yahoo = pp.get("yahoo", False)
+                        newsbreak = pp.get("newsbreak", False)
+                        def _mark(present):
+                            return "✓" if present else "<span style='color:#dc2626;'>✗</span>"
+                        st.markdown(
+                            f"<span style='font-size:12px;color:var(--text-3);'>Platform presence: "
+                            f"MSN {_mark(msn)}  Yahoo {_mark(yahoo)}  NewsBreak {_mark(newsbreak)}"
+                            f"</span>",
+                            unsafe_allow_html=True,
+                        )
 
 
 # ════════════════════ INTELLIGENCE ════════════════════
@@ -1985,6 +2003,38 @@ with tabs[3]:  # STRATEGIST
                         st.session_state[linkedin_results_key] = _saved_list
                     if _raw_len != len(_saved_list) and _saved_list:
                         _persist_linkedin_results(_saved_list)
+                # Always ensure we have a list for the strategist contacts table (extraction or DB fallback)
+                if linkedin_results_key not in st.session_state:
+                    st.session_state[linkedin_results_key] = []
+
+                def _strategist_contacts_display_list(contacts_for_fallback=None, spocs_for_fallback=None):
+                    """Rows for the strategist contacts table: extraction results if any, else company contacts from DB (same columns)."""
+                    raw = st.session_state.get(linkedin_results_key) or []
+                    filtered = [r for r in raw if _linkedin_result_matches_company(r.get("company"), comp)]
+                    if filtered:
+                        return filtered, True  # from extraction
+                    # Fallback: company contacts from DB in same shape (Name, Role, Company, LinkedIn, Email, Phone, Status)
+                    company_name = (comp.get("domain") or comp.get("name") or "—").strip()
+                    contacts = contacts_for_fallback if contacts_for_fallback is not None else (get_contacts(cid) if cid else [])
+                    spocs = spocs_for_fallback if spocs_for_fallback is not None else (get_spoc_contacts_by_company(cid) if cid else [])
+                    spoc_by_contact_id = {}
+                    for s in (spocs or []):
+                        pid = s.get("spoc_contact_id")
+                        if pid and pid not in spoc_by_contact_id:
+                            spoc_by_contact_id[pid] = s
+                    rows = []
+                    for c in (contacts or []):
+                        s = spoc_by_contact_id.get(c.get("id"))
+                        rows.append({
+                            "name": (c.get("name") or "").strip() or "—",
+                            "role": (c.get("role") or "").strip() or (s.get("role") or "").strip() if s else (c.get("role") or "").strip() or "—",
+                            "company": company_name or "—",
+                            "linkedin_url": (c.get("linkedin") or "").strip() or ((s.get("linkedin_url") or "").strip() if s else "") or "—",
+                            "email": (c.get("email") or "").strip() or ((s.get("email") or "").strip() if s else "") or "—",
+                            "phone": (s.get("phone") or "").strip() if s else "—",
+                            "enrichment_status": "saved" if (c.get("email") or (s and s.get("email"))) else "—",
+                        })
+                    return rows, False
 
                 default_company = (comp.get("domain") or comp.get("name") or "")
                 # ── Look up people (chat): append to same table as Extract; table appears even without running extract ──
@@ -2042,10 +2092,29 @@ with tabs[3]:  # STRATEGIST
                         st.session_state[lookup_chat_key].append({"role": "assistant", "content": f"Added {len(_to_add)} contact(s) to the table below."})
                     st.rerun()
 
-                if linkedin_results_key in st.session_state:
+                # Always show the same clean contacts table (extraction list or DB fallback); same columns regardless of recipient
+                display_list, from_extraction = _strategist_contacts_display_list(contacts_for_fallback=contacts, spocs_for_fallback=spoc_contacts)
+                st.markdown(sh_small("Contacts table"), unsafe_allow_html=True)
+                _table_df = pd.DataFrame([
+                    {
+                        "Name": (x.get("name") or "").strip() or "—",
+                        "Role": (x.get("role") or "").strip() or "—",
+                        "Company": (x.get("company") or "").strip() or "—",
+                        "LinkedIn": (x.get("linkedin_url") or "").strip() or "—",
+                        "Email": (x.get("email") or "").strip() or "—",
+                        "Phone": (x.get("phone") or "").strip() or "—",
+                        "Status": (x.get("enrichment_status") or "").strip() or "—",
+                    }
+                    for x in display_list
+                ])
+                st.dataframe(_table_df, use_container_width=True, hide_index=True)
+                if not from_extraction and display_list:
+                    st.caption("Company contacts (from database). Use \"Extract contacts & find LinkedIn URLs\" above to pull from research.")
+                st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+
+                if from_extraction:
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
-
                     # Separation: Action tracking (SignalHire) remains LIVE for real-time status
                     # Check pending SignalHire enrichments and merge if completed
                     # This is NOT cached - always queries DB directly to show real-time pending/completed status
@@ -2091,7 +2160,7 @@ with tabs[3]:  # STRATEGIST
                         st.rerun()
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
-                    with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)})", expanded=True):
+                    with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)}) — add, recheck, add to company", expanded=True):
                         if is_advisor_strategist:
                             st.caption("Add to company saves under the selected **child** (this company).")
                         add_input_key = f"linkedin_add_input_{research_cache_key}"
@@ -2228,21 +2297,6 @@ with tabs[3]:  # STRATEGIST
                                     _persist_linkedin_results(new_list)
                                     st.success("Removed from list.")
                                     st.rerun()
-                        st.markdown(sh_small("Email & contacts table"), unsafe_allow_html=True)
-                        _table_df = pd.DataFrame([
-                            {
-                                "Name": (x.get("name") or "").strip() or "—",
-                                "Role": (x.get("role") or "").strip() or "—",
-                                "Company": (x.get("company") or "—").strip() or "—",
-                                "LinkedIn": (x.get("linkedin_url") or "").strip() or "—",
-                                "Email": (x.get("email") or "").strip() or "—",
-                                "Phone": (x.get("phone") or "").strip() or "—",
-                                "Status": (x.get("enrichment_status") or "").strip() or "—",
-                            }
-                            for x in filtered_results
-                        ])
-                        st.dataframe(_table_df, use_container_width=True, hide_index=True)
-                        st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
                         # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
                         _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
                         if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
