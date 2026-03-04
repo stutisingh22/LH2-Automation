@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Load from project root (directory containing this file) so env is found
 # regardless of where the app is run from (important for DATABASE_URL / Postgres)
 _config_dir = Path(__file__).resolve().parent
-load_dotenv(_config_dir / "keys.env")
+load_dotenv(_config_dir / "keys.env", override=True)  # keys.env wins over shell/env
 load_dotenv(_config_dir / ".env")
 
 # ── Database ──────────────────────────────────────────────────

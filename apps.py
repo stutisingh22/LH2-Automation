@@ -3343,10 +3343,10 @@ with tabs[8]:  # SPOC TRACKING
     st.caption("SPOCs added to company: pipeline status, messages sent, and next step.")
     
     # ── DATA HOISTING: Load all data at top via caching layer ──
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from services.ui_data_loader import load_all_companies
     
-    _today = datetime.now(timezone.utc).date()
+    _today = datetime.utcnow().date()
     all_comp_spoc = load_all_companies()  # Use cached loader
     
     # Build SPOC rows with all necessary data
