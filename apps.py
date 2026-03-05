@@ -78,7 +78,14 @@ from ai_engine import (
     advisor_chat, refine_email_draft,
 )
 from product_profiles import get_product_options
-from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
+from research import (
+    fetch_research_from_notion,
+    run_research,
+    research_command_ai,
+    split_research_into_sections,
+    get_next_section_number,
+    format_appended_section,
+)
 from linkedin_lookup import (
     extract_spoc_table_contacts,
     run_linkedin_lookup_for_contacts,
@@ -1157,7 +1164,8 @@ with tabs[2]:  # INTELLIGENCE
     from services.ui_data_loader import (
         load_company_profile,
         load_action_history,
-        force_refresh_research
+        force_refresh_research,
+        clear_ui_cache,
     )
     
     cid = st.session_state.sel_company
@@ -1550,15 +1558,19 @@ with tabs[2]:  # INTELLIGENCE
 
             if st.session_state.get("research_command_result_cid") == cache_key and st.session_state.get("research_command_result"):
                 cmd_result = st.session_state["research_command_result"]
-                with st.expander("AI result — Add to research or Dismiss", expanded=True):
-                    st.caption("This is only the new content for your query. Use **Add to research** to merge it into the full document and save.")
-                    st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
+                cmd_title = cmd_result.get("title", "Extended research") if isinstance(cmd_result, dict) else "Extended research"
+                cmd_content = cmd_result.get("content", cmd_result) if isinstance(cmd_result, dict) else (cmd_result or "")
+                with st.expander(f"{cmd_title} — Add to research or Dismiss", expanded=True):
+                    st.caption("Use **Add to research** to append this as the next numbered section (8., 9., …) and save.")
+                    st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_content[:25000]}{'…' if len(cmd_content) > 25000 else ''}</div>", unsafe_allow_html=True)
                     app_col1, app_col2 = st.columns([1, 3])
                     with app_col1:
-                        if st.button("Add to research", key=f"cmd_append_{cache_key}", use_container_width=True, help="Append this to the full research document and save to DB"):
+                        if st.button("Add to research", key=f"cmd_append_{cache_key}", use_container_width=True, help="Append as next numbered section (8., 9., …) and save to DB"):
                             current = (current_research_text or research_full_display or "").strip()
-                            append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
-                            merged = f"{current}\n\n{append_html}" if current else (append_html or current)
+                            plain_current = html_to_plain_text(current) if is_html_content(current) else current
+                            next_num = get_next_section_number(plain_current or "")
+                            new_block = format_appended_section(cmd_content, cmd_title, next_num)
+                            merged = f"{current}\n\n{new_block}" if current else new_block
                             if not (merged or "").strip():
                                 st.warning("No content to add.")
                             else:
@@ -1567,11 +1579,14 @@ with tabs[2]:  # INTELLIGENCE
                                     merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                if _intel_sid:
+                                    save_session_summary(_intel_sid, merged, msg_count=0)
+                                clear_ui_cache()
                                 st.session_state.auto_brief_text = None
                                 st.session_state.pop(wysiwyg_key, None)
                                 st.session_state.pop("research_command_result", None)
                                 st.session_state.pop("research_command_result_cid", None)
-                                st.toast("Added to research and saved. Full document updated.")
+                                st.toast(f"Added as section {next_num} and saved. Full document updated.")
                                 st.rerun()
                     with app_col2:
                         if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", use_container_width=True):

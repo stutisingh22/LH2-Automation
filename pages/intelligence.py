@@ -8,7 +8,14 @@ import streamlit as st
 from config import CONTACT_STATUS_COLORS, CONTACT_STATUS_LABELS, GOOGLE_SERVICE_ACCOUNT_JSON, normalize_contact_status
 from db_ops import get_company, get_contact, get_contacts, merge_company_extra_data, upsert_contact
 from notion_sync import create_notion_contact_page
-from research import fetch_research_from_notion, run_research, research_command_ai, split_research_into_sections
+from research import (
+    fetch_research_from_notion,
+    run_research,
+    research_command_ai,
+    split_research_into_sections,
+    get_next_section_number,
+    format_appended_section,
+)
 from ai_engine import (
     auto_brief,
     research_person_for_company,
@@ -236,12 +243,15 @@ def render():
 
                 if st.session_state.get("research_command_result_cid") == cid and st.session_state.get("research_command_result"):
                     cmd_result = st.session_state["research_command_result"]
-                    with st.expander("AI result — Replace or Append", expanded=True):
-                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_result[:25000]}{'…' if len(cmd_result) > 25000 else ''}</div>", unsafe_allow_html=True)
+                    cmd_title = cmd_result.get("title", "Extended research") if isinstance(cmd_result, dict) else "Extended research"
+                    cmd_content = cmd_result.get("content", cmd_result) if isinstance(cmd_result, dict) else (cmd_result or "")
+                    with st.expander(f"{cmd_title} — Replace or Append", expanded=True):
+                        st.caption("Use **Append to document** to add this as the next numbered section (8., 9., …).")
+                        st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_content[:25000]}{'…' if len(cmd_content) > 25000 else ''}</div>", unsafe_allow_html=True)
                     app_col1, app_col2, app_col3 = st.columns([1, 1, 2])
                     with app_col1:
                         if st.button("Replace document", key=f"cmd_replace_{cid}", use_container_width=True):
-                            to_save = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
+                            to_save = markdown_to_html(cmd_content) if cmd_content and not is_html_content(cmd_content) else (cmd_content or "")
                             merge_company_extra_data(cid, {"research_full": to_save, "research_full_updated_at": datetime.utcnow().isoformat()})
                             st.session_state.auto_brief_text = None
                             st.session_state.pop(wysiwyg_key, None)
@@ -252,14 +262,21 @@ def render():
                     with app_col2:
                         if st.button("Append to document", key=f"cmd_append_{cid}", use_container_width=True):
                             current = (current_research_text or research_full_display or "").strip()
-                            append_html = markdown_to_html(cmd_result) if cmd_result and not is_html_content(cmd_result) else (cmd_result or "")
-                            merged = f"{current}\n\n{append_html}" if current else (append_html or current)
+                            plain_current = html_to_plain_text(current) if is_html_content(current) else current
+                            next_num = get_next_section_number(plain_current or "")
+                            new_block = format_appended_section(cmd_content, cmd_title, next_num)
+                            merged = f"{current}\n\n{new_block}" if current else new_block
                             merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            try:
+                                from services.ui_data_loader import clear_ui_cache
+                                clear_ui_cache()
+                            except Exception:
+                                pass
                             st.session_state.auto_brief_text = None
                             st.session_state.pop(wysiwyg_key, None)
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
-                            st.success("Appended.")
+                            st.success(f"Appended as section {next_num}.")
                             st.rerun()
                     with app_col3:
                         if st.button("Dismiss", key=f"cmd_dismiss_{cid}", use_container_width=True):

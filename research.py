@@ -709,8 +709,39 @@ NOTE_SECTIONS = [
 ]
 
 
+def _split_extra_sections(body):
+    """
+    Split the last section body into content before '8.', '9.', etc. and extra (title, body) pairs.
+    Only numbers >= 8 are treated as user-appended sections; 6 and 7 are part of the template
+    (6-Final: Outreach & Strategic Wedge). Returns (first_part_text, [(title, body), ...]).
+    """
+    import re
+    if not (body or "").strip():
+        return "", []
+    lines = body.split("\n")
+    extra = []
+    current_title = None
+    current_body = []
+    first_part_lines = []
+    for line in lines:
+        m = re.match(r"^\s*(\d+)[.:]\s+(.+)$", line)
+        if m and int(m.group(1)) >= 8:
+            if current_title is not None:
+                extra.append((current_title, "\n".join(current_body).strip()))
+            current_title = m.group(2).strip()
+            current_body = []
+        else:
+            if current_title is not None:
+                current_body.append(line)
+            else:
+                first_part_lines.append(line)
+    if current_title is not None:
+        extra.append((current_title, "\n".join(current_body).strip()))
+    return "\n".join(first_part_lines).strip(), extra
+
+
 def _split_research(text):
-    """Split research text into 5 sections for Notion child pages."""
+    """Split research text into 5 fixed sections plus any 8., 9., ... user-appended sections for expanders."""
     import re
     lines = text.split("\n")
 
@@ -743,12 +774,17 @@ def _split_research(text):
     boundaries = sorted(set(boundaries), key=lambda x: x[0])
 
     if not boundaries:
-        # Fallback: split evenly
+        # Fallback: split evenly into 5, then split last chunk for 8., 9., ...
         chunk = len(text) // 5
-        return [
+        base = [
             (NOTE_SECTIONS[i][0], text[i * chunk:(i + 1) * chunk if i < 4 else len(text)])
             for i in range(5)
         ]
+        first_4, extra = _split_extra_sections(base[4][1])
+        if extra:
+            base[4] = (NOTE_SECTIONS[4][0], first_4 or "(No content for this section.)")
+            base.extend(extra)
+        return base
 
     note_bodies = [""] * len(NOTE_SECTIONS)
 
@@ -764,14 +800,41 @@ def _split_research(text):
         if not body.strip():
             note_bodies[i] = "(No content for this section.)"
 
-    return [(NOTE_SECTIONS[i][0], note_bodies[i]) for i in range(len(NOTE_SECTIONS))]
+    result = [(NOTE_SECTIONS[i][0], note_bodies[i]) for i in range(len(NOTE_SECTIONS))]
+    first_part_4, extra_sections = _split_extra_sections(note_bodies[4])
+    if extra_sections:
+        result[-1] = (NOTE_SECTIONS[4][0], first_part_4 or "(No content for this section.)")
+        result.extend(extra_sections)
+    return result
 
 
 def split_research_into_sections(text):
-    """Split full research text into 5 Notion-style sections. Returns list of (section_title, body)."""
+    """Split full research text into 5 Notion-style sections plus any 8., 9., ... user-appended sections. Returns list of (section_title, body)."""
     if not (text or "").strip():
         return [(NOTE_SECTIONS[i][0], "") for i in range(len(NOTE_SECTIONS))]
     return _split_research(text)
+
+
+def get_next_section_number(research_text):
+    """
+    Return the next section number (8, 9, ...) to use when appending extended research.
+    Sections 6 and 7 are reserved for the template (6-Final). Scans for existing "N." or "N:"
+    with N>=8 and returns max+1, or 8 if none.
+    """
+    import re
+    if not (research_text or "").strip():
+        return 8
+    max_n = 7
+    for m in re.finditer(r"(?m)^\s*(\d+)[.:]\s+", research_text):
+        n = int(m.group(1))
+        if n >= 8:
+            max_n = max(max_n, n)
+    return max_n + 1
+
+
+def format_appended_section(content, title, section_number):
+    """Format extended research for append: 'N. TITLE' then content so it becomes a new section and shows in expanders."""
+    return f"{section_number}. {title}\n\n{content.strip()}"
 
 
 # ══════════════════════════════════════════════════════════════
