@@ -1362,6 +1362,26 @@ def save_session_summary(sid, summary, msg_count=0):
         # Context manager auto-commits on exit
 
 
+def get_company_ids_with_session_summary():
+    """
+    Return set of company_id that have at least one session with non-empty strategic_summary.
+    Used so the Companies list can show "researched" when research lives in session (canonical) even if
+    company.extra_data['research_full'] is not set.
+    """
+    with db() as s:
+        rows = (
+            s.query(Session.company_id)
+            .filter(
+                Session.company_id.isnot(None),
+                Session.strategic_summary.isnot(None),
+                Session.strategic_summary != "",
+            )
+            .distinct()
+            .all()
+        )
+        return set(r[0] for r in rows if r[0] is not None)
+
+
 # ── Users ─────────────────────────────────────────────────────
 
 def get_all_users():

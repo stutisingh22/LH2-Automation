@@ -45,6 +45,14 @@ def normalize_linkedin_url(url: str) -> str:
     return urlunparse(cleaned)
 
 
+def text_search(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Public search helper. Run DuckDuckGo (or fallback backend) text search.
+    Returns list of {title, body, href}. Used by LinkedIn lookup and platform presence (MSN/Yahoo/NewsBreak).
+    """
+    return _ddg_search(query, max_results)
+
+
 def _ddg_search(query: str, max_results: int = MAX_RESULTS_PER_QUERY) -> list[dict]:
     """
     Run DuckDuckGo (or fallback backend) text search. Returns list of {title, body, href}.

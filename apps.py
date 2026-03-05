@@ -50,6 +50,7 @@ from db_ops import (
     get_contacts, get_contact, update_contact_status, update_contact,
     delete_spoc_contact,
     get_or_create_session, get_session, get_sessions_for_company,
+    get_company_ids_with_session_summary,
     get_all_sessions, get_user_sessions, delete_session,
     save_message, load_messages, get_message_count,
     log_action, bulk_log_actions, get_session_actions, get_all_actions, get_user_actions,
@@ -1061,10 +1062,11 @@ with tabs[1]:  # COMPANIES
             st.markdown(sh(f"{len(companies)} COMPANIES"), unsafe_allow_html=True)
             from tracker_sources import load_domain_to_platforms, get_presence_for_domain
             _tracker_map = load_domain_to_platforms()
+            _company_ids_with_session_summary = get_company_ids_with_session_summary()
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
                 border = "border-left:3px solid var(--accent);" if is_sel else ""
-                has_research = bool(((comp.get("extra_data") or {}).get("research_full") or "").strip())
+                has_research = bool(((comp.get("extra_data") or {}).get("research_full") or "").strip()) or (comp["id"] in _company_ids_with_session_summary)
                 # Right side of card: one slot — "researched" (dark green) or visits/–
                 right_label = "researched" if has_research else fmt_v(comp.get("monthly_visits"))
                 right_style = "font-size:11px;font-weight:500;color:#166534;" if has_research else "font-size:12px;color:var(--text-2);"
@@ -1132,6 +1134,20 @@ with tabs[1]:  # COMPANIES
                             f"</span>",
                             unsafe_allow_html=True,
                         )
+                        search_results = ed.get("platform_presence_search_results") or {}
+                        if search_results:
+                            with st.expander("Search results", expanded=False):
+                                for plat in ("msn", "yahoo", "newsbreak"):
+                                    items = search_results.get(plat) or []
+                                    if items:
+                                        st.caption(plat.upper())
+                                        for r in items:
+                                            title = (r.get("title") or "").strip() or "—"
+                                            href = (r.get("href") or "").strip()
+                                            if href:
+                                                st.markdown(f"- [{title[:80]}{'…' if len(title) > 80 else ''}]({href})")
+                                            else:
+                                                st.markdown(f"- {title[:80]}{'…' if len(title) > 80 else ''}")
 
 
 # ════════════════════ INTELLIGENCE ════════════════════
@@ -2161,8 +2177,7 @@ with tabs[3]:  # STRATEGIST
                     results_list = st.session_state[linkedin_results_key]
                     filtered_results = [r for r in results_list if _linkedin_result_matches_company(r.get("company"), comp)]
                     with st.expander(f"Contacts with LinkedIn URLs ({len(filtered_results)}) — add, recheck, add to company", expanded=True):
-                        if is_advisor_strategist:
-                            st.caption("Add to company saves under the selected **child** (this company).")
+                        st.caption("Add to company adds contacts to **this company only** (not under any SPOC). Use the block below to get email via SignalHire for each added contact.")
                         add_input_key = f"linkedin_add_input_{research_cache_key}"
                         add_val = st.text_input(
                             "Add or recheck",
@@ -2278,17 +2293,18 @@ with tabs[3]:  # STRATEGIST
                             with row_col3:
                                 if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
                                     new_contact_id = upsert_contact(cid, name, role=role or None, linkedin=url or None)
-                                    upsert_spoc_contact(
-                                        cid, ctid, name,
-                                        role=role or None,
-                                        email=(r.get("email") or "").strip() or None,
-                                        linkedin_url=url or None,
-                                        phone=(r.get("phone") or "").strip() or None,
-                                    )
                                     if new_contact_id:
-                                        select_contact(cid, new_contact_id)
-                                        st.session_state.current_tab = "STRATEGIST"
-                                    st.success(f"Added **{name}** to company (and under this SPOC). Select them in TO (recipient) if not shown.")
+                                        added_key = "strategist_added_for_signalhire"
+                                        added_list = st.session_state.get(added_key, [])
+                                        added_list.append({
+                                            "company_id": cid,
+                                            "contact_id": new_contact_id,
+                                            "name": name,
+                                            "role": role or "",
+                                            "linkedin_url": url or "",
+                                        })
+                                        st.session_state[added_key] = added_list
+                                    st.success(f"Added **{name}** to company. Use the block below to get email (SignalHire) for this contact.")
                                     st.rerun()
                             with row_col4:
                                 if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
@@ -2331,6 +2347,83 @@ with tabs[3]:  # STRATEGIST
                                 st.success(f"Enrichment run for {len(_with_url)} contact(s). Refresh in a moment if any are pending (callback).")
                                 st.rerun()
                         st.caption("On localhost: run `python signalhire_callback_server.py` and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
+
+                        # ── Added to company: dedicated SignalHire block per contact ──
+                        added_key = "strategist_added_for_signalhire"
+                        added_list = st.session_state.get(added_key, [])
+                        added_for_company = [a for a in added_list if a.get("company_id") == cid]
+                        if added_for_company:
+                            st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+                            st.markdown(sh_small("Added to company — get email (SignalHire) for each"), unsafe_allow_html=True)
+                            _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and (SIGNALHIRE_CALLBACK_BASE_URL or "").strip().startswith("http")) else None
+                            for _aidx, _a in enumerate(added_for_company):
+                                _req_id = _a.get("enrichment_request_id")
+                                if _req_id:
+                                    _er = get_enrichment_by_request_id(_req_id)
+                                    if _er and _er.get("status") == "completed" and _er.get("result_json"):
+                                        _res = _er["result_json"]
+                                        _e = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                        _p = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                        update_contact(_a["contact_id"], email=_e or None, extra_data={"enrichment": {"source": "SignalHire", "enriched_at": datetime.utcnow().isoformat()}})
+                                        _new_list = list(st.session_state.get(linkedin_results_key, []))
+                                        for _ri, _row in enumerate(_new_list):
+                                            if (_row.get("name") or "").strip() == (_a.get("name") or "").strip():
+                                                _new_list[_ri] = {**_row, "email": _e, "phone": _p, "enrichment_status": "completed"}
+                                                break
+                                        st.session_state[linkedin_results_key] = _new_list
+                                        _persist_linkedin_results(_new_list)
+                                        _new_added = [x for x in added_list if x.get("contact_id") != _a.get("contact_id")]
+                                        st.session_state[added_key] = _new_added
+                                        st.rerun()
+                                _name_d = _a.get("name") or "—"
+                                _url_d = (_a.get("linkedin_url") or "").strip()
+                                _blk_col1, _blk_col2 = st.columns([3, 1])
+                                with _blk_col1:
+                                    st.markdown(
+                                        f"<div class='c' style='padding:10px 14px;margin-bottom:6px;'>"
+                                        f"<div style='font-weight:500;'>{_name_d}</div>"
+                                        f"<div style='font-size:12px;color:var(--text-2);'>{_a.get('role') or '—'}</div>"
+                                        f"<div style='font-size:11px;'>{'<a href=\"' + _url_d + '\" target=\"_blank\">LinkedIn</a>' if _url_d else '—'}</div></div>",
+                                        unsafe_allow_html=True)
+                                with _blk_col2:
+                                    if _url_d:
+                                        if _a.get("enrichment_request_id"):
+                                            st.caption("Pending… refresh in a moment.")
+                                        elif st.button("📧 Get email (SignalHire)", key=f"added_signalhire_{cid}_{_a['contact_id']}_{_aidx}", use_container_width=True, help="Fetch email/phone for this contact"):
+                                            _rec_id, _req_id, _status = request_enrichment(_url_d, user["id"], callback_url=_callback_url)
+                                            if _status == "completed" and _rec_id:
+                                                try:
+                                                    _er = get_enrichment_result(_rec_id)
+                                                    if _er and _er.get("result_json"):
+                                                        _res = _er["result_json"]
+                                                        _e = (_res.get("emails") or [{}])[0].get("value", "") if _res.get("emails") else ""
+                                                        _p = (_res.get("phones") or [{}])[0].get("value", "") if _res.get("phones") else ""
+                                                        update_contact(_a["contact_id"], email=_e or None, extra_data={"enrichment": {"source": "SignalHire", "enriched_at": datetime.utcnow().isoformat()}})
+                                                        _new_list = list(st.session_state.get(linkedin_results_key, []))
+                                                        for _ri, _row in enumerate(_new_list):
+                                                            if (_row.get("name") or "").strip() == (_a.get("name") or "").strip():
+                                                                _new_list[_ri] = {**_row, "email": _e, "phone": _p, "enrichment_status": "completed"}
+                                                                break
+                                                        st.session_state[linkedin_results_key] = _new_list
+                                                        _persist_linkedin_results(_new_list)
+                                                        _new_added = [x for x in added_list if x.get("contact_id") != _a.get("contact_id")]
+                                                        st.session_state[added_key] = _new_added
+                                                        st.success("Email/phone updated. Contact remains in the table above.")
+                                                        st.rerun()
+                                                except Exception:
+                                                    pass
+                                            elif _status == "pending" and _req_id:
+                                                _new_added = []
+                                                for x in added_list:
+                                                    if x.get("contact_id") == _a.get("contact_id"):
+                                                        x = {**x, "enrichment_request_id": _req_id}
+                                                    _new_added.append(x)
+                                                st.session_state[added_key] = _new_added
+                                                st.info("Enrichment requested; refresh in a moment for results.")
+                                                st.rerun()
+                                            else:
+                                                st.warning("Enrichment failed or no result.")
+
                     clear_col, save_col = st.columns(2)
                     with clear_col:
                         if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
@@ -2338,7 +2431,7 @@ with tabs[3]:  # STRATEGIST
                             _persist_linkedin_results([])
                             st.rerun()
                     with save_col:
-                        if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Save every contact in the list to the DB, tagged under the current SPOC"):
+                        if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Optionally save every contact in the list under the current SPOC (separate from Add to company)."):
                             for r in results_list:
                                 nm = (r.get("name") or "").strip()
                                 if not nm:
