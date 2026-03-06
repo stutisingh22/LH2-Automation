@@ -1048,6 +1048,42 @@ with tabs[1]:  # COMPANIES
 
         companies = search_companies(sq) if sq else get_all_companies()
 
+        # Filter by platform presence (multi-select: show companies with presence on ALL selected platforms)
+        from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+        _tracker_map = load_domain_to_platforms()
+
+        _platform_labels = ["MSN", "Yahoo", "NewsBreak"]
+        _label_to_key = {"MSN": "msn", "Yahoo": "yahoo", "NewsBreak": "newsbreak"}
+
+        # Prefer a small icon + dropdown (popover). Fall back gracefully if Streamlit lacks popover().
+        _selected_labels = []
+        if hasattr(st, "popover"):
+            with st.popover("🔽", help="Filter companies by platform presence"):
+                _selected_labels = st.multiselect(
+                    "Platform presence",
+                    options=_platform_labels,
+                    default=st.session_state.get("companies_platform_filter", []),
+                    key="companies_platform_filter",
+                )
+        else:
+            # Fallback (older Streamlit): keep functionality available.
+            with st.expander("🔽", expanded=False):
+                _selected_labels = st.multiselect(
+                    "Platform presence",
+                    options=_platform_labels,
+                    default=st.session_state.get("companies_platform_filter", []),
+                    key="companies_platform_filter",
+                )
+
+        _selected_platforms = [_label_to_key[x] for x in (_selected_labels or []) if x in _label_to_key]
+        if _selected_platforms:
+            def _has_all_presence(c):
+                pp = (c.get("extra_data") or {}).get("platform_presence") or {}
+                if not pp:
+                    pp = get_presence_for_domain(c.get("domain") or "", _tracker_map)
+                return all(pp.get(plat, False) for plat in _selected_platforms)
+            companies = [c for c in companies if _has_all_presence(c)]
+
         if sq and companies:
             sel_cid = st.selectbox(
                 "Matching companies",
@@ -1067,8 +1103,6 @@ with tabs[1]:  # COMPANIES
                 unsafe_allow_html=True)
         else:
             st.markdown(sh(f"{len(companies)} COMPANIES"), unsafe_allow_html=True)
-            from tracker_sources import load_domain_to_platforms, get_presence_for_domain
-            _tracker_map = load_domain_to_platforms()
             _company_ids_with_session_summary = get_company_ids_with_session_summary()
             for comp in companies:
                 is_sel = st.session_state.sel_company == comp["id"]
