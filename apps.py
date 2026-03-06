@@ -1943,12 +1943,21 @@ with tabs[3]:  # STRATEGIST
                         key="to_sel",
                     )
                     if to_id != ctid:
-                        if to_id is not None:
-                            select_contact(cid, to_id)
+                        # If current session is company-level (research at company, no contact), only update
+                        # the selected recipient for display; keep session and chat unchanged. Emails/content
+                        # stay in recipient context via sel_contact.
+                        sid = st.session_state.get("session_id")
+                        sess = get_session(sid) if sid else None
+                        is_company_level_session = bool(sess and sess.get("contact_id") is None)
+                        if is_company_level_session:
+                            st.session_state.sel_contact = to_id
                         else:
-                            st.session_state.sel_contact = None
-                            st.session_state.session_id = get_or_create_session(cid, None, user["id"])
-                            st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
+                            if to_id is not None:
+                                select_contact(cid, to_id)
+                            else:
+                                st.session_state.sel_contact = None
+                                st.session_state.session_id = get_or_create_session(cid, None, user["id"])
+                                st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
                         st.rerun()
 
                 with sel3:
