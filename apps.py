@@ -502,14 +502,6 @@ def _render_ai_refinement(step, seq_id, channel="email"):
             selected_text = (raw if isinstance(raw, str) else str(raw)) if raw else original
     preview_text = selected_text or current_text or original
     current_version_num = len(revisions_list) + 1
-    st.markdown(
-        f"<div style='font-size:11px;color:var(--text-3);margin-bottom:4px;'>"
-        f"{'Version %d (AI Revised)' % current_version_num if revisions_list else 'Version 1 (Original)'}</div>",
-        unsafe_allow_html=True)
-    st.markdown(
-        f"<div style='font-size:12px;background:#f8fafc;padding:10px 12px;border-radius:4px;border:1px solid #e2e8f0;"
-        f"white-space:pre-wrap;max-height:120px;overflow-y:auto;margin-bottom:10px;'>{(preview_text or '')[:400]}{'...' if len(preview_text or '') > 400 else ''}</div>",
-        unsafe_allow_html=True)
     instruction = st.text_input(
         "Instruction",
         placeholder=refine_placeholder,
