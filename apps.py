@@ -1489,7 +1489,7 @@ with tabs[2]:  # INTELLIGENCE
             with ref_col2:
                 if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", use_container_width=False, help="Delete deep research (DB + session); Run deep research will be available again"):
                     # Delete from sessions.strategic_summary (canonical) — clear all sessions for this company so "researched" goes back to –
-                    if not is_advisor and cid:
+                    if cid:
                         for _sess in get_sessions_for_company(cid):
                             save_session_summary(_sess["id"], "", msg_count=0)
                     elif _intel_sid:
@@ -1531,6 +1531,35 @@ with tabs[2]:  # INTELLIGENCE
                     st_iframe_event = None
                 plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
                 sections = split_research_into_sections(plain_for_split)
+
+                # Platform presence (MSN/Yahoo/NewsBreak) shown before Eligibility Verdict (display-only; does not change prompts or research text)
+                try:
+                    from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                    _pp_ed = (comp.get("extra_data") or {})
+                    platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                    if not platform_presence:
+                        _tracker_map = load_domain_to_platforms()
+                        platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                except Exception:
+                    platform_presence = {}
+                _presence_mark = (lambda present: "✓" if present else "<span style='color:#dc2626;'>✗</span>")
+                _has_any_platform_presence = bool(
+                    (platform_presence.get("msn") or False) or
+                    (platform_presence.get("yahoo") or False) or
+                    (platform_presence.get("newsbreak") or False)
+                )
+
+                # Verdict override rule (display-only):
+                # If verdict is Stop/Fail or Proceed with Caveats AND platform presence exists, we proceed (Syndication/Accelerate path).
+                import re as _re
+                _elig_line = ""
+                _m = _re.search(r"(?im)^\s*Eligibility\s*Verdict\s*:\s*(.+?)\s*$", plain_for_split or "")
+                if _m:
+                    _elig_line = (_m.group(1) or "").strip()
+                _elig_norm = _elig_line.lower()
+                _elig_is_caveats = ("caveat" in _elig_norm) or ("caveats" in _elig_norm)
+                _elig_is_stop_or_fail = ("stop" in _elig_norm) or ("fail" in _elig_norm)
+                _elig_override_proceed = bool(_has_any_platform_presence and (_elig_is_caveats or _elig_is_stop_or_fail))
                 research_editing_section_key = f"research_editing_section_{cache_key}"
                 research_section_edits_key = f"research_section_edits_{cache_key}"
                 research_section_pending_key = f"research_section_pending_{cache_key}"
@@ -1543,6 +1572,26 @@ with tabs[2]:  # INTELLIGENCE
                     section_html = research_display_to_editor_html(body) if body else ""
                     effective_content = (overrides.get(i) if i in overrides and overrides.get(i) is not None else section_html) or ""
                     with st.expander(sec_title, expanded=(i == 0)):
+                        if i == 0:
+                            msn = bool(platform_presence.get("msn", False))
+                            yahoo = bool(platform_presence.get("yahoo", False))
+                            newsbreak = bool(platform_presence.get("newsbreak", False))
+                            _override_div = (
+                                "<div style='font-size:12px;color:#166534;margin-top:6px;'><b>Proceed override:</b> "
+                                "Verdict is Stop/Fail or Proceed with Caveats, but platform distribution is available → proceed (Syndication/Accelerate path).</div>"
+                                if _elig_override_proceed else ""
+                            )
+                            st.markdown(
+                                "<div style='background:var(--accent-bg);border:1px solid #c7d2fe;border-radius:10px;"
+                                "padding:10px 12px;margin:2px 0 10px 0;'>"
+                                "<div style='font-size:12px;font-weight:600;margin-bottom:4px;'>Platform presence</div>"
+                                f"<div style='font-size:12px;color:var(--text-2);'>"
+                                f"MSN {_presence_mark(msn)}&nbsp;&nbsp; Yahoo {_presence_mark(yahoo)}&nbsp;&nbsp; NewsBreak {_presence_mark(newsbreak)}"
+                                "</div>"
+                                + _override_div
+                                + "</div>",
+                                unsafe_allow_html=True,
+                            )
                         if editing_section == i and st_iframe_event:
                             pending_key = f"{research_section_pending_key}_{i}"
                             editor_page = wysiwyg_editor_html_page(effective_content or section_html or "")
