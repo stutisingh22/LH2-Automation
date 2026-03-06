@@ -474,63 +474,308 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-You have web search capability. Use it aggressively for this section.
-Execute all 5 steps below before writing any output. Do not announce searches or describe your process — output only the verified findings.
-
 MANDATORY RESEARCH SEQUENCE
 
-STEP 1 — Ownership structure
-Search: "[target company / domain] owner founder CEO"
-Search: "[target company / domain] acquired parent company"
-Determine: Independent / PE-backed / subsidiary / network-affiliated.
-If parent company exists: identify where budget authority actually sits (local vs parent).
+You must complete all five steps before writing the final output.
 
-STEP 2 — Leadership from the company website
-Fetch the company's About, Team, Masthead, or Leadership pages directly.
-Extract every named executive with a title.
+STEP 1 — Ownership & Corporate Structure
 
-STEP 3 — LinkedIn employee search
-Search: "site:linkedin.com/in [target company / domain] CEO OR founder OR publisher OR VP OR editor"
-Pull names, titles, and tenure from results.
+Search:
 
-STEP 4 — Press and interviews
-Search: "[target company / domain] CEO interview OR founder OR publisher"
-Search: "[target company / domain] leadership OR executive team"
-Cross-check names against website findings.
+"[company] founder owner CEO"
 
-STEP 5 — Job postings (to infer missing roles)
-Search: "[target company / domain] jobs OR careers VP OR director OR head of"
-Use open roles to flag authority gaps.
+"[company] parent company acquisition"
+
+"[company] media group network owner"
+
+"[company] who owns [domain]"
+
+Determine:
+
+Independent company
+
+Private equity backed
+
+Subsidiary of a parent company
+
+Part of a media network / holding group
+
+If a parent company exists, identify:
+
+Parent company name
+
+Whether budget authority sits with the parent or the local entity
+
+Any shared executive leadership
+
+STEP 2 — Company Website Leadership
+
+Directly check the company’s official website pages:
+
+About
+
+Team
+
+Leadership
+
+Masthead
+
+Editorial Team
+
+Company
+
+Extract every named individual and their title.
+
+Record:
+
+Full name
+
+Exact title
+
+Any description of responsibilities
+
+STEP 3 — LinkedIn Executive Discovery
+
+Search:
+
+site:linkedin.com/in "[company name]" CEO
+site:linkedin.com/in "[company name]" founder
+site:linkedin.com/in "[company name]" publisher
+site:linkedin.com/in "[company name]" VP
+site:linkedin.com/in "[company name]" editor
+
+From results capture:
+
+Full name
+
+Title
+
+Company association
+
+Approximate tenure if visible
+
+Exclude outdated profiles where the person no longer works at the company.
+
+STEP 4 — Press Coverage & Interviews
+
+Search:
+
+"[company] CEO interview"
+
+"[company] founder interview"
+
+"[company] leadership team"
+
+"[company] publisher interview"
+
+"[company] executive team"
+
+Use press articles, interviews, or conference appearances to:
+
+Confirm leadership roles
+
+Identify additional executives
+
+Validate titles found earlier
+
+Cross-verify names against Steps 2 and 3.
+
+STEP 5 — Job Postings (Organizational Signals)
+
+Search:
+
+"[company] careers"
+
+"[company] jobs"
+
+"[company] hiring director"
+
+"[company] hiring VP"
+
+"[company] hiring head of"
+
+Use open roles to infer missing leadership functions, such as:
+
+Product
+
+Engineering
+
+Revenue
+
+Audience growth
+
+Data / analytics
+
+Editorial operations
+
+If leadership roles appear unfilled, flag them.
 
 AUTHORITY MAPPING
 
-After completing all 5 search steps, assign each verified person to one or more authority dimensions:
+After completing all research, classify individuals into three authority dimensions.
 
-- ECONOMIC: Controls budget, vendor decisions, technology spend. Must identify at least one.
-- EDITORIAL: Controls content strategy, publishing, distribution. Must identify at least one.
-- TECHNICAL: Controls CMS, ad stack, analytics, product/engineering. Must identify at least one.
+Each dimension must include at least one verified person whenever possible.
 
-Prioritization order (exhaust higher tiers before going lower):
-1. Founder / Co-Founder / Owner
-2. CEO / President / Publisher / GM
-3. COO / CFO / CTO / Chief Product Officer
-4. Chief Content Officer / Editor-in-Chief
-5. VP-level (Operations, Product, Revenue, Technology, Editorial, Audience)
-6. Director / Head-level (only if tiers 1–5 are insufficient)
+ECONOMIC AUTHORITY
 
-CHAMPION VS DECISION-MAKER
+Controls:
 
-For each authority dimension, flag:
-- DECISION-MAKER: Signs contracts, holds budget, approves vendors
-- CHAMPION: Feels the operational pain, likely internal advocate
+Budget
+
+Vendor selection
+
+Technology purchasing
+
+Strategic partnerships
+
+Typical titles:
+
+Founder
+
+Owner
+
+CEO
+
+President
+
+Publisher
+
+COO
+
+CFO
+
+CRO
+
+VP Revenue
+
+EDITORIAL AUTHORITY
+
+Controls:
+
+Content strategy
+
+Editorial direction
+
+Publishing decisions
+
+Audience development
+
+Typical titles:
+
+Editor-in-Chief
+
+Chief Content Officer
+
+Editorial Director
+
+VP Editorial
+
+Managing Editor
+
+TECHNICAL AUTHORITY
+
+Controls:
+
+CMS
+
+Ad stack
+
+Data infrastructure
+
+Engineering
+
+Product
+
+Typical titles:
+
+CTO
+
+Chief Product Officer
+
+VP Product
+
+VP Engineering
+
+Director of Technology
+
+PRIORITIZATION HIERARCHY
+
+Identify stakeholders using this order of importance:
+
+Founder / Co-Founder / Owner
+
+CEO / President / Publisher / GM
+
+COO / CFO / CTO / CPO
+
+Editor-in-Chief / Chief Content Officer
+
+VP-level leadership
+
+Director / Head roles (only if needed)
+
+You must return 5–6 high-leverage stakeholders whenever possible.
+
+If fewer exist, explain why.
+
+DECISION-MAKER VS CHAMPION
+
+For each individual identified, classify their role as:
+
+DECISION-MAKER
+
+Has authority to:
+
+approve budgets
+
+sign vendor contracts
+
+make strategic technology decisions
+
+CHAMPION
+
+Operational stakeholder who:
+
+experiences the pain point
+
+advocates internally
+
+influences decision-makers
+
+FINAL OUTPUT FORMAT
+
+Return findings using the following structure.
+
+Company Ownership
+
+Ownership type:
+
+Parent company (if applicable):
+
+Budget authority location:
+
+Leadership & Authority Map
+Name	Title	Authority Dimension	Decision Role	Evidence Source
+		Economic / Editorial / Technical	Decision-Maker / Champion	Website / LinkedIn / Press
+Key Observations
+
+Leadership structure summary
+
+Where purchasing authority likely sits
+
+Any leadership gaps inferred from job postings
 
 HARD RULES
 
-- Do not finalize output until all 5 search steps above are complete.
-- Do not invent names. Only use "Role identified — individual requires enrichment" if all 5 search steps have been executed and genuinely returned no verifiable individual for that role. This is a last resort, not a default.
-- If fewer than 5 people are found, explain why and list expected titles that likely hold authority.
-- Never reference CRM, Notion, or internal databases.
-- Always check parent/holding structure before concluding.
+Do not invent people.
+
+Do not stop after finding only 2–3 executives.
+
+Do not reference internal systems (CRM, Notion, databases).
+
+Always check parent ownership before concluding authority.
+
+Only output information verifiable from public sources.
 
 OUTPUT
 
