@@ -312,6 +312,15 @@ a:hover{text-decoration:underline!important}
 .spoc-card-next{font-size:12px!important;color:#475569!important;padding-top:6px}
 .spoc-card-overdue{font-size:12px!important;color:#b85450!important;padding-top:6px}
 .spoc-detail{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px 16px;margin:4px 0 14px 0}
+
+/* ── Deep research section WYSIWYG editor: force tall height so edit area + Save edit button are visible ── */
+.streamlit-expanderContent:has(iframe){min-height:85vh!important;height:85vh!important}
+.streamlit-expanderContent iframe{min-height:700px!important;height:75vh!important;display:block!important}
+.research-section-editor-outer+*{min-height:700px!important;height:75vh!important}
+.research-section-editor-outer+* iframe{min-height:700px!important;height:75vh!important;display:block!important}
+.streamlit-expanderContent div:has(>iframe){min-height:700px!important}
+.streamlit-expanderContent div:has(>iframe)>iframe{min-height:700px!important;height:75vh!important}
+iframe[src^="data:text/html"]{min-height:700px!important;height:75vh!important}
 </style>
 """, unsafe_allow_html=True)
 
@@ -465,19 +474,20 @@ def wysiwyg_editor_html_page(initial_html):
 <html><head><meta charset="utf-8">
 <style>
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 12px; background: #fff; color: #1a1a1a; font-size: 14px; line-height: 1.5; }
-  #ed { min-height: 320px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
+  html, body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 12px; background: #fff; color: #1a1a1a; font-size: 14px; line-height: 1.5; min-height: 85vh; height: 85vh; }
+  #ed { min-height: 60vh; max-height: 65vh; overflow-y: auto; padding: 12px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
   #ed:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
   #ed table { border-collapse: collapse; width: 100%%; margin: 8px 0; }
   #ed th, #ed td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
   #ed th { background: #f1f5f9; font-weight: 600; }
   #ed h1, #ed h2, #ed h3 { margin: 12px 0 6px; }
-  .done { margin-top: 12px; padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
-  .done:hover { background: #1d4ed8; }
+  .done, .save-edit { margin-top: 12px; padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 8px; }
+  .done:hover, .save-edit:hover { background: #1d4ed8; }
 </style></head>
 <body>
   <div id="ed" contenteditable="true"></div>
-  <button class="done" id="btn">Done editing</button>
+  <button class="save-edit" id="btn">Save edit</button>
+  <button class="done" id="btnDone">Done editing</button>
   <div id="p" data-c="%s" style="display:none"></div>
   <script>
     (function() {
@@ -493,11 +503,17 @@ def wysiwyg_editor_html_page(initial_html):
           document.getElementById("ed").innerHTML = dec;
         } else { document.getElementById("ed").innerHTML = "<p>(No content)</p>"; }
       } catch (e) { document.getElementById("ed").innerHTML = "<p>(No content)</p>"; }
-      document.getElementById("btn").onclick = function() {
+      function sendContent() {
         var html = document.getElementById("ed").innerHTML;
-        if (window.parent && window.parent !== window)
-          window.parent.postMessage(html, "*");
-      };
+        var target = window.parent && window.parent !== window ? window.parent : window;
+        try {
+          target.postMessage(html, "*");
+          setTimeout(function() { target.postMessage(html, "*"); }, 150);
+        } catch (e) {}
+      }
+      document.getElementById("btn").onclick = sendContent;
+      document.getElementById("btnDone").onclick = sendContent;
+      setInterval(sendContent, 3000);
     })();
   </script>
 </body></html>""" % payload

@@ -23,7 +23,7 @@ NOTION_TEXT_LIMIT = 1900
 NOTION_BATCH_LIMIT = 100
 
 # Research model — use the best available for deep analysis
-RESEARCH_MODEL = "claude-sonnet-4-5"
+RESEARCH_MODEL = "claude-sonnet-4-5-20250929"
 RESEARCH_MAX_TOKENS = 16000
 
 
@@ -363,7 +363,7 @@ def build_research_prompt(domain, context=""):
     """The full institutional-grade research prompt. Research is produced from scratch by Claude; no extraction from Notion."""
     return f"""{context}
 
-You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. Produce the full research from scratch — do not extract or use any existing research content from Notion or elsewhere. This research is produced by you (Claude) only, using only the target domain and the guidelines below. No external search APIs. Completely ignore any contact details or SPOC data stored in Notion. Use only your knowledge of publicly available information about the company and its stakeholders.
+You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. Produce the full research from scratch — do not extract or use any existing research content from Notion or elsewhere. You have web search capability; for Section 3 (Power Mapping) you MUST use it aggressively — never rely on training data alone for specific people. Completely ignore any contact details or SPOC data stored in Notion.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
 It must demonstrate analytical rigor, structural clarity, economic reasoning, and decisive judgment.
 This is not descriptive research.
@@ -411,6 +411,8 @@ No markdown bold (no ** or __).
 No emojis.
 No decorative commentary.
 No filler language.
+Do not include any meta-commentary about conducting research, running searches, or gathering information (e.g. no "I will search", "Let me search", "I have gathered", "Based on my research"). Output only the required section content.
+Exception: Section 3 (Power Mapping) is exempt from this rule in that web search tool calls will execute silently in the background. Do NOT output any text announcing or describing searches — simply execute them and output only the verified findings.
 Every section must contain substance. If a section would be speculative filler, say so in one sentence and move on.
 Keep bullet points tight. Each bullet should deliver one discrete insight. No run-on bullets.
 
@@ -472,187 +474,74 @@ Identify ONE structural signal that materially changes LH2's motion toward this 
 3. POWER MAPPING & STAKEHOLDER PRIORITIZATION
 ============================================================
 
-You are conducting stakeholder mapping using publicly available information only.
+You have web search capability. Use it aggressively for this section.
+Execute all 5 steps below before writing any output. Do not announce searches or describe your process — output only the verified findings.
 
-You must perform exhaustive research before producing output. Do not stop after identifying 2–3 executives. You must return 5–6 high-leverage stakeholders unless the company is demonstrably too small to support that many (in which case explicitly justify why).
+MANDATORY RESEARCH SEQUENCE
 
-You are strictly prohibited from referencing internal CRM systems, Notion, or private databases.
+STEP 1 — Ownership structure
+Search: "[target company / domain] owner founder CEO"
+Search: "[target company / domain] acquired parent company"
+Determine: Independent / PE-backed / subsidiary / network-affiliated.
+If parent company exists: identify where budget authority actually sits (local vs parent).
 
-Before moving to mid-level or secondary roles, you must prioritize identifying the highest-ranking authority figures first. Prioritization order:
+STEP 2 — Leadership from the company website
+Fetch the company's About, Team, Masthead, or Leadership pages directly.
+Extract every named executive with a title.
 
-Founder / Co-Founder
+STEP 3 — LinkedIn employee search
+Search: "site:linkedin.com/in [target company / domain] CEO OR founder OR publisher OR VP OR editor"
+Pull names, titles, and tenure from results.
 
-Owner / Principal
+STEP 4 — Press and interviews
+Search: "[target company / domain] CEO interview OR founder OR publisher"
+Search: "[target company / domain] leadership OR executive team"
+Cross-check names against website findings.
 
-CEO / President
+STEP 5 — Job postings (to infer missing roles)
+Search: "[target company / domain] jobs OR careers VP OR director OR head of"
+Use open roles to flag authority gaps.
 
-Publisher / GM
+AUTHORITY MAPPING
 
-COO / CFO
+After completing all 5 search steps, assign each verified person to one or more authority dimensions:
 
-CTO / Chief Product Officer
+- ECONOMIC: Controls budget, vendor decisions, technology spend. Must identify at least one.
+- EDITORIAL: Controls content strategy, publishing, distribution. Must identify at least one.
+- TECHNICAL: Controls CMS, ad stack, analytics, product/engineering. Must identify at least one.
 
-Chief Content Officer / Editor-in-Chief
+Prioritization order (exhaust higher tiers before going lower):
+1. Founder / Co-Founder / Owner
+2. CEO / President / Publisher / GM
+3. COO / CFO / CTO / Chief Product Officer
+4. Chief Content Officer / Editor-in-Chief
+5. VP-level (Operations, Product, Revenue, Technology, Editorial, Audience)
+6. Director / Head-level (only if tiers 1–5 are insufficient)
 
-VP-level leadership (Operations, Product, Audience, Revenue, Technology, Editorial)
+CHAMPION VS DECISION-MAKER
 
-Director / Head-level roles (only if higher authority roles are unavailable or insufficient)
+For each authority dimension, flag:
+- DECISION-MAKER: Signs contracts, holds budget, approves vendors
+- CHAMPION: Feels the operational pain, likely internal advocate
 
-You must exhaust all attempts to identify individuals in tiers 1–7 before expanding into Director or Head-level roles.
+HARD RULES
 
-Research Scope (Mandatory Sources)
+- Do not finalize output until all 5 search steps above are complete.
+- Do not invent names. Only use "Role identified — individual requires enrichment" if all 5 search steps have been executed and genuinely returned no verifiable individual for that role. This is a last resort, not a default.
+- If fewer than 5 people are found, explain why and list expected titles that likely hold authority.
+- Never reference CRM, Notion, or internal databases.
+- Always check parent/holding structure before concluding.
 
-You must systematically check the following:
-
-Company official website:
-
-About
-Team / Leadership
-Masthead
-Press
-Careers
-Footer / disclosures
-Investor Relations (if applicable)
-
-Company LinkedIn page:
-
-Employees tab
-Filter by seniority: Owner, Founder, CXO, VP, Director, Head
-Cross-check tenure and scope via individual LinkedIn profiles
-
-Press mentions, interviews, and bylines
-
-Podcast appearances
-
-Conference speaker listings
-
-Job postings (to infer missing leadership roles)
-
-Parent company / network / holding structure pages (if applicable)
-
-Organizational filings (if PE-backed or part of a larger group)
-
-You may not finalize output until all relevant public sources have been reviewed.
-
-Required Research Sequence
-
-Step 1: Establish ownership structure
-Determine whether the company is:
-
-Independent
-PE-backed
-Family-owned
-Network-affiliated
-Subsidiary
-
-If network-affiliated or PE-backed:
-
-Determine whether economic authority sits locally or at the parent level.
-
-Escalate stakeholder search to parent-level executives or operating partners where relevant.
-
-When a parent or holding company exists, you must prioritize identifying decision-makers at the level where economic authority truly resides (local vs parent). Do not assume decisions are local without verification.
-
-Step 2: Identify Economic Authority
-Identify who controls:
-
-Budget
-Vendor relationships
-Technology spend
-Strategic partnerships
-
-Acceptable titles include:
-Founder, CEO, Publisher, GM, COO, CFO, VP Operations, Operating Partner (PE), Network Executive
-
-You must identify at least one economic buyer.
-
-Economic authority roles must be prioritized over purely operational or advisory roles.
-
-Step 3: Identify Editorial Authority
-Identify who controls:
-
-Content strategy
-Publishing workflow
-Distribution decisions
-Editorial roadmap
-
-Acceptable titles include:
-Editor-in-Chief, Head of Content, Chief Content Officer, Managing Editor, Director of Audience, Founder (if lean organization)
-
-You must identify at least one editorial authority.
-
-If editorial leadership appears consolidated under a founder or CEO, explicitly note that overlap.
-
-Step 4: Identify Technical Authority
-Identify who manages:
-
-CMS
-Ad stack
-Analytics
-Product or engineering teams
-In-house tooling
-
-Acceptable titles include:
-CTO, VP Engineering, Head of Product, Director of Technology, Product Lead
-
-You must prioritize CTO or executive-level technical leadership before considering Director-level roles.
-
-If no technical authority is publicly visible:
-
-Explicitly flag the gap
-Infer responsibility overlap
-Mark as requiring enrichment
-
-You must identify at least one technical authority unless company size clearly prevents it.
-
-Step 5: Distinguish Champion vs Decision-Maker
-For each authority dimension:
-
-Identify who signs contracts (decision-maker)
-Identify who likely feels operational pain (champion)
-
-Decision-makers must be senior economic or executive authorities.
-
-Champions may be VP or Director-level roles with operational ownership.
-
-At least one stakeholder must be identified as an operational champion.
-
-Coverage Requirement
-
-Return 5–6 real individuals with verifiable public signals.
-
-Stakeholders must collectively cover:
-
-Economic authority
-Editorial authority
-Technical authority
-
-At least three stakeholders must be executive-level (Founder, Owner, CXO, Publisher, GM, or VP-level).
-
-Do not pad the output with low-leverage or irrelevant names.
-
-If fewer than 5 stakeholders are identified:
-
-Explicitly explain why (company size, lack of public data, founder-led structure)
-
-Identify expected role titles that likely hold authority
-
-Flag those roles as requiring enrichment
-
-Hard Constraints
-
-No speculative org chart assumptions.
-No generic filler.
-No internal data references.
-No stopping after identifying only top 2–3 executives.
-Must check parent or holding structure before concluding research.
-Must prioritize highest-ranking authority roles before mapping secondary stakeholders.
-
-If verification_checklist cannot be fully satisfied, continue research before producing final output.
+OUTPUT
 
 3A. Organizational Reality
 3B. Identified Power Center
-3C. Ranked Stakeholder Table — proper Markdown table (header, separator row, data rows). Each row must be a real SPOC: name, exact title, economic authority, why they matter, aligned to this company's context.
+3C. Ranked Stakeholder Table — output exactly this header and separator, then one data row per stakeholder:
+
+| Name | Title | Authority | Role Type | Source | Outreach Angle |
+|------|-------|-----------|-----------|--------|----------------|
+
+The separator row must have exactly 6 dash-cells matching the 6 header columns above. Do not add, remove, or rename columns.
 3D. Contact Logic
 
 ============================================================
@@ -841,12 +730,64 @@ def format_appended_section(content, title, section_number):
 # RUN RESEARCH (streaming with progress)
 # ══════════════════════════════════════════════════════════════
 
+# Prefixes that indicate Claude is narrating its search process rather than
+# outputting research content. These are filtered from the frontend stream.
+_SEARCH_NOISE_PREFIXES = (
+    "i'll search",
+    "i will search",
+    "let me search",
+    "searching for",
+    "i'm searching",
+    "i am searching",
+    "i'll look",
+    "i will look",
+    "let me look",
+    "looking up",
+    "i'll now",
+    "i will now",
+    "let me now",
+    "i'll check",
+    "i will check",
+    "let me check",
+    "checking ",
+    "i'll fetch",
+    "i will fetch",
+    "let me fetch",
+    "fetching ",
+    "i'll gather",
+    "i will gather",
+    "based on my research",
+    "i have gathered",
+    "i've gathered",
+    "i found that",
+    "i've found",
+    "i have found",
+    "my research shows",
+    "my search shows",
+    "according to my research",
+    "now i'll",
+    "now i will",
+    "next, i'll",
+    "next, i will",
+    "first, i'll",
+    "first, i will",
+)
+
+
+def _is_search_noise(text):
+    """Return True if a streamed text chunk looks like search process narration."""
+    lowered = text.strip().lower()
+    return any(lowered.startswith(prefix) for prefix in _SEARCH_NOISE_PREFIXES)
+
+
 def run_research(domain, context="", progress_callback=None):
     """
     Run the full research prompt against Claude.
     Returns the research text, or None on failure.
 
     progress_callback(chars_received, elapsed_seconds) is called periodically.
+    Search process narration is filtered from the stream so it never reaches
+    the frontend or the final output.
     """
     if not ANTHROPIC_API_KEY:
         return None
@@ -863,18 +804,46 @@ def run_research(domain, context="", progress_callback=None):
             start = time.time()
             collected = []
             chars = 0
+            # Buffer for partial lines — held until newline so we can check
+            # whether the line is search noise before forwarding it.
+            line_buffer = []
 
             with stream_slot():
                 with client.messages.stream(
                     model=RESEARCH_MODEL,
                     max_tokens=RESEARCH_MAX_TOKENS,
                     messages=[{"role": "user", "content": prompt}],
+                    tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 ) as stream:
                     for text in stream.text_stream:
-                        collected.append(text)
-                        chars += len(text)
-                        if progress_callback and chars % 500 < len(text):
-                            progress_callback(chars, time.time() - start)
+                        line_buffer.append(text)
+
+                        # When we hit a newline, flush the buffer as one line
+                        if "\n" in text:
+                            buffered = "".join(line_buffer)
+                            line_buffer = []
+
+                            # Split on newlines, filter noise lines
+                            lines = buffered.split("\n")
+                            clean_lines = []
+                            for line in lines:
+                                if _is_search_noise(line):
+                                    log.debug("[%s] Filtered search noise: %r", domain, line[:80])
+                                else:
+                                    clean_lines.append(line)
+
+                            clean_text = "\n".join(clean_lines)
+                            if clean_text:
+                                collected.append(clean_text)
+                                chars += len(clean_text)
+                                if progress_callback and chars % 500 < len(clean_text):
+                                    progress_callback(chars, time.time() - start)
+
+                    # Flush any remaining buffer at end of stream
+                    if line_buffer:
+                        remaining = "".join(line_buffer)
+                        if not _is_search_noise(remaining):
+                            collected.append(remaining)
 
                     result = "".join(collected)
                     elapsed = time.time() - start

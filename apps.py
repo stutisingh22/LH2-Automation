@@ -1454,8 +1454,11 @@ with tabs[2]:  # INTELLIGENCE
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             with ref_col2:
                 if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", use_container_width=False, help="Delete deep research (DB + session); Run deep research will be available again"):
-                    # Delete from sessions.strategic_summary (canonical)
-                    if _intel_sid:
+                    # Delete from sessions.strategic_summary (canonical) — clear all sessions for this company so "researched" goes back to –
+                    if not is_advisor and cid:
+                        for _sess in get_sessions_for_company(cid):
+                            save_session_summary(_sess["id"], "", msg_count=0)
+                    elif _intel_sid:
                         save_session_summary(_intel_sid, "", msg_count=0)
                     
                     # Delete from company.extra_data (backward compatibility)
@@ -1488,30 +1491,87 @@ with tabs[2]:  # INTELLIGENCE
                 current_research_text = (st.session_state.get(wysiwyg_key) or editor_html or "").strip() or research_full_display
                 st.caption("Edit above, then click **Done editing** in the frame. Use **Save** below to write to DB and Drive.")
             else:
+                try:
+                    from streamlit_iframe_event import st_iframe_event
+                except Exception:
+                    st_iframe_event = None
                 plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
                 sections = split_research_into_sections(plain_for_split)
+                research_editing_section_key = f"research_editing_section_{cache_key}"
+                research_section_edits_key = f"research_section_edits_{cache_key}"
+                research_section_pending_key = f"research_section_pending_{cache_key}"
+                if research_section_edits_key not in st.session_state:
+                    st.session_state[research_section_edits_key] = {}
+                overrides = st.session_state.get(research_section_edits_key, {})
+                editing_section = st.session_state.get(research_editing_section_key)
                 section_edits = []
                 for i, (sec_title, body) in enumerate(sections):
                     section_html = research_display_to_editor_html(body) if body else ""
+                    effective_content = (overrides.get(i) if i in overrides and overrides.get(i) is not None else section_html) or ""
                     with st.expander(sec_title, expanded=(i == 0)):
-                        st.markdown("<div class='research-doc-view'>" + (section_html or "(No content)") + "</div>", unsafe_allow_html=True)
-                        with st.expander("Edit as HTML", expanded=False):
-                            edited = st.text_area(
-                                "HTML",
-                                value=section_html or "",
-                                height=min(220, 120 + (section_html or "").count("\n") * 12),
-                                key=f"research_sec_{cache_key}_{i}",
-                                label_visibility="collapsed",
-                                placeholder="<p>Edit HTML for this section.</p>",
-                            )
-                        section_edits.append((edited or "").strip() or section_html or "")
+                        if editing_section == i and st_iframe_event:
+                            pending_key = f"{research_section_pending_key}_{i}"
+                            editor_page = wysiwyg_editor_html_page(effective_content or section_html or "")
+                            import urllib.parse
+                            _data_url = "data:text/html;charset=utf-8," + urllib.parse.quote(editor_page)
+                            st.markdown('<div class="research-section-editor-outer" style="height:0;overflow:visible;margin:0;padding:0;"></div>', unsafe_allow_html=True)
+                            event_value = st_iframe_event(_data_url, key=f"research_sec_editor_{cache_key}_{i}", default_width="100%")
+                            if event_value is not None:
+                                _edited = event_value
+                                if isinstance(event_value, dict):
+                                    _edited = event_value.get("value") or event_value.get("html") or ""
+                                elif isinstance(event_value, str) and event_value.strip().startswith("{"):
+                                    try:
+                                        import json
+                                        _parsed = json.loads(event_value)
+                                        _edited = (_parsed.get("value") or _parsed.get("html") or "") if isinstance(_parsed, dict) else event_value
+                                    except Exception:
+                                        _edited = event_value
+                                if not isinstance(_edited, str):
+                                    _edited = str(_edited) if _edited else ""
+                                _edited = (_edited or "").strip() or section_html or ""
+                                st.session_state[pending_key] = _edited
+                                _new_overrides = dict(st.session_state.get(research_section_edits_key, {}))
+                                _new_overrides[i] = _edited
+                                st.session_state[research_section_edits_key] = _new_overrides
+                                st.session_state[research_editing_section_key] = None
+                                st.session_state.pop(pending_key, None)
+                                clear_ui_cache()
+                                st.rerun()
+                            _pending = st.session_state.get(pending_key)
+                            if st.button("Save edit", key=f"research_sec_save_btn_{cache_key}_{i}", type="primary", use_container_width=True):
+                                _to_apply = (_pending or effective_content or section_html or "").strip() or section_html or ""
+                                _new_overrides = dict(st.session_state.get(research_section_edits_key, {}))
+                                _new_overrides[i] = _to_apply
+                                st.session_state[research_section_edits_key] = _new_overrides
+                                st.session_state[research_editing_section_key] = None
+                                st.session_state.pop(pending_key, None)
+                                clear_ui_cache()
+                                st.rerun()
+                            st.caption("Edit in the frame above (same format, tables). Click **Save edit** here when done to return to the normal view.")
+                        elif editing_section == i:
+                            st.caption("Edit the section HTML below, then click **Apply edit** to save.")
+                            with st.form(key=f"research_sec_edit_{cache_key}_{i}"):
+                                _edit_html = st.text_area("Section HTML", value=effective_content or section_html or "", height=500, key=f"research_sec_ta_{cache_key}_{i}", label_visibility="collapsed")
+                                if st.form_submit_button("Apply edit"):
+                                    _apply = (_edit_html or "").strip() or section_html or ""
+                                    _new_overrides = dict(st.session_state.get(research_section_edits_key, {}))
+                                    _new_overrides[i] = _apply
+                                    st.session_state[research_section_edits_key] = _new_overrides
+                                    st.session_state[research_editing_section_key] = None
+                                    clear_ui_cache()
+                                    st.rerun()
+                        else:
+                            st.markdown("<div class='research-doc-view'>" + (effective_content or "(No content)") + "</div>", unsafe_allow_html=True)
+                            if st.button("✏️ Edit", key=f"research_edit_sec_{cache_key}_{i}", help="Edit this section (keeps format, tables)"):
+                                st.session_state[research_editing_section_key] = i
+                                st.rerun()
+                    section_edits.append((effective_content or "").strip() or section_html or "")
                 current_research_text = "\n\n".join(
                     f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
                 ).strip() if section_edits else research_full_display
             if st.button("💾 Save", key=f"save_research_all_{cache_key}", use_container_width=True, help="Save research to DB and Drive (proper format with tables)"):
-                _research = (research_full_display or "").strip()
-                if not _research:
-                    _research = (current_research_text or "").strip()
+                _research = (current_research_text or research_full_display or "").strip()
                 if not _research:
                     st.warning("No research to save.")
                 else:
@@ -1524,6 +1584,8 @@ with tabs[2]:  # INTELLIGENCE
                     fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _content_for_drive or _research)
                     st.session_state.auto_brief_text = None
                     st.session_state.pop(wysiwyg_key, None)
+                    st.session_state.pop(f"research_editing_section_{cache_key}", None)
+                    st.session_state.pop(f"research_section_edits_{cache_key}", None)
                     st.session_state[_fresh_key] = _research
                     if fid:
                         st.toast("Research saved to DB and Drive (with tables and formatting).")
