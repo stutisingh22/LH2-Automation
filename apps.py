@@ -2211,6 +2211,7 @@ with tabs[3]:  # STRATEGIST
                     for c in (contacts or []):
                         s = spoc_by_contact_id.get(c.get("id"))
                         rows.append({
+                            "id": c.get("id"),
                             "name": (c.get("name") or "").strip() or "—",
                             "role": (c.get("role") or "").strip() or (s.get("role") or "").strip() if s else (c.get("role") or "").strip() or "—",
                             "company": company_name or "—",
@@ -2279,7 +2280,9 @@ with tabs[3]:  # STRATEGIST
 
                 # Always show the same clean contacts table (extraction list or DB fallback); same columns regardless of recipient
                 display_list, from_extraction = _strategist_contacts_display_list(contacts_for_fallback=contacts, spocs_for_fallback=spoc_contacts)
-                st.markdown(sh_small("Contacts table"), unsafe_allow_html=True)
+                _contacts_edit_key = f"strategist_contacts_edit_mode_{research_cache_key}"
+                if _contacts_edit_key not in st.session_state:
+                    st.session_state[_contacts_edit_key] = False
                 _table_df = pd.DataFrame([
                     {
                         "Name": (x.get("name") or "").strip() or "—",
@@ -2292,7 +2295,57 @@ with tabs[3]:  # STRATEGIST
                     }
                     for x in display_list
                 ])
-                st.dataframe(_table_df, use_container_width=True, hide_index=True)
+                contact_ids = [x.get("id") for x in display_list] if not from_extraction else []
+                # Toolbar: title + pencil (edit) icon; edit only when showing DB contacts
+                _toolbar_col1, _toolbar_col2 = st.columns([6, 1])
+                with _toolbar_col1:
+                    st.markdown(sh_small("Contacts table"), unsafe_allow_html=True)
+                with _toolbar_col2:
+                    if not from_extraction:
+                        _edit_label = "Done" if st.session_state[_contacts_edit_key] else "✏️"
+                        if st.button(_edit_label, key=f"contacts_edit_btn_{research_cache_key}", help="Edit table (add rows, edit cells). Changes save automatically."):
+                            st.session_state[_contacts_edit_key] = not st.session_state[_contacts_edit_key]
+                            st.rerun()
+                if st.session_state[_contacts_edit_key] and not from_extraction and cid:
+                    _editor_key = f"strategist_contacts_editor_{research_cache_key}"
+                    _edited_df = st.data_editor(
+                        _table_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key=_editor_key,
+                        column_config={
+                            "Name": st.column_config.TextColumn("Name", width="medium", required=True),
+                            "Role": st.column_config.TextColumn("Role", width="medium"),
+                            "Company": st.column_config.TextColumn("Company", width="medium"),
+                            "LinkedIn": st.column_config.TextColumn("LinkedIn", width="large"),
+                            "Email": st.column_config.TextColumn("Email", width="medium"),
+                            "Phone": st.column_config.TextColumn("Phone", width="small"),
+                            "Status": st.column_config.TextColumn("Status", width="small"),
+                        },
+                    )
+                    if _edited_df is not None and not _edited_df.equals(_table_df):
+                        for i in range(len(_edited_df)):
+                            row = _edited_df.iloc[i]
+                            _nm = (row.get("Name") or "").strip() or ""
+                            if not _nm:
+                                continue
+                            _role = (row.get("Role") or "").strip() or None
+                            _link = (row.get("LinkedIn") or "").strip() or None
+                            if _link == "—":
+                                _link = None
+                            _em = (row.get("Email") or "").strip() or None
+                            if _em == "—":
+                                _em = None
+                            if i < len(contact_ids) and contact_ids[i]:
+                                update_contact(contact_ids[i], name=_nm, role=_role, email=_em, linkedin=_link)
+                            else:
+                                upsert_contact(cid, name=_nm, role=_role, email=_em, linkedin=_link)
+                        clear_ui_cache()
+                        st.toast("Contacts saved.")
+                        st.rerun()
+                else:
+                    st.dataframe(_table_df, use_container_width=True, hide_index=True)
                 if not from_extraction and display_list:
                     st.caption("Company contacts (from database). Use \"Extract contacts & find LinkedIn URLs\" above to pull from research.")
                 st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
