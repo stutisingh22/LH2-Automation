@@ -1108,8 +1108,7 @@ with tabs[1]:  # COMPANIES
                     st.markdown(
                         f"<div class='c' style='padding:10px 14px;{border}'>"
                         f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                        f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span>"
-                        f" <span style='font-size:12px;color:var(--text-3);'>{comp.get('publisher_type','')}</span></div>"
+                        f"<div><span style='font-size:14px;font-weight:500;'>{comp['domain']}</span></div>"
                         f"<span style='{right_style}'>{right_label}</span></div></div>",
                         unsafe_allow_html=True)
                 with row_arrow:

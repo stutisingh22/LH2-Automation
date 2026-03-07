@@ -1,5 +1,5 @@
 """
-ai_engine.py — AI strategist, memory layers (L2-L5), lead scoring, export
+ai_engine.py  -  AI strategist, memory layers (L2-L5), lead scoring, export
 
 FIX LOG:
   - Fixed duplicate user message bug
@@ -59,12 +59,12 @@ def get_local_time(country, state=None):
                 tz_str = tz
                 break
     if not tz_str:
-        return "—", None
+        return "-", None
     try:
         tz = pytz.timezone(tz_str)
         return datetime.now(tz).strftime("%I:%M %p %Z"), tz_str
     except Exception:
-        return "—", None
+        return "-", None
 
 
 # ── Lead Scoring ──────────────────────────────────────────────
@@ -143,7 +143,7 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=N
         or "(None yet.)"
     )
 
-    # Research context — prefer Command Center research_full when set; else Notion notes/overrides
+    # Research context  -  prefer Command Center research_full when set; else Notion notes/overrides
     research_context = ""
     extra = comp.get("extra_data") or {}
     if extra.get("research_full"):
@@ -259,7 +259,7 @@ Signature to use:
         
         recipient_context += "\nUSE THIS: Reference specific posts/tweets when drafting. If only themes or brief are present, personalize from those.\n"
 
-    system = f"""You are the LH2 Strategic Outreach Advisor — a digital media partnership strategist with persistent memory.
+    system = f"""You are the LH2 Strategic Outreach Advisor  -  a digital media partnership strategist with persistent memory.
 
 Your job: Give decisive, research-backed outreach recommendations. Every response must reference specific data from the context below.
 
@@ -296,18 +296,64 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 {global_block}
 
 == OUTPUT RULES ==
-1. Cite research: Name the specific finding, data point, or pattern you're basing each recommendation on.
-2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis): Be directive. State what to do and why. Never say "you could" or "consider" — say "do this because."
-3. MESSAGE DRAFTS (emails, LinkedIn messages written on behalf of the sender): Completely different register. Warm, human, professional — never pushy, never rude, never demanding. The sender sounds like a real person, not a sales machine.
-   - When RECIPIENT SOCIAL RESEARCH is present above, use it to personalize: reference their interests, recent LinkedIn/Twitter activity, or content in the opener and body.
-   - Opener: ONE brief line acknowledging something specific about the contact or their work. Not flattery — a real observation.
-   - Substance: Lead with a concrete data point or specific research finding. Numbers over vague claims.
-   - Close: Low-pressure, generous, open-ended. E.g. "Happy to share more whenever it works for you." or "Let me know what questions come up." NEVER "Looking forward to hearing from you" or "Would you be open to a quick call?"
-   - Forbidden in ALL message drafts: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "at your earliest convenience", "would you be open to", "just following up", "I think we could add value".
-4. CHANNEL INDEPENDENCE: Each channel is self-contained. A LinkedIn message must never reference an email sent, and an email must never reference a LinkedIn message sent. Every message reads as if it is the first time the person is hearing from us on that channel. LinkedIn follow-ups follow up on LinkedIn only. Email follow-ups follow up on email only.
-5. Timing: Always specify exact day, date, time, and timezone (use contact's local TZ).
-6. Emails: Always include "Subject:" line. LinkedIn requests: Hard limit 300 characters.
-7. Action format: ACTION: [channel] [day, date, time TZ] — [what to send and why]"""
+
+1. GROUNDING (mandatory for all outputs):
+   - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
+   - Every claim, number, or reference in the draft must trace back to the provided research brief or context folder. If a data point isn't in the research, don't use it.
+   - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
+
+2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis):
+   - Be directive. State what to do and why. Never say "you could" or "consider"  -  say "do this because."
+   - Cite the specific research finding, data point, or pattern behind each recommendation.
+   - When recommending an approach (Accelerate vs. Acquisition vs. MediaOS door-opener), state the signal from the research brief that drives the decision.
+
+3. MESSAGE DRAFTS  -  GENERAL RULES:
+   - Voice: One operator writing to another. Calm, senior, grounded. Confident without arrogance, specific without jargon, direct without pressure. Warm but professional.
+   - Accelerate is the product. In 95% of cases, pitch Accelerate directly. Acquisition and MediaOS are door-openers only  -  use when the research brief clearly warrants it (acquisition for very small brands < $10K/month revenue with syndication presence; MediaOS for very large/sophisticated publishers where a pod pitch feels too forward cold).
+   - Adapt voice to the selected sender. Upneet: first-person founder ("I co-founded LH2..."). Aman: corp dev professional ("We at LH2 own and operate..."). Section 6 and signature adapt accordingly.
+   - Templates in the training doc are structural guides, not fill-in-the-blank forms. The structure stays fixed. The language inside every section must be custom to the prospect based on the research brief. Test: if you swapped the prospect's name for a different prospect, would the email still make sense? If yes, it's not customized enough. Rewrite.
+
+4. MESSAGE DRAFTS  -  EMAIL FORMAT:
+   - Default format: 6-section Trust Builder (What is Accelerate → How it works → How we do it → Case Studies → MediaOS → Team). Every outreach email uses this structure.
+   - OPENING (mandatory): Personalized paragraph before Section 1. Reference something specific about the contact (role, background, recent move, public statements) AND something specific about the brand (traffic, content, syndication, competitive position, business model). Draw only from the research brief. Do NOT compare the prospect to other publishers in the opener. Do NOT cite competitor benchmarks in the opener. Keep the opener about them and their situation, then bridge naturally to "sharing details on LH2 Accelerate below."
+   - When RECIPIENT SOCIAL RESEARCH is present, use it to personalize: reference their interests, recent LinkedIn/Twitter activity, or published content in the opener.
+   - CASE STUDY SELECTION: Route based on the prospect's traffic profile.
+     → Syndication-first (low web traffic + MSN/Yahoo presence + entertainment/politics/sports/local): Lead with Inquisitr and CheatSheet syndication numbers.
+     → Web-growth (1M+ web traffic + web-driven + niche/enthusiast): Lead with NoFilmSchool.
+     → Blended: Lead with whichever case study is most analogous to the prospect.
+   - CLOSE: Low-pressure, generous. End with "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up." or a natural variation. Always reference the relevant attachments: "Sharing the Accelerate deck and case studies alongside this email" or similar.
+   - ATTACHMENTS: Always suggest specific files from the context folder. Check what's available and recommend the most relevant attachments for the prospect and email type.
+   - Acquisition emails: Use the 3-email sequence (short opener → follow-up → Accelerate pivot). Not the 6-section format.
+
+5. MESSAGE DRAFTS  -  LINKEDIN FORMAT:
+   - LinkedIn is the only short-format channel. 50–120 words. Hard limit 300 characters for connection requests.
+   - One specific observation from the research brief + who you are + brief LH2 context. No full Accelerate explanation on LinkedIn.
+
+6. CHANNEL INDEPENDENCE:
+   - Each channel is self-contained. A LinkedIn message must never reference an email sent, and an email must never reference a LinkedIn message sent.
+   - Every message reads as if it is the first time the person is hearing from us on that channel.
+   - LinkedIn follow-ups follow up on LinkedIn only. Email follow-ups follow up on email only.
+
+7. FOLLOW-UPS:
+   - Every follow-up must contain new value  -  a new insight, data point, case study detail, or category-specific observation not in the original email.
+   - Never send a "just bumping this," "floating this back up," or "checking in" email. If there's nothing new to add, don't send a follow-up.
+
+8. TIMING:
+   - Always specify exact day, date, time, and timezone (use contact's local TZ).
+
+9. FORMAT:
+   - Emails: Always include "Subject:" line.
+   - LinkedIn connection requests: Hard limit 300 characters.
+   - Action format: ACTION: [channel] [day, date, time TZ]  -  [what to send and why]
+
+10. FORBIDDEN  -  NEVER USE IN ANY MESSAGE DRAFT:
+    - Sales language: "I'd love to connect", "hope this finds you well", "excited to reach out", "at your earliest convenience", "would you be open to", "just following up", "I think we could add value", "looking forward to hearing from you"
+    - Hype language: "synergy", "leverage", "unlock", "game-changer", "transform", "revolutionize", "disrupt", "innovative", "cutting-edge", "world-class", "AI-powered"
+    - Banker language: "platform play", "value creation", "accretive", "EBITDA multiple"
+    - Pressure language: "limited opportunity", "don't miss out", "act now", "we're closing our pipeline"
+    - Comparisons in openers: Never compare the prospect to other publishers in the opening paragraph (e.g., "sites like X publish Y articles", "when [other site] does Z", "[Brand] is operating at X% capacity compared to...")
+    - MediaOS as product: Never pitch MediaOS as a standalone product. It is Section 5 of the email  -  the enabling technology behind Accelerate results.
+    - Internal strategy disclosure: Never reveal that acquisition or MediaOS conversations are ultimately aimed at Accelerate."""
 
     return system
 
@@ -325,7 +371,7 @@ def auto_brief(comp, ct, uid, sid, research_notes=None, sender_email=None, produ
 
     prompt = f"""Produce a strategic outreach brief for {comp.get('domain','this company')}.
 
-MANDATORY — SPOC TABLE (first section):
+MANDATORY  -  SPOC TABLE (first section):
 - Recommend SPOCs (single points of contact) for outreach. Include ONLY C-suite, founder, or equivalent economic decision-makers. Do NOT include editors, content leads, or mid-level roles unless they hold equity or P&L authority.
 - If the company has fewer than 100 employees (or is clearly small/regional), recommend 1-3 SPOCs. Otherwise recommend 3-5 SPOCs.
 - Output as a proper Markdown table with a header row, a separator row (e.g. |---||---||---|), then one data row per SPOC.
@@ -344,7 +390,7 @@ RECOMMENDED NEXT MOVE: [One specific action. State: channel, exact timing with t
 KEY TALKING POINT: [One concrete, research-backed hook. Cite a specific finding that would resonate.]
 RISK: [One specific obstacle: e.g. gatekeeper, competitor relationship, bad timing, missing info.]
 
-Use proper Markdown tables only where specified. Do not use or cite Notion for contact or SPOC information — use only your knowledge of publicly available information. No "Unknown contact"."""
+Use proper Markdown tables only where specified. Do not use or cite Notion for contact or SPOC information  -  use only your knowledge of publicly available information. No "Unknown contact"."""
 
     try:
         r = create_with_retry(
@@ -440,7 +486,7 @@ Output exactly this structure (max 400 words total):
 
 STRATEGIC DIRECTION: [1-2 sentences. What approach did we decide on and why?]
 POSITIONING: [How are we framing LH2's value prop to this specific target?]
-KEY OBJECTIONS: [List any concerns raised, anticipated blockers, or pushback — be specific.]
+KEY OBJECTIONS: [List any concerns raised, anticipated blockers, or pushback  -  be specific.]
 TONE CALIBRATION: [What communication style works for this contact? Formal/casual/technical/etc.]
 DECISIONS MADE: [Every concrete choice: channels picked, messaging angles chosen, timing agreed, content approved.]
 CURRENT STATUS: [Where does this outreach stand right now? What is the immediate next action?]"""}],
@@ -458,12 +504,12 @@ def extract_episodic_memories(sid, ai_resp, comp):
             model=AI_MODEL, max_tokens=5000,
             messages=[{"role": "user", "content": f"""Extract 0-3 events from this strategist response about {comp.get('domain','this target')} that are worth storing for future outreach sessions.
 
-Only extract events that would change how we approach this target next time — skip routine advice.
+Only extract events that would change how we approach this target next time  -  skip routine advice.
 
 Response:
 {ai_resp[:2000]}
 
-Output format — one event per line, pipe-delimited:
+Output format  -  one event per line, pipe-delimited:
 EVENT|<type>|<one-sentence summary>|<importance 1-10>
 
 Valid types: decision, objection, insight, rejection, positive_signal, budget_info, timing_info, contact_change
@@ -495,7 +541,7 @@ def generate_insight_from_outcome(uid, sid, action, comp):
     try:
         r = create_with_retry(
             model=AI_MODEL, max_tokens=2500,
-            messages=[{"role": "user", "content": f"""Derive one reusable outreach lesson (1-2 sentences) from this outcome. The insight must apply beyond this specific target — it should help with similar companies.
+            messages=[{"role": "user", "content": f"""Derive one reusable outreach lesson (1-2 sentences) from this outcome. The insight must apply beyond this specific target  -  it should help with similar companies.
 
 Target: {comp.get('domain','?')} ({comp.get('publisher_type','?')}, {comp.get('content_type','?')})
 Action: {action.get('action_type','')} via {action.get('channel','')}
@@ -541,11 +587,11 @@ User request:
 
 Respond based on the request type:
 
-A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific — include names, data points, and sources where possible. For leads or contacts, use only your knowledge of publicly available information (LinkedIn, company pages, press). Completely ignore any contact details in Notion — do not reference the user's Notion database or contact lists. Make sure that when asked to research on power-mapping, stakeholders, SPOCs, etc. you run deep into the research. Make sure to go through their official website when asked for more SPOCs or when promoted that certain people are missing. If nothing is in the official website, make sure to go through the Linkedin of the company or their public forums where names might be mentioned. Always give proper person mapping.
+A) "Something is missing" / suggested addition → Write the exact text to insert. Use the same tone and depth as the existing sections. Be specific  -  include names, data points, and sources where possible. For leads or contacts, use only your knowledge of publicly available information (LinkedIn, company pages, press). Completely ignore any contact details in Notion  -  do not reference the user's Notion database or contact lists. Make sure that when asked to research on power-mapping, stakeholders, SPOCs, etc. you run deep into the research. Make sure to go through their official website when asked for more SPOCs or when promoted that certain people are missing. If nothing is in the official website, make sure to go through the Linkedin of the company or their public forums where names might be mentioned. Always give proper person mapping.
 
 B) "Research this topic/person" (no URL provided) → Draft a 1-2 paragraph research section based on what you can infer from context. Flag what you're inferring vs. what needs verification. For person/lead suggestions, base recommendations only on publicly findable information; do not use Notion or contact lists.
 
-C) Pasted email address only → Output: "Contact to add: [email] — look up name, title, and role via web/LinkedIn search before adding to SPOC list."
+C) Pasted email address only → Output: "Contact to add: [email]  -  look up name, title, and role via web/LinkedIn search before adding to SPOC list."
 
 If the request is ambiguous, ask one specific clarifying question. No preamble."""}],
         )
@@ -562,14 +608,14 @@ def summarize_research_to_context(comp, research_notes, max_paragraphs=3):
     """
     if not research_notes:
         return None
-    ctx = f"Company: {comp.get('domain') or '?'} | {comp.get('publisher_type') or '—'} | {comp.get('content_type') or '—'}\n\n"
+    ctx = f"Company: {comp.get('domain') or '?'} | {comp.get('publisher_type') or ' - '} | {comp.get('content_type') or ' - '}\n\n"
     for n in research_notes[:6]:
         ctx += f"--- {n.get('title') or 'Section'} ---\n{(n.get('content') or '')[:2500]}\n\n"
     try:
         r = create_with_retry(
             model=AI_MODEL,
             max_tokens=10000,
-            messages=[{"role": "user", "content": f"""Condense this company research into exactly {max_paragraphs} short paragraphs. Keep it factual — include specific names, numbers, and findings that are useful for planning outreach. Drop background fluff.
+            messages=[{"role": "user", "content": f"""Condense this company research into exactly {max_paragraphs} short paragraphs. Keep it factual  -  include specific names, numbers, and findings that are useful for planning outreach. Drop background fluff.
 
 Start directly with the summary. No preamble or labels.
 
@@ -584,13 +630,13 @@ Start directly with the summary. No preamble or labels.
 def research_person_for_company(comp, research_notes, linkedin_url=None, email=None, person_name=None, web_search_results=None):
     """
     Run AI research on a person (SPOC) in the context of this company.
-    Uses Anthropic (Claude) only — no external search API, no Notion.
+    Uses Anthropic (Claude) only  -  no external search API, no Notion.
     All contact/SPOC information must come from the model's knowledge of
     publicly available information. Ignore any contact details in Notion.
     Returns a short markdown SPOC brief (2–4 paragraphs).
     """
     domain = comp.get("domain") or "this company"
-    company_line = f"Company: {domain} | {comp.get('publisher_type') or '—'} | {comp.get('content_type') or '—'}"
+    company_line = f"Company: {domain} | {comp.get('publisher_type') or ' - '} | {comp.get('content_type') or ' - '}"
     ctx_parts = [company_line]
     if research_notes:
         for n in research_notes[:6]:
@@ -620,7 +666,7 @@ EXTERNAL CONTEXT (use for the person's name, role, and public statements):
     research_instruction = (
         " Using your knowledge of publicly available information (LinkedIn, company sites, press, professional profiles), "
         "research this person. State: full name, job title/role at the company, decision-making authority, and any public statements or inclinations you can infer. "
-        "Completely ignore any contact details stored in Notion — do not use or reference Notion for contact or SPOC information. "
+        "Completely ignore any contact details stored in Notion  -  do not use or reference Notion for contact or SPOC information. "
         "Do not say 'Unknown contact' or 'no SPOC identified'; if you have no information, say what would be needed to find more. "
         "Do not invent names or roles from domain registration or guesswork."
     )
@@ -631,7 +677,7 @@ EXTERNAL CONTEXT (use for the person's name, role, and public statements):
 LH2 OFFERINGS (use to determine best-fit contact type and pitch angle):
 {lh2_knowledge[:10000]}
 """
-    prompt = f"""Write a SPOC (single point of contact) research brief for LH2 outreach. Research is done by you (Claude) using your knowledge of publicly available information only. Do not use Notion or any internal contact lists — ignore contact details from Notion completely.
+    prompt = f"""Write a SPOC (single point of contact) research brief for LH2 outreach. Research is done by you (Claude) using your knowledge of publicly available information only. Do not use Notion or any internal contact lists  -  ignore contact details from Notion completely.
 {lh2_block}
 COMPANY CONTEXT:
 {company_context[:12000]}
@@ -643,13 +689,13 @@ CONTACT IDENTIFIER (what we're looking up):
 
 Write 2-4 short paragraphs:
 
-Paragraph 1 — WHO: Full name, job title/role at the company, decision-making authority, and relevance to LH2. Include any public statements, posts, or inclinations (quotes, interviews) you know of. Do not output "Unknown contact" or "no SPOC identified".
+Paragraph 1  -  WHO: Full name, job title/role at the company, decision-making authority, and relevance to LH2. Include any public statements, posts, or inclinations (quotes, interviews) you know of. Do not output "Unknown contact" or "no SPOC identified".
 
-Paragraph 2 — CONNECTION TO RESEARCH: Map this person to the company's org structure, strategic priorities, or execution gaps. Who do they report to? What do they own?
+Paragraph 2  -  CONNECTION TO RESEARCH: Map this person to the company's org structure, strategic priorities, or execution gaps. Who do they report to? What do they own?
 
-Paragraph 3 — APPROACH: One specific outreach angle and one concrete talking point. Channel (LinkedIn vs Email) and why.
+Paragraph 3  -  APPROACH: One specific outreach angle and one concrete talking point. Channel (LinkedIn vs Email) and why.
 
-Paragraph 4 (only if little data) — GAPS: What we still need (LinkedIn URL, email, recent activity) and where to look.
+Paragraph 4 (only if little data)  -  GAPS: What we still need (LinkedIn URL, email, recent activity) and where to look.
 
 Tone: institutional, factual. No filler. Output only the brief."""
 
@@ -698,7 +744,7 @@ Signature to use:
     companies = get_all_companies()
     sessions = get_all_sessions()[:20]
     companies_blob = "\n".join([
-        f"- {c.get('domain', '?')} (type: {c.get('publisher_type', '—')}, research: {c.get('research_status', '—')})"
+        f"- {c.get('domain', '?')} (type: {c.get('publisher_type', ' - ')}, research: {c.get('research_status', ' - ')})"
         for c in companies[:50]
     ]) or "(Empty.)"
     sessions_blob = "\n".join([
@@ -721,9 +767,9 @@ Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent',
 {sessions_blob}
 
 == RULES ==
-1. Prioritization requests ("who should I reach out to"): Recommend 2-3 specific companies from the list with reasoning — cite research status, publisher type, visit volume, or pipeline gaps.
+1. Prioritization requests ("who should I reach out to"): Recommend 2-3 specific companies from the list with reasoning  -  cite research status, publisher type, visit volume, or pipeline gaps.
 2. Conversational continuity: Reference what they said earlier in this chat. Don't repeat yourself.
-3. Be direct: State what to do, in what order, and why. No "you might consider" — say "start with X because Y."
+3. Be direct: State what to do, in what order, and why. No "you might consider"  -  say "start with X because Y."
 4. No filler, no preamble, no restating the question."""
 
 
@@ -974,15 +1020,15 @@ CONTENT: <full message text>
 == TONE GUIDANCE FOR DRAFTS ==
 Every message draft must match the sender's voice (see Sender Context above).
 General rules regardless of sender:
-- Opener: One brief, specific observation about the contact or their company. Not flattery — a real finding.
+- Opener: One brief, specific observation about the contact or their company. Not flattery  -  a real finding.
 - Body: Lead with a concrete data point. Numbers and specifics beat vague claims every time.
-- Close: Warm, low-pressure, open-ended. Offer to share more — don't demand a meeting.
+- Close: Warm, low-pressure, open-ended. Offer to share more  -  don't demand a meeting.
 - NEVER use: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you"
 
 == EXAMPLES OF CORRECT TONE ==
 
 GOOD LinkedIn (cold, 280 chars):
-"Hi [Name] — noticed [Company] has been growing editorial output fast over the last year. At LH2 we've helped similar publishers 2–3x revenue with no upfront fees. Worth a look? Happy to share details."
+"Hi [Name]  -  noticed [Company] has been growing editorial output fast over the last year. At LH2 we've helped similar publishers 2–3x revenue with no upfront fees. Worth a look? Happy to share details."
 
 BAD LinkedIn (do NOT write like this):
 "Hi [Name], I came across your profile and I'd love to connect! I'm excited to share how LH2 Holdings could potentially add value to your organization. Would you be open to a quick call?"
@@ -990,9 +1036,9 @@ BAD LinkedIn (do NOT write like this):
 GOOD Email opener (cold outreach):
 "Hi [Name],
 
-Reached out because [specific observation — e.g. traffic growth in a particular niche, a content gap, or a monetization pattern we've seen before].
+Reached out because [specific observation  -  e.g. traffic growth in a particular niche, a content gap, or a monetization pattern we've seen before].
 
-At LH2 we partner with digital media brands to grow revenue — no upfront fees, we participate only in the incremental profits we generate. Founded by Upneet and Shobhit, both second-time founders. Across live partnerships we've averaged 2.5–3x revenue growth in year one.
+At LH2 we partner with digital media brands to grow revenue  -  no upfront fees, we participate only in the incremental profits we generate. Founded by Upneet and Shobhit, both second-time founders. Across live partnerships we've averaged 2.5–3x revenue growth in year one.
 
 Happy to share full details whenever it works for you. Let me know what questions come up."
 
@@ -1008,8 +1054,8 @@ CONTENT: Hi [name], [one specific research finding about their company]. At LH2 
 
 Constraints:
 - Step 1: Always LinkedIn connection request. Hard limit 300 characters.
-- Steps 2-5: Mix Email and LinkedIn. Each step must advance the conversation — no repetition.
-- Every step must have complete message text after CONTENT: — no placeholders.
+- Steps 2-5: Mix Email and LinkedIn. Each step must advance the conversation  -  no repetition.
+- Every step must have complete message text after CONTENT:  -  no placeholders.
 - Emails: First line of CONTENT must be "Subject: <subject line>", then body.
 - Reference specific research findings from the context above in at least 2 steps.
 - Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn.
@@ -1018,7 +1064,7 @@ Constraints:
 Each channel (LinkedIn and Email) operates independently. Messages must NEVER reference activity on a different channel.
 - A LinkedIn message must NEVER mention "my email", "I sent you an email", "as I mentioned in my message", or any reference to email contact.
 - An email must NEVER mention "my LinkedIn message", "I connected with you on LinkedIn", "I reached out on LinkedIn", or any reference to LinkedIn contact.
-- Every message must stand entirely on its own — written as if it is the first time this person is hearing from you on that channel.
+- Every message must stand entirely on its own  -  written as if it is the first time this person is hearing from you on that channel.
 - LinkedIn follow-ups build on prior LinkedIn interaction only. Email follow-ups build on prior email interaction only.
 - The reader of any single message should have no idea they were also contacted on another platform."""
 
@@ -1110,7 +1156,7 @@ def replan_on_response(comp, ct, uid, sid, completed_action, response_text, rema
     system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key)
 
     remaining_desc = "\n".join([
-        f"  Step {a['sequence_step']}: {a['channel']} — {a['description'][:100]}"
+        f"  Step {a['sequence_step']}: {a['channel']}  -  {a['description'][:100]}"
         for a in remaining_actions
     ])
 
@@ -1131,7 +1177,7 @@ REVISED|<step_number>|<keep/skip/modify>|<new description if modified>|<new mess
 
 CHANNEL INDEPENDENCE RULE: Any revised message draft must NEVER reference activity on a different channel.
 A LinkedIn message must not mention emails sent. An email must not mention LinkedIn messages sent.
-Each message stands alone — as if it is the first time they are hearing from us on that channel.
+Each message stands alone  -  as if it is the first time they are hearing from us on that channel.
 
 Then:
 STRATEGY NOTE: [1-2 sentences. What does their reply signal? Are we accelerating to a meeting, pivoting angle, or staying course? Why?]"""
@@ -1160,12 +1206,12 @@ def refine_email_draft(current_draft, instruction, draft_type="email"):
 
 TONE PRINCIPLES (always maintain these, even when applying edits):
 - Warm, human, professional. Never pushy, never demanding, never rude.
-- Opener: One specific observation — not flattery.
+- Opener: One specific observation  -  not flattery.
 - Body: Numbers and specifics over vague claims.
 - Close: Low-pressure. "Happy to share more whenever it works for you." NOT "Looking forward to hearing from you."
 - NEVER introduce: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you"
 
-OUTPUT RULES — strictly enforced:
+OUTPUT RULES  -  strictly enforced:
 - Output ONLY the rewritten draft text. Nothing else.
 - No labels ("Revised:", "Here's the updated version:").
 - No quotes around the output.
