@@ -23,7 +23,7 @@ NOTION_TEXT_LIMIT = 1900
 NOTION_BATCH_LIMIT = 100
 
 # Research model — use the best available for deep analysis
-RESEARCH_MODEL = "claude-sonnet-4-5-20250929"
+RESEARCH_MODEL = "claude-sonnet-4-5"
 RESEARCH_MAX_TOKENS = 16000
 
 

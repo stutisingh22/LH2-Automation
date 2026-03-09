@@ -40,6 +40,7 @@ GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 MAIN_FOLDER_ID = (os.getenv("MAIN_FOLDER_ID") or "").strip()  # Parent folder for AI knowledge (all subfolders/files)
 CONTEXT_FOLDER_ID = (os.getenv("CONTEXT_FOLDER_ID") or "").strip()  # Folder containing training docs, outreach guidelines, etc.
 SIGNALHIRE_API_KEY = os.getenv("SIGNALHIRE_API_KEY", "")
+SIMWEB_API_KEY = os.getenv("SIMWEB_API_KEY", "")
 # Optional: base URL for your server that receives SignalHire callback (e.g. https://yourdomain.com)
 SIGNALHIRE_CALLBACK_BASE_URL = os.getenv("SIGNALHIRE_CALLBACK_BASE_URL", "").rstrip("/")
 # ── Notion DB ID (sanitized) ─────────────────────────────────

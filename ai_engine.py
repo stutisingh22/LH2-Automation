@@ -11,6 +11,7 @@ FIX LOG:
 """
 
 import re
+import json
 import csv
 import io
 import logging
@@ -31,6 +32,7 @@ from db_ops import (
     get_pipeline_stats, get_all_companies, get_all_sessions,
 )
 from drive_sync import build_drive_context, get_lh2_knowledge_context, get_context_folder_files
+from services.outreach_strategy import build_strategy_profile, format_strategy_profile_block
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +261,16 @@ Signature to use:
         
         recipient_context += "\nUSE THIS: Reference specific posts/tweets when drafting. If only themes or brief are present, personalize from those.\n"
 
+    strategy_profile = build_strategy_profile(
+        comp,
+        ct,
+        research_notes=research_notes,
+        recipient_research=recipient_research,
+        research_context=research_context,
+        drive_context=drive_ctx,
+    )
+    strategy_block = format_strategy_profile_block(strategy_profile)
+
     system = f"""You are the LH2 Strategic Outreach Advisor  -  a digital media partnership strategist with persistent memory.
 
 Your job: Give decisive, research-backed outreach recommendations. Every response must reference specific data from the context below.
@@ -285,6 +297,8 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 {research_context if research_context else '(None available.)'}
 
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
+== DYNAMIC STRATEGY PROFILE (deterministic extraction from research) ==
+{strategy_block}
 {"== LH2 OFFERINGS (reference when positioning value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
 {_get_product_context_block(product_key)}
 {sender_context}
@@ -306,6 +320,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Be directive. State what to do and why. Never say "you could" or "consider"  -  say "do this because."
    - Cite the specific research finding, data point, or pattern behind each recommendation.
    - When recommending an approach (Accelerate vs. Acquisition vs. MediaOS door-opener), state the signal from the research brief that drives the decision.
+   - Use the DYNAMIC STRATEGY PROFILE as the primary planning scaffold (route, hook, distribution focus, and risk flags), then tailor wording with the research details.
 
 3. MESSAGE DRAFTS  -  GENERAL RULES:
    - Voice: One operator writing to another. Calm, senior, grounded. Confident without arrogance, specific without jargon, direct without pressure. Warm but professional.
@@ -1115,6 +1130,8 @@ CONTENT: <full message text>
 
 == SEQUENCE STRUCTURE ==
 
+Use the DYNAMIC STRATEGY PROFILE in the system context as your decision framework for sequence type, hook priority, and channel emphasis.
+
 First, determine the correct sequence type:
 - ACCELERATE (default, 95% of cases): Always generate the full sequence — LinkedIn note + 4 emails + optional Email 5.
 - ACQUISITION (only if estimated revenue < $10K/month with MSN/Yahoo presence): 3-email acquisition sequence.
@@ -1331,6 +1348,255 @@ STRATEGY NOTE: [1-2 sentences. What does their reply signal? Are we accelerating
     except Exception as e:
         log.error("Replan failed: %s", e)
         return None
+
+
+def _build_rewrite_research_corpus(comp, research_notes=None, recipient_research=None):
+    parts = []
+    extra = (comp or {}).get("extra_data") or {}
+
+    research_full = (extra.get("research_full") or "").strip()
+    if research_full:
+        parts.append(research_full)
+
+    if isinstance(research_notes, list):
+        for n in research_notes:
+            if isinstance(n, dict):
+                txt = (n.get("content") or "").strip()
+                if txt:
+                    parts.append(txt)
+
+    for n in (extra.get("research_notes") or []):
+        if isinstance(n, dict):
+            txt = (n.get("content") or "").strip()
+            if txt:
+                parts.append(txt)
+
+    if isinstance(recipient_research, dict):
+        brief = (recipient_research.get("brief") or "").strip()
+        if brief:
+            parts.append(brief)
+        linkedin = recipient_research.get("linkedin") or {}
+        for p in (linkedin.get("recent_posts") or [])[:5]:
+            snip = (p.get("snippet") or "").strip()
+            if snip:
+                parts.append(snip)
+        twitter = recipient_research.get("twitter") or {}
+        for t in (twitter.get("recent_tweets") or [])[:5]:
+            snip = (t.get("snippet") or "").strip()
+            if snip:
+                parts.append(snip)
+
+    try:
+        drive_ctx = build_drive_context((comp or {}).get("name", ""), (comp or {}).get("domain", ""))
+        if drive_ctx:
+            parts.append(drive_ctx)
+    except Exception:
+        pass
+
+    return "\n".join(parts).lower()
+
+
+def _detect_platform_presence(corpus_text, platform):
+    text = (corpus_text or "").lower()
+    p = platform.lower()
+    explicit_negative = [
+        rf"\bno\s+{p}\b",
+        rf"\bnot\s+on\s+{p}\b",
+        rf"\bwithout\s+{p}\b",
+        rf"\black(?:s|ing)?\s+{p}\b",
+        rf"\b{p}\s+(?:presence|syndication|distribution)\s+(?:is\s+)?(?:absent|missing|none)\b",
+    ]
+    explicit_positive = [
+        rf"\b{p}\s+(?:presence|syndication|distribution|placement|traffic|revenue|network)\b",
+        rf"\bon\s+{p}\b",
+        rf"\bvia\s+{p}\b",
+        rf"\bfrom\s+{p}\b",
+        rf"\b{p}\s+news\b",
+    ]
+
+    neg = any(re.search(pat, text) for pat in explicit_negative)
+    pos = any(re.search(pat, text) for pat in explicit_positive)
+
+    if pos and not neg:
+        return "present"
+    if neg and not pos:
+        return "absent"
+    return "unknown"
+
+
+def _sentence_has_negative_platform_claim(sentence, platform):
+    s = (sentence or "").lower()
+    p = platform.lower()
+    patterns = [
+        rf"\bi\s+don['’]t\s+see\s+evidence\s+of\b[^.?!]{{0,80}}\b{p}\b",
+        rf"\bno\b[^.?!]{{0,50}}\b{p}\b",
+        rf"\bwithout\b[^.?!]{{0,50}}\b{p}\b",
+        rf"\black(?:s|ing)?\b[^.?!]{{0,50}}\b{p}\b",
+        rf"\bnot\s+on\b[^.?!]{{0,30}}\b{p}\b",
+    ]
+    return any(re.search(pat, s) for pat in patterns)
+
+
+def _enforce_platform_presence_consistency(text, platform_signals):
+    """
+    Remove lines that contradict deterministic platform presence findings.
+    """
+    out = (text or "").strip()
+    if not out:
+        return out
+
+    protect_platforms = [k for k, v in (platform_signals or {}).items() if v == "present"]
+    if not protect_platforms:
+        return out
+
+    parts = re.split(r"(?<=[.!?])\s+", out)
+    kept = []
+    for sent in parts:
+        drop = False
+        for platform in protect_platforms:
+            if _sentence_has_negative_platform_claim(sent, platform):
+                drop = True
+                break
+        if not drop:
+            kept.append(sent)
+    cleaned = " ".join([p for p in kept if p.strip()]).strip()
+    return cleaned or out
+
+
+def rewrite_sequence_steps_with_research(
+    comp,
+    ct,
+    uid,
+    sid,
+    target_steps,
+    instruction,
+    research_notes=None,
+    sender_email=None,
+    product_key=None,
+    recipient_research=None,
+):
+    """
+    Rewrite specific sequence steps using instruction + full research context.
+
+    Returns list like:
+    [{"id": int, "revised_content": str, "change_reason": str}, ...]
+    """
+    if not target_steps or not (instruction or "").strip():
+        return []
+
+    system = _build_system_prompt(
+        comp,
+        ct,
+        uid,
+        sid,
+        research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        recipient_research=recipient_research,
+    )
+
+    compact_steps = []
+    for s in target_steps:
+        action_id = s.get("id")
+        if action_id is None:
+            continue
+        compact_steps.append({
+            "id": action_id,
+            "sequence_step": s.get("sequence_step"),
+            "channel": s.get("channel", ""),
+            "description": (s.get("description") or "")[:300],
+            "content_sent": (s.get("content_sent") or "")[:15000],
+        })
+
+    if not compact_steps:
+        return []
+
+    corpus = _build_rewrite_research_corpus(
+        comp,
+        research_notes=research_notes,
+        recipient_research=recipient_research,
+    )
+    platform_signals = {
+        "yahoo": _detect_platform_presence(corpus, "yahoo"),
+        "msn": _detect_platform_presence(corpus, "msn"),
+    }
+    platform_guidance = (
+        f"Yahoo signal: {platform_signals['yahoo']}. "
+        f"MSN signal: {platform_signals['msn']}."
+    )
+
+    prompt = (
+        "You are rewriting existing outreach steps.\n\n"
+        "USER INSTRUCTION:\n"
+        f"{instruction.strip()}\n\n"
+        "TARGET STEPS (ONLY these IDs may be modified):\n"
+        f"{json.dumps(compact_steps, ensure_ascii=True, indent=2)}\n\n"
+        "NON-NEGOTIABLE RULES:\n"
+        "1) Use only facts present in the provided RESEARCH / DRIVE RESEARCH / RECIPIENT SOCIAL RESEARCH context.\n"
+        "2) If evidence is missing, do NOT invent. Keep the statement general or retain the existing fact.\n"
+        "3) Never infer a negative claim unless explicitly supported (e.g., never assume 'no Yahoo presence' without evidence).\n"
+        "4) Preserve channel format: emails must keep a Subject line; LinkedIn connection notes stay <= 300 characters.\n"
+        "5) Do not contradict deterministic platform signals. "
+        + platform_guidance + "\n"
+        "6) Output must include exactly the target ids you actually changed; if no valid change, return empty list.\n\n"
+        "Return ONLY JSON (no prose, no markdown) as an array:\n"
+        "[\n"
+        "  {\"id\": 123, \"revised_content\": \"...\", \"change_reason\": \"one sentence\"}\n"
+        "]"
+    )
+
+    try:
+        r = create_with_retry(
+            model=AI_MODEL,
+            max_tokens=AI_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = (r.content[0].text or "").strip()
+        if not raw:
+            return []
+
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            m = re.search(r"\[\s*\{.*\}\s*\]", raw, flags=re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    parsed = None
+        if not isinstance(parsed, list):
+            return []
+
+        allowed_ids = {int(s["id"]) for s in compact_steps if str(s.get("id", "")).isdigit()}
+        out = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            try:
+                rid = int(row.get("id"))
+            except Exception:
+                continue
+            if rid not in allowed_ids:
+                continue
+            revised = (row.get("revised_content") or "").strip()
+            if not revised:
+                continue
+            revised = _enforce_platform_presence_consistency(revised, platform_signals)
+            reason = (row.get("change_reason") or "").strip()
+            step = next((x for x in compact_steps if int(x["id"]) == rid), None)
+            if step and "linkedin" in (step.get("channel") or "").lower() and len(revised) > 300:
+                revised = revised[:297].rstrip() + "..."
+            out.append({
+                "id": rid,
+                "revised_content": revised,
+                "change_reason": reason or "Updated per instruction using available research.",
+            })
+        return out
+    except Exception as e:
+        log.error("Sequence rewrite failed: %s", e)
+        return []
 
 
 def refine_email_draft(current_draft, instruction, draft_type="email"):

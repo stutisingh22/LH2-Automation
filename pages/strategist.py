@@ -1,6 +1,7 @@
 """Strategist page — FROM/TO selectors, enrichment, sequence builder, chat."""
 
 import streamlit as st
+import re
 from datetime import datetime
 
 from config import ACTION_TYPES
@@ -18,6 +19,8 @@ from db_ops import (
     get_enrichment_result,
     upsert_contact,
     log_action,
+    get_active_sequences,
+    update_action,
 )
 from sender_profiles import get_all_sender_profiles
 from ai_engine import (
@@ -28,6 +31,7 @@ from ai_engine import (
     maybe_update_summary,
     extract_episodic_memories,
     parse_ai_actions,
+    rewrite_sequence_steps_with_research,
 )
 from product_profiles import get_product_options
 from signalhire_enrichment import (
@@ -37,6 +41,75 @@ from signalhire_enrichment import (
 from gmail_service import parse_email_content
 from ui_helpers import display_full_name, sh, sh_small, bdg, has_perm
 from app_helpers import select_contact, build_ics, render_save_to_gmail
+
+
+def _is_sequence_edit_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    if not p:
+        return False
+    edit_words = ("edit", "rewrite", "revise", "modify", "change", "update", "redo")
+    draft_words = ("email", "linkedin", "sequence", "step", "draft", "message", "touch")
+    return any(w in p for w in edit_words) and any(w in p for w in draft_words)
+
+
+def _latest_sequence_with_drafts(sequences):
+    if not sequences:
+        return None
+    best = None
+    best_ts = ""
+    for seq in sequences:
+        steps = seq.get("steps") or []
+        drafted_steps = [s for s in steps if (s.get("content_sent") or "").strip()]
+        if not drafted_steps:
+            continue
+        seq_ts = max([(s.get("created_at") or "") for s in drafted_steps], default="")
+        if best is None or seq_ts > best_ts:
+            best = seq
+            best_ts = seq_ts
+    return best
+
+
+def _resolve_instruction_targets(prompt: str, steps):
+    prompt_l = (prompt or "").lower()
+    if not steps:
+        return []
+
+    ordered = sorted(steps, key=lambda s: (s.get("sequence_step") or 0))
+    email_steps = [s for s in ordered if "email" in (s.get("channel") or "").lower()]
+    li_steps = [s for s in ordered if "linkedin" in (s.get("channel") or "").lower()]
+
+    explicit_targets = []
+    for m in re.findall(r"\bstep\s*(\d+)\b", prompt_l):
+        n = int(m)
+        explicit_targets.extend([s for s in ordered if (s.get("sequence_step") or 0) == n])
+
+    for m in re.findall(r"\bemail\s*(\d+)\b", prompt_l):
+        idx = int(m) - 1
+        if 0 <= idx < len(email_steps):
+            explicit_targets.append(email_steps[idx])
+
+    li_num = re.findall(r"\blinkedin(?:\s*(?:step|message|touch))?\s*(\d+)\b", prompt_l)
+    if li_num:
+        idx = int(li_num[0]) - 1
+        if 0 <= idx < len(li_steps):
+            explicit_targets.append(li_steps[idx])
+    elif "linkedin" in prompt_l and any(k in prompt_l for k in ("edit", "rewrite", "revise", "modify", "change", "update")):
+        explicit_targets.extend(li_steps[:1])
+
+    dedup = {}
+    for s in explicit_targets:
+        sid = s.get("id")
+        if sid is not None:
+            dedup[sid] = s
+    explicit_targets = list(dedup.values())
+    if explicit_targets:
+        return explicit_targets
+
+    if "all emails" in prompt_l:
+        return email_steps
+    if "entire sequence" in prompt_l or "whole sequence" in prompt_l or ("sequence" in prompt_l and "email" not in prompt_l and "linkedin" not in prompt_l):
+        return [s for s in ordered if (s.get("content_sent") or "").strip()]
+    return []
 
 
 def render():
@@ -497,6 +570,40 @@ def render():
                     ph.markdown(response)
                 save_message(sid, "assistant", response)
                 st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+
+                if _is_sequence_edit_request(prompt):
+                    seqs_now = get_active_sequences(sid)
+                    seq_to_edit = _latest_sequence_with_drafts(seqs_now)
+                    if seq_to_edit:
+                        target_steps = _resolve_instruction_targets(prompt, seq_to_edit.get("steps") or [])
+                        if target_steps:
+                            rewrites = rewrite_sequence_steps_with_research(
+                                comp,
+                                ct,
+                                user["id"],
+                                sid,
+                                target_steps,
+                                prompt,
+                                research_notes=rn,
+                                sender_email=st.session_state.selected_sender,
+                                product_key=st.session_state.selected_product,
+                                recipient_research=recipient_research_data,
+                            )
+                            applied = 0
+                            for rw in rewrites:
+                                rid = rw.get("id")
+                                new_text = (rw.get("revised_content") or "").strip()
+                                if not rid or not new_text:
+                                    continue
+                                update_action(rid, content_sent=new_text, draft_revisions=[], draft_original="")
+                                st.session_state.pop(f"draft_revisions_list_{rid}", None)
+                                st.session_state[f"draft_original_{rid}"] = new_text
+                                st.session_state.pop(f"refine_version_sel_{rid}", None)
+                                applied += 1
+                            if applied:
+                                st.success(f"Updated {applied} draft step(s) from strategist instruction.")
+                        elif re.search(r"\b(email|linkedin|step)\s*\d+\b", (prompt or "").lower()):
+                            st.warning("I couldn't map that target to an existing draft step in the active sequence.")
                 maybe_update_summary(sid, comp, ct)
                 extract_episodic_memories(sid, response, comp)
                 detected = parse_ai_actions(response)

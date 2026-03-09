@@ -75,7 +75,7 @@ from ai_engine import (
     maybe_update_summary, extract_episodic_memories,
     generate_insight_from_outcome, parse_ai_actions, export_session_csv,
     intelligence_request, research_person_for_company, summarize_research_to_context,
-    advisor_chat, refine_email_draft,
+    advisor_chat, refine_email_draft, rewrite_sequence_steps_with_research,
 )
 from product_profiles import get_product_options
 from research import (
@@ -86,6 +86,7 @@ from research import (
     get_next_section_number,
     format_appended_section,
 )
+from platform_analytics import build_platform_analytics_for_domain
 from linkedin_lookup import (
     extract_spoc_table_contacts,
     run_linkedin_lookup_for_contacts,
@@ -107,6 +108,87 @@ def _strip_linkedin_command_prefix(text):
         if lower.startswith(p):
             return t[len(p) :].strip()
     return t
+
+
+def _is_sequence_edit_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    if not p:
+        return False
+    edit_words = ("edit", "rewrite", "revise", "modify", "change", "update", "redo")
+    draft_words = ("email", "linkedin", "sequence", "step", "draft", "message", "touch")
+    return any(w in p for w in edit_words) and any(w in p for w in draft_words)
+
+
+def _latest_sequence_with_drafts(sequences):
+    if not sequences:
+        return None
+    best = None
+    best_ts = ""
+    for seq in sequences:
+        steps = seq.get("steps") or []
+        drafted_steps = [s for s in steps if (s.get("content_sent") or "").strip()]
+        if not drafted_steps:
+            continue
+        seq_ts = max([(s.get("created_at") or "") for s in drafted_steps], default="")
+        if best is None or seq_ts > best_ts:
+            best = seq
+            best_ts = seq_ts
+    return best
+
+
+def _resolve_instruction_targets(prompt: str, steps):
+    """
+    Select which steps should be edited from a natural-language instruction.
+    Rules:
+    - "Email N" targets the Nth email in the sequence.
+    - "Step N" targets sequence step N.
+    - "LinkedIn" with optional number targets LinkedIn steps.
+    - "sequence"/"all emails"/"all steps" can target multiple.
+    """
+    prompt_l = (prompt or "").lower()
+    if not steps:
+        return []
+
+    ordered = sorted(steps, key=lambda s: (s.get("sequence_step") or 0))
+    email_steps = [s for s in ordered if "email" in (s.get("channel") or "").lower()]
+    li_steps = [s for s in ordered if "linkedin" in (s.get("channel") or "").lower()]
+
+    explicit_targets = []
+
+    for m in re.findall(r"\bstep\s*(\d+)\b", prompt_l):
+        n = int(m)
+        explicit_targets.extend([s for s in ordered if (s.get("sequence_step") or 0) == n])
+
+    for m in re.findall(r"\bemail\s*(\d+)\b", prompt_l):
+        idx = int(m) - 1
+        if 0 <= idx < len(email_steps):
+            explicit_targets.append(email_steps[idx])
+
+    li_num = re.findall(r"\blinkedin(?:\s*(?:step|message|touch))?\s*(\d+)\b", prompt_l)
+    if li_num:
+        idx = int(li_num[0]) - 1
+        if 0 <= idx < len(li_steps):
+            explicit_targets.append(li_steps[idx])
+    elif "linkedin" in prompt_l and any(k in prompt_l for k in ("edit", "rewrite", "revise", "modify", "change", "update")):
+        explicit_targets.extend(li_steps[:1])
+
+    # Deduplicate explicit targets by action id
+    dedup = {}
+    for s in explicit_targets:
+        sid = s.get("id")
+        if sid is not None:
+            dedup[sid] = s
+    explicit_targets = list(dedup.values())
+    if explicit_targets:
+        return explicit_targets
+
+    if "all emails" in prompt_l:
+        return email_steps
+    if "entire sequence" in prompt_l or "whole sequence" in prompt_l or ("sequence" in prompt_l and "email" not in prompt_l and "linkedin" not in prompt_l):
+        return [s for s in ordered if (s.get("content_sent") or "").strip()]
+
+    # No explicit target found: do not auto-update multiple steps silently.
+    return []
 
 
 from contact_timeline import build_contact_timeline
@@ -1396,11 +1478,34 @@ with tabs[2]:  # INTELLIGENCE
                     # Save to CANONICAL location: sessions.strategic_summary
                     save_session_summary(session_id, result, msg_count=0)
                     
+                    # LIVE external analytics fetch for deep research expander (do not cache API call)
+                    try:
+                        _ed_local = comp.get("extra_data") if isinstance(comp.get("extra_data"), dict) else {}
+                        _presence_local = (_ed_local.get("platform_presence") or {}) if isinstance(_ed_local, dict) else {}
+                        platform_analytics_snapshot = build_platform_analytics_for_domain(
+                            comp.get("domain", ""),
+                            platform_presence=_presence_local,
+                        )
+                    except Exception as _pae:
+                        platform_analytics_snapshot = {
+                            "status": "error",
+                            "error": str(_pae),
+                            "updated_at": datetime.utcnow().isoformat(),
+                        }
+
                     # Also save to company.extra_data for backward compatibility
                     if is_advisor:
-                        merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        merge_advisor_company_extra_data(aid, {
+                            "research_full": result,
+                            "research_full_updated_at": datetime.utcnow().isoformat(),
+                            "platform_presence_analytics": platform_analytics_snapshot,
+                        })
                     else:
-                        merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        merge_company_extra_data(cid, {
+                            "research_full": result,
+                            "research_full_updated_at": datetime.utcnow().isoformat(),
+                            "platform_presence_analytics": platform_analytics_snapshot,
+                        })
                     
                     # Clear old caches
                     if cache_key in st.session_state.get("research_cache", {}):
@@ -1450,11 +1555,34 @@ with tabs[2]:  # INTELLIGENCE
                         # Save to CANONICAL location: sessions.strategic_summary
                         save_session_summary(session_id, result, msg_count=0)
                         
+                        # LIVE external analytics fetch for deep research expander (do not cache API call)
+                        try:
+                            _ed_local = comp.get("extra_data") if isinstance(comp.get("extra_data"), dict) else {}
+                            _presence_local = (_ed_local.get("platform_presence") or {}) if isinstance(_ed_local, dict) else {}
+                            platform_analytics_snapshot = build_platform_analytics_for_domain(
+                                comp.get("domain", ""),
+                                platform_presence=_presence_local,
+                            )
+                        except Exception as _pae:
+                            platform_analytics_snapshot = {
+                                "status": "error",
+                                "error": str(_pae),
+                                "updated_at": datetime.utcnow().isoformat(),
+                            }
+
                         # Also save to company.extra_data for backward compatibility
                         if is_advisor:
-                            merge_advisor_company_extra_data(aid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            merge_advisor_company_extra_data(aid, {
+                                "research_full": result,
+                                "research_full_updated_at": datetime.utcnow().isoformat(),
+                                "platform_presence_analytics": platform_analytics_snapshot,
+                            })
                         else:
-                            merge_company_extra_data(cid, {"research_full": result, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            merge_company_extra_data(cid, {
+                                "research_full": result,
+                                "research_full_updated_at": datetime.utcnow().isoformat(),
+                                "platform_presence_analytics": platform_analytics_snapshot,
+                            })
                         
                         # Clear old caches
                         if cache_key in st.session_state.get("research_cache", {}):
@@ -1524,9 +1652,9 @@ with tabs[2]:  # INTELLIGENCE
                 sections = split_research_into_sections(plain_for_split)
 
                 # Platform presence (MSN/Yahoo/NewsBreak) shown before Eligibility Verdict (display-only; does not change prompts or research text)
+                _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
                 try:
                     from tracker_sources import load_domain_to_platforms, get_presence_for_domain
-                    _pp_ed = (comp.get("extra_data") or {})
                     platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
                     if not platform_presence:
                         _tracker_map = load_domain_to_platforms()
@@ -1551,6 +1679,98 @@ with tabs[2]:  # INTELLIGENCE
                 _elig_is_caveats = ("caveat" in _elig_norm) or ("caveats" in _elig_norm)
                 _elig_is_stop_or_fail = ("stop" in _elig_norm) or ("fail" in _elig_norm)
                 _elig_override_proceed = bool(_has_any_platform_presence and (_elig_is_caveats or _elig_is_stop_or_fail))
+
+                # Dynamic platform analytics expander (Similarweb + presence signals)
+                platform_presence_analytics = (_pp_ed.get("platform_presence_analytics") or {}) if isinstance(_pp_ed, dict) else {}
+                if st.button("🔄 Refresh platform analytics", key=f"refresh_platform_analytics_{cache_key}", use_container_width=False):
+                    with st.spinner("Refreshing platform analytics..."):
+                        fresh_analytics = build_platform_analytics_for_domain(
+                            comp.get("domain", ""),
+                            platform_presence=platform_presence,
+                        )
+                        if is_advisor:
+                            merge_advisor_company_extra_data(aid, {"platform_presence_analytics": fresh_analytics})
+                        else:
+                            merge_company_extra_data(cid, {"platform_presence_analytics": fresh_analytics})
+                        st.session_state["platform_presence_analytics_fresh"] = fresh_analytics
+                        st.rerun()
+                if st.session_state.get("platform_presence_analytics_fresh"):
+                    platform_presence_analytics = st.session_state.pop("platform_presence_analytics_fresh")
+
+                with st.expander("📊 Platform presence analytics", expanded=False):
+                    pa = platform_presence_analytics if isinstance(platform_presence_analytics, dict) else {}
+                    sw = pa.get("similarweb") if isinstance(pa.get("similarweb"), dict) else {}
+                    latest_visits = sw.get("latest_monthly_visits")
+                    latest_month = sw.get("latest_visits_month") or "latest"
+                    status = pa.get("status") or "unknown"
+                    updated = pa.get("updated_at") or "n/a"
+                    st.markdown(
+                        f"<div style='font-size:12px;color:var(--text-2);margin-bottom:8px;'>"
+                        f"Status: <b>{status}</b> · Updated: {updated}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    pc1, pc2, pc3 = st.columns(3)
+                    with pc1:
+                        st.metric("Monthly visits", f"{int(latest_visits):,}" if isinstance(latest_visits, (int, float)) else "n/a")
+                    with pc2:
+                        st.metric("Visits month", str(latest_month))
+                    with pc3:
+                        st.metric("Source", pa.get("source") or "similarweb+presence")
+
+                    channels = sw.get("channel_shares") if isinstance(sw.get("channel_shares"), dict) else {}
+                    if channels:
+                        chan_txt = ", ".join(
+                            f"{k}: {round(float(v) * 100, 1)}%"
+                            for k, v in sorted(channels.items(), key=lambda kv: (kv[1] or 0), reverse=True)
+                            if isinstance(v, (int, float))
+                        )
+                        st.markdown(f"**Traffic channels:** {chan_txt}" if chan_txt else "**Traffic channels:** n/a")
+                    else:
+                        st.caption("Traffic channels: n/a")
+
+                    socials = sw.get("top_social_networks") if isinstance(sw.get("top_social_networks"), list) else []
+                    if socials:
+                        social_details = pa.get("social_presence_details") if isinstance(pa.get("social_presence_details"), list) else []
+                        if social_details:
+                            s_txt = ", ".join(
+                                f"{d.get('network','unknown')} ({'yes' if d.get('present') else 'no'}, {d.get('confidence','low')})"
+                                for d in social_details[:7] if isinstance(d, dict)
+                            )
+                            st.markdown(f"**Social presence (search-confirmed):** {s_txt}" if s_txt else "**Social presence:** n/a")
+                        else:
+                            s_txt = ", ".join((s.get("network") or "unknown") for s in socials[:6] if isinstance(s, dict))
+                            st.markdown(f"**Top social networks:** {s_txt}" if s_txt else "**Top social networks:** n/a")
+                    else:
+                        social_details = pa.get("social_presence_details") if isinstance(pa.get("social_presence_details"), list) else []
+                        if social_details:
+                            s_txt = ", ".join(
+                                f"{d.get('network','unknown')} ({'yes' if d.get('present') else 'no'}, {d.get('confidence','low')})"
+                                for d in social_details[:7] if isinstance(d, dict)
+                            )
+                            st.markdown(f"**Social presence (search-confirmed):** {s_txt}" if s_txt else "Social presence: n/a")
+                        else:
+                            st.caption("Top social networks: n/a")
+
+                    rows = pa.get("platform_details") if isinstance(pa.get("platform_details"), list) else []
+                    if rows:
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            pname = (row.get("platform") or "").upper()
+                            present = "yes" if row.get("present") else "no"
+                            site_vis = row.get("site_monthly_visits")
+                            site_vis_txt = f"{int(site_vis):,}" if isinstance(site_vis, (int, float)) else "n/a"
+                            st.markdown(f"- **{pname}** · Presence: {present} · Site monthly visits: {site_vis_txt}")
+                            pos_sum = (row.get("positioning_summary") or "").strip()
+                            if pos_sum:
+                                st.caption(f"{pname} positioning: {pos_sum}")
+                    else:
+                        st.caption("No platform detail rows yet. Click refresh to fetch live analytics.")
+
+                    errs = sw.get("errors") if isinstance(sw.get("errors"), list) else []
+                    if errs:
+                        st.caption("Similarweb notes: " + "; ".join(str(e) for e in errs[:4]))
+
                 research_editing_section_key = f"research_editing_section_{cache_key}"
                 research_section_edits_key = f"research_section_edits_{cache_key}"
                 research_section_pending_key = f"research_section_pending_{cache_key}"
@@ -3079,6 +3299,46 @@ with tabs[3]:  # STRATEGIST
                             ph.markdown(response)
                         save_message(sid, "assistant", response)
                         st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+
+                        # If user asked to edit sequence drafts, apply targeted rewrite directly to stored steps.
+                        if _is_sequence_edit_request(prompt):
+                            seqs_now = get_active_sequences(sid)
+                            seq_to_edit = _latest_sequence_with_drafts(seqs_now)
+                            if seq_to_edit:
+                                target_steps = _resolve_instruction_targets(prompt, seq_to_edit.get("steps") or [])
+                                if target_steps:
+                                    rewrites = rewrite_sequence_steps_with_research(
+                                        comp,
+                                        ct_ctx,
+                                        user["id"],
+                                        sid,
+                                        target_steps,
+                                        prompt,
+                                        research_notes=rn,
+                                        sender_email=sender_email,
+                                        product_key=recommended_product_key,
+                                        recipient_research=recipient_research_data,
+                                    )
+                                    applied = 0
+                                    for rw in rewrites:
+                                        rid = rw.get("id")
+                                        new_text = (rw.get("revised_content") or "").strip()
+                                        if not rid or not new_text:
+                                            continue
+                                        update_action(
+                                            rid,
+                                            content_sent=new_text,
+                                            draft_revisions=[],
+                                            draft_original="",
+                                        )
+                                        st.session_state.pop(f"draft_revisions_list_{rid}", None)
+                                        st.session_state[f"draft_original_{rid}"] = new_text
+                                        st.session_state.pop(f"refine_version_sel_{rid}", None)
+                                        applied += 1
+                                    if applied:
+                                        st.success(f"Updated {applied} draft step(s) from strategist instruction.")
+                                elif re.search(r"\b(email|linkedin|step)\s*\d+\b", (prompt or "").lower()):
+                                    st.warning("I couldn't map that target to an existing draft step in the active sequence.")
                         maybe_update_summary(sid, comp, ct_ctx)
                         extract_episodic_memories(sid, response, comp)
                         detected = parse_ai_actions(response)
