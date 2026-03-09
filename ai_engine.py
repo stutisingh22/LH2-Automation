@@ -313,20 +313,106 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Adapt voice to the selected sender. Upneet: first-person founder ("I co-founded LH2..."). Aman: corp dev professional ("We at LH2 own and operate..."). Section 6 and signature adapt accordingly.
    - Templates in the training doc are structural guides, not fill-in-the-blank forms. The structure stays fixed. The language inside every section must be custom to the prospect based on the research brief. Test: if you swapped the prospect's name for a different prospect, would the email still make sense? If yes, it's not customized enough. Rewrite.
 
-4. MESSAGE DRAFTS  -  EMAIL FORMAT:
-   - Default format: 6-section Trust Builder (What is Accelerate → How it works → How we do it → Case Studies → MediaOS → Team). Every outreach email uses this structure.
-   - OPENING (mandatory): Personalized paragraph before Section 1. Reference something specific about the contact (role, background, recent move, public statements) AND something specific about the brand (traffic, content, syndication, competitive position, business model). Draw only from the research brief. Do NOT compare the prospect to other publishers in the opener. Do NOT cite competitor benchmarks in the opener. Keep the opener about them and their situation, then bridge naturally to "sharing details on LH2 Accelerate below."
-   - When RECIPIENT SOCIAL RESEARCH is present, use it to personalize: reference their interests, recent LinkedIn/Twitter activity, or published content in the opener.
-   - CASE STUDY SELECTION: Route based on the prospect's traffic profile.
-     → Syndication-first (low web traffic + MSN/Yahoo presence + entertainment/politics/sports/local): Lead with Inquisitr and CheatSheet syndication numbers.
-     → Web-growth (1M+ web traffic + web-driven + niche/enthusiast): Lead with NoFilmSchool.
-     → Blended: Lead with whichever case study is most analogous to the prospect.
-   - CLOSE: Low-pressure, generous. End with "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up." or a natural variation. Always reference the relevant attachments: "Sharing the Accelerate deck and case studies alongside this email" or similar.
-   - ATTACHMENTS: Always suggest specific files from the context folder. Check what's available and recommend the most relevant attachments for the prospect and email type.
-   - Acquisition emails: Use the 3-email sequence (short opener → follow-up → Accelerate pivot). Not the 6-section format.
+4. MESSAGE DRAFTS — EMAIL SEQUENCE FORMAT
+
+Always generate the full sequence: LinkedIn connection note + Emails 1-4 + optional Email 5. Never skip the LinkedIn step. The 6 content sections of the Trust Builder are distributed across Emails 1-4. Each email has a natural reason for being sent — it is a conversation thread, not a document delivered in installments.
+
+   LINKEDIN CONNECTION NOTE (Step 1, Day 0):
+   Hard limit 300 characters. Always the first touch.
+   Sender identity (Upneet: "I run LH2 Holdings..." / Aman: "I run corp dev at LH2 Holdings...") + one specific research-backed observation about their brand + "Would be great to connect."
+   No Accelerate pitch. No ask beyond connecting.
+
+WRITING RULES FOR ALL EMAILS:
+   - Plain flowing paragraphs only. NO section headers, NO numbered sections, NO bullet points inside emails.
+   - No paragraph longer than 3-4 lines.
+   - Never say "LH2 Accelerate program" — always just "LH2 Accelerate" or "Accelerate."
+   - Operator-to-operator tone throughout: calm, specific, direct, no pressure.
+   - Exactly one soft CTA per email.
+
+   THREAD CONTINUITY (critical):
+   - Every follow-up email (Emails 2, 3, 4) must open with a brief line that acknowledges the prior email and creates continuity. The reader should always know this is part of an ongoing thread — not a random cold email. Examples: "Following up on what I shared earlier this week — wanted to go deeper on how this would actually work for [Brand]." / "Sharing a bit more on the details I sent across — specifically the results from a brand that maps closely to [Brand]'s situation." One sentence is enough. It should feel natural, not mechanical.
+   - This is especially important because recipients often open emails out of order. Any single email in the sequence must make enough sense on its own that the reader doesn't feel lost — but it should also clearly signal it's part of a conversation already started.
+
+   BANNED IN ALL EMAILS — NO EXCEPTIONS:
+   - Never name or reference a competitor site in any email. The research brief may contain competitor intelligence for your context, but it must never appear in the outreach. No "competitors like X publish Y articles", no "unlike X, you...", no benchmarking against named third parties.
+   - Never compare the prospect to other publishers in any paragraph — opening or otherwise.
+
+   EMAIL 1 — SHORT PERSONALIZED OPENER:
+   Subject: LH2 Accelerate Details <> [Brand Name]
+   ALWAYS start with: "Hi [First Name],"
+   Keep this short. 3-4 paragraphs maximum. This is the hook — not the pitch.
+   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. Must feel like you've genuinely studied their operation. No flattery — a real observation.
+   Para 2: The gap or opportunity — 1-2 sentences identifying the specific constraint or unrealized opportunity you've spotted for them. Drawn from the research. This is what makes the email feel relevant rather than random.
+   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." Nothing about the model yet.
+   Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate route) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS route) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition route)
+   ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach.
+   No case studies. No workstream details. No MediaOS explanation. No team bio. Short, specific, ends with the deck named.
+
+   EMAIL 2 — WHAT IS ACCELERATE (the pitch):
+   Subject: Re: LH2 Accelerate Details <> [Brand Name]
+   ALWAYS start with: "Hi [First Name],"
+   Opening sentence: Must reference the deck sent in Email 1 and give a natural reason for following up — e.g. "Following up on the deck I shared — wanted to give you a bit more context on how Accelerate actually works." or "Sharing a bit more context on the deck I sent across — specifically how the partnership model is structured."
+   Para 1: LH2 Accelerate model in plain prose — what it is, how the partnership structure works. "LH2 invests its own team, tools, and playbooks to grow your brand. No upfront fee, no fixed cost. We participate only in the incremental profits we generate together. If there's no uplift, there's no cost to you."
+   Para 2: The two setup options in plain prose — Full-Stack (end-to-end: content ops, distribution, monetization all run by LH2 around their editorial voice) vs Editorial Pod (lighter touch: existing team stays as-is, LH2 adds a scoped satellite pod for incremental content only). Keep it brief — one short paragraph.
+   Para 3: Proof line — "Across live partnerships we've averaged 2.5-3x revenue growth within the first year." One sentence only.
+   Closing line: Natural bridge to Email 3 — e.g. "Wanted to share specifically how this would apply to [Brand] — sending that across next."
+   No attachments.
+
+   EMAIL 3 — HOW THIS APPLIES TO THEM (operational specifics):
+   Subject: Re: LH2 Accelerate Details <> [Brand Name]
+   ALWAYS start with: "Hi [First Name],"
+   Opening sentence: One natural line continuing the thread — e.g. "Following up on the Accelerate model I outlined — here's how we'd actually structure this for [Brand] specifically."
+   Para 1: Which model fits and why — drawn directly from the research brief. State the specific fit (Full-Stack or Editorial Pod) and the specific reason (their team size, content velocity, existing infrastructure, editorial setup). One concise paragraph.
+   Para 2: Content operations tailored to them — plain prose. What the pod would actually do for this brand specifically: which coverage gaps it fills, which content types it handles, how it integrates with their existing team and workflow. Drawn from research — not generic.
+   Para 3: Distribution tailored to them — plain prose. Which channels make sense for their specific profile. Syndication-heavy for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile and syndication presence from the research brief.
+   Para 4: Monetization tailored to them — plain prose. Which revenue levers apply to their specific situation. Close with: "Not all of this applies to every brand — we scope what's relevant during onboarding."
+   Closing line: "Happy to go deeper on any of this whenever it works."
+   No attachments.
+
+   EMAIL 4 — THE PROOF + MEDIAOS + TEAM + CLOSE:
+   Subject: Re: LH2 Accelerate Details <> [Brand Name]
+   ALWAYS start with: "Hi [First Name],"
+   Opening sentence: One natural line — e.g. "Wanted to share the results from the brand in our portfolio that maps most closely to [Brand]'s situation."
+   Para 1: Lead case study as plain prose narrative — where they started, what LH2 did, what the results were. Use exact numbers. No bullets. Tell it as a story.
+   Para 2: Supporting case study — shorter, plain prose, key numbers, why relevant to this prospect.
+   Para 3: Connect the case study starting point explicitly to this prospect's current situation in 1-2 sentences.
+   Para 4: MediaOS — plain prose. Enabling technology, not a product. Scans search demand, social signals, syndication networks, competitor coverage in real time. 10-15% of daily output drives majority of traffic — MediaOS picks more winners. Human-written only, no AI content. Include video link: https://www.youtube.com/watch?v=H055-BfpK8g
+   Para 5: Team — plain prose. Founder exits (Upneet → Getmyuni → CarDekho; Shobhit → Gradeup → Byju's). 150+ person editorial desk, SEO and distribution teams, in-house engineering. First-person if Upneet, third-person if Aman.
+   Close: "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up."
+   Attachments: LH2 Accelerate Deck + Case Studies deck (always); Inquisitr Detailed Case Study (if Inquisitr is lead).
+
+   EMAIL 5 — OPTIONAL GRACEFUL CLOSE (only if no response to Emails 1-4):
+   Subject: Re: LH2 Accelerate Details <> [Brand Name]
+   ALWAYS start with: "Hi [First Name],"
+   2-3 short paragraphs max.
+   Para 1: "Totally understand if this isn't the right time or fit for [Brand]. No pressure at all."
+   Para 2: Offer to compare notes on a specific topic from the research brief (syndication, content ops, distribution strategy, etc.) separately from any partnership conversation. "We're operators in the same space."
+   No ask. No attachments.
+
+   ACQUISITION SEQUENCE (very small brands only — estimated revenue < $10K/month with MSN/Yahoo presence):
+   Email 1 — Subject: Regarding Acquisition of [Website Name] || LH2 Holdings
+   Very short. Sender + LH2 identity + why this specific brand caught LH2's attention + ask if open to exploring acquisition + process timeline (2 weeks term sheet, 4 weeks due diligence, 6 weeks to close). No attachments.
+   Email 2 — Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings
+   Short follow-up. Restate LH2 portfolio context. One sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." No attachments.
+   Email 3 — Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings
+   Pivot to Accelerate. Acknowledge they may not want to sell. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed Accelerate pitch with workstreams and case studies. Attachments: LH2 Accelerate Deck + Case Studies deck.
+
+   MEDIAOS SEQUENCE (large/sophisticated publishers only — use sparingly):
+   Frame as "what we built to run our own newsrooms." Show the tooling, build credibility, steer toward "we can run this for you" (Accelerate). Never disclose that MediaOS was always aimed at Accelerate. Attachment: MediaOS Deck.
+
+   CASE STUDY ROUTING:
+   Syndication-first (low web traffic + MSN/Yahoo + entertainment/politics/sports/local): Lead Inquisitr, supporting CheatSheet and NoFilmSchool.
+   Web-growth (1M+ web traffic, primarily web-driven, niche/enthusiast): Lead NoFilmSchool, supporting CheatSheet and Inquisitr (Discover/organic).
+   Blended (meaningful web traffic AND syndication presence): Lead with most analogous case study, blend both angles.
+
+   GENERAL RULES:
+   - Customization test: if you swapped the prospect's name for a different prospect and the email still made sense, it's not customized enough. Rewrite.
+   - Each email introduces NEW information. Never repeat what was in a prior email.
+   - Sender adaptation: Upneet = first-person founder ("I co-founded LH2..."); Aman = corp dev professional ("We at LH2 own and operate..."). Section 6 adapts accordingly.
+   - When RECIPIENT SOCIAL RESEARCH is present, use it to personalize Email 1 specifically.
 
 5. MESSAGE DRAFTS  -  LINKEDIN FORMAT:
-   - LinkedIn is the only short-format channel. 50–120 words. Hard limit 300 characters for connection requests.
+   - LinkedIn is the only short-format channel. 50-120 words. Hard limit 300 characters for connection requests.
    - One specific observation from the research brief + who you are + brief LH2 context. No full Accelerate explanation on LinkedIn.
 
 6. CHANNEL INDEPENDENCE:
@@ -345,6 +431,13 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Emails: Always include "Subject:" line.
    - LinkedIn connection requests: Hard limit 300 characters.
    - Action format: ACTION: [channel] [day, date, time TZ]  -  [what to send and why]
+   - Email sequences: Label each email clearly and separately, in this exact format:
+       Email 1:
+       Email 2:
+       Email 3:
+       Email 4:
+       Email 5: (if included)
+     Do not merge emails or run them together. Each email is a distinct, labeled block.
 
 10. FORBIDDEN  -  NEVER USE IN ANY MESSAGE DRAFT:
     - Sales language: "I'd love to connect", "hope this finds you well", "excited to reach out", "at your earliest convenience", "would you be open to", "just following up", "I think we could add value", "looking forward to hearing from you"
@@ -633,7 +726,7 @@ def research_person_for_company(comp, research_notes, linkedin_url=None, email=N
     Uses Anthropic (Claude) only  -  no external search API, no Notion.
     All contact/SPOC information must come from the model's knowledge of
     publicly available information. Ignore any contact details in Notion.
-    Returns a short markdown SPOC brief (2–4 paragraphs).
+    Returns a short markdown SPOC brief (2-4 paragraphs).
     """
     domain = comp.get("domain") or "this company"
     company_line = f"Company: {domain} | {comp.get('publisher_type') or ' - '} | {comp.get('content_type') or ' - '}"
@@ -1008,65 +1101,111 @@ def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=No
 
     tz_info = get_local_time(ct.get("country", ""), ct.get("state", ""))
 
-    prompt = f"""Build a 4-5 step outreach sequence for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
+    linkedin_url = ct.get('linkedin', '') or ''
+
+    prompt = f"""Generate the full outreach sequence for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
 {sender_line}
 Contact timezone: {tz_info[1] or 'unknown'}
+Contact LinkedIn URL: {linkedin_url if linkedin_url.strip() else '(not on file — still generate LinkedIn step)'}
 
-Output each step in this exact pipe-delimited format, separated by blank lines:
+Output each touch in this exact pipe-delimited format, separated by blank lines:
 
 STEP|<number>|<LinkedIn or Email>|Day <offset>|<what this touch accomplishes>|<optimal send time with TZ>
 CONTENT: <full message text>
 
-== TONE GUIDANCE FOR DRAFTS ==
-Every message draft must match the sender's voice (see Sender Context above).
-General rules regardless of sender:
-- Opener: One brief, specific observation about the contact or their company. Not flattery  -  a real finding.
-- Body: Lead with a concrete data point. Numbers and specifics beat vague claims every time.
-- Close: Warm, low-pressure, open-ended. Offer to share more  -  don't demand a meeting.
-- NEVER use: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you"
+== SEQUENCE STRUCTURE ==
 
-== EXAMPLES OF CORRECT TONE ==
+First, determine the correct sequence type:
+- ACCELERATE (default, 95% of cases): Always generate the full sequence — LinkedIn note + 4 emails + optional Email 5.
+- ACQUISITION (only if estimated revenue < $10K/month with MSN/Yahoo presence): 3-email acquisition sequence.
+- MEDIAOS (only for very large/sophisticated publishers where a pod pitch is too forward): MediaOS door-opener sequence.
 
-GOOD LinkedIn (cold, 280 chars):
-"Hi [Name]  -  noticed [Company] has been growing editorial output fast over the last year. At LH2 we've helped similar publishers 2–3x revenue with no upfront fees. Worth a look? Happy to share details."
+== ACCELERATE SEQUENCE ==
 
-BAD LinkedIn (do NOT write like this):
-"Hi [Name], I came across your profile and I'd love to connect! I'm excited to share how LH2 Holdings could potentially add value to your organization. Would you be open to a quick call?"
+Always generate all steps. Do not skip the LinkedIn step regardless of whether a LinkedIn URL is provided.
 
-GOOD Email opener (cold outreach):
-"Hi [Name],
+  Step 1 — LinkedIn (Day 0): Connection note. Hard limit 300 characters.
+  Sender identity (Upneet: "I run LH2 Holdings..." / Aman: "I run corp dev at LH2 Holdings...") + one specific research-backed observation about their brand + "Would be great to connect."
+  If a LinkedIn URL is on file, include it in the step metadata. If not, still generate the message — the sender will find the profile manually.
 
-Reached out because [specific observation  -  e.g. traffic growth in a particular niche, a content gap, or a monetization pattern we've seen before].
+  Step 2 — Email 1 (Day 1-2): Subject: LH2 Accelerate Details <> [Brand Name]
+  ALWAYS open with: "Hi [First Name],"
+  SHORT. 3-4 paragraphs only. This is the hook — not the pitch.
+  Para 1: Personalized opening — 2-3 sentences from research brief. Something specific about their brand: traffic, engagement, content model, syndication presence, or a timing signal. Must feel like you've studied their operation. No flattery — a real observation.
+  Para 2: The gap or opportunity specific to them — 1-2 sentences drawn from the research. This is what makes the email feel relevant rather than random.
+  Para 3: One-line LH2 identity only — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brands]." Nothing about the model yet.
+  Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition)
+  ATTACHMENT: Always name the exact deck — LH2 Accelerate Deck for Accelerate outreach / MediaOS Deck for MediaOS / LH2 Intro Deck for acquisition.
+  No case studies. No workstream detail. No MediaOS explanation. No team bio. Short and ends with the deck named.
 
-At LH2 we partner with digital media brands to grow revenue  -  no upfront fees, we participate only in the incremental profits we generate. Founded by Upneet and Shobhit, both second-time founders. Across live partnerships we've averaged 2.5–3x revenue growth in year one.
+  Step 3 — Email 2 (Day 5-7): Subject: Re: LH2 Accelerate Details <> [Brand Name]
+  ALWAYS open with: "Hi [First Name],"
+  Opening: Must reference the deck sent in Email 1 — e.g. "Following up on the deck I shared — wanted to give you a bit more context on how Accelerate actually works." or "Sharing a bit more context on the deck I sent across — specifically how the partnership model is structured."
+  Para 1: Accelerate model in plain prose — LH2 invests its own team, tools, and playbooks. No upfront fee, no fixed cost. We participate only in incremental profits. If no uplift, no cost.
+  Para 2: The two setup options in plain prose — Full-Stack (end-to-end: content ops, distribution, monetization all run by LH2 around their editorial voice) vs Editorial Pod (lighter: existing team stays exactly as-is, LH2 adds a scoped satellite pod for incremental content only). One short paragraph, no headers.
+  Para 3: "Publisher retains 100% ownership. Existing team, monetization stack, and baseline economics stay untouched. Across live partnerships we've averaged 2.5-3x revenue growth within the first year."
+  Closing: Natural bridge to Email 3 — e.g. "Wanted to share specifically how this would apply to [Brand] — sending that across next."
+  No attachments.
 
-Happy to share full details whenever it works for you. Let me know what questions come up."
+  Step 4 — Email 3 (Day 10-12): Subject: Re: LH2 Accelerate Details <> [Brand Name]
+  ALWAYS open with: "Hi [First Name],"
+  Opening: Thread continuity — one natural line. e.g. "Following up on the Accelerate overview — wanted to get specific about how we'd structure this for [Brand]."
+  Para 1: Which model fits and why — Full-Stack or Editorial Pod, with the specific reason drawn from the research brief (their team size, content velocity, existing infrastructure, editorial setup). One concise paragraph.
+  Para 2: Content operations tailored to them — what the pod would actually do for this brand: which coverage gaps it fills, which content types, how it integrates with their existing team and workflow. Drawn from research — not generic.
+  Para 3: Distribution tailored to them — which channels make sense for their specific profile. Syndication-heavy (MSN/NewsBreak/Yahoo) for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile from the research brief.
+  Para 4: Monetization tailored to them — which revenue levers apply to their specific model. Close: "Not all of this applies to every brand — we scope what's relevant during onboarding."
+  Closing: "Happy to go deeper on any of this whenever it works."
+  No attachments.
 
-BAD Email opener (do NOT write like this):
-"Hi [Name],
+  Step 5 — Email 4 (Day 16-18): Subject: Re: LH2 Accelerate Details <> [Brand Name]
+  ALWAYS open with: "Hi [First Name],"
+  Opening: Thread continuity — e.g. "Wanted to share the results from the brand in our portfolio that maps most closely to [Brand]'s situation — and a bit on how we pick stories."
+  Para 1: Lead case study as plain prose narrative — where they started, what LH2 did, what the results were. Use exact numbers from the case study data. No bullets. Tell it as a story.
+  Para 2: Supporting case study — shorter, plain prose, key numbers, why relevant to this prospect.
+  Para 3: 1-2 sentences explicitly connecting the case study starting point to this prospect's current situation.
+  Para 4: MediaOS — plain prose. Enabling technology, not a product. Scans search demand, social signals, syndication networks, competitor coverage in real time. 10-15% of daily output drives majority of traffic — MediaOS picks more winners. Human-written only, no AI content. Include video link: https://www.youtube.com/watch?v=H055-BfpK8g
+  Para 5: Team — plain prose. Upneet (Getmyuni → CarDekho) and Shobhit (Gradeup → Byju's). 150+ person editorial desk, SEO and distribution teams, in-house engineering. First-person if Upneet, third-person if Aman.
+  Close: "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up."
+  Attachments: LH2 Accelerate Deck + Case Studies deck (always); Inquisitr Detailed Case Study (if Inquisitr is lead).
 
-Hope this email finds you well! I'm excited to reach out because I believe there could be great synergy between our organizations. I'd love to connect and explore how we could potentially add value to your business. Would you be open to a quick 15-minute call at your earliest convenience?"
+  Step 6 — Email 5 (Day 22-25, OPTIONAL — only if no response to Emails 1-4):
+  Subject: Re: LH2 Accelerate Details <> [Brand Name]
+  ALWAYS open with: "Hi [First Name],"
+  2-3 short paragraphs only.
+  Para 1: "Totally understand if this isn't the right time or fit for [Brand]. No pressure at all."
+  Para 2: Offer to compare notes on a specific topic from the research brief separately from any partnership conversation. "We're operators in the same space."
+  No ask. No attachments.
 
-== FORMAT ==
+If no LinkedIn URL is on file, note it in the execution notes at the end of the sequence so the sender knows to find the profile manually before sending Step 1.
 
-STEP|1|LinkedIn|Day 0|Initial connection with research hook|Tuesday 9:00 AM EST
-CONTENT: Hi [name], [one specific research finding about their company]. At LH2 we've helped similar publishers [specific outcome]. Happy to share details if useful.
+== ACQUISITION SEQUENCE ==
+  Step 1 — Email (Day 0): Subject: Regarding Acquisition of [Website Name] || LH2 Holdings. Very short. Sender + LH2 identity + why this brand specifically caught LH2's attention + ask if open to acquisition + process timeline. No attachments.
+  Step 2 — Email (Day 5-7): Subject: Re: ... Short follow-up. LH2 portfolio context + one sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." No attachments.
+  Step 3 — Email (Day 12-14): Subject: Re: ... Pivot to Accelerate. Acknowledge they may not want to sell. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed pitch with workstreams and case studies. Attachments: LH2 Accelerate Deck + Case Studies deck.
 
-Constraints:
-- Step 1: Always LinkedIn connection request. Hard limit 300 characters.
-- Steps 2-5: Mix Email and LinkedIn. Each step must advance the conversation  -  no repetition.
-- Every step must have complete message text after CONTENT:  -  no placeholders.
-- Emails: First line of CONTENT must be "Subject: <subject line>", then body.
-- Reference specific research findings from the context above in at least 2 steps.
-- Timing: Use contact's timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for Email, lunch hours for LinkedIn.
+== HARD CONSTRAINTS ==
+- Every CONTENT block must be fully written — no placeholders, no [INSERT X HERE].
+- Emails: First line of CONTENT must be "Subject: <subject line>" then a blank line then the body.
+- Plain paragraphs only inside every email. No section headers. No numbered lists. No bullet points.
+- No paragraph longer than 4 lines.
+- Never say "LH2 Accelerate program" — always "LH2 Accelerate" or just "Accelerate."
+- Personalized opening is mandatory on every email — drawn from the research brief. No generic openers.
+- Never promise specific results. Use past results as reference only.
+- Never draft to editorial contacts — management/CEO/founder only.
+- Timing: contact's local timezone. Avoid Mondays and Fridays. Mornings (8-10 AM) for email, midday for LinkedIn.
+- Forbidden in ALL messages: "I'd love to connect", "hope this finds you well", "excited to reach out", "synergy", "leverage", "would you be open to", "at your earliest convenience", "just following up", "looking forward to hearing from you", "transform", "game-changer", "disrupt", "AI-powered", "unlock", "revolutionize", "innovative", "cutting-edge", "world-class"
 
-== CHANNEL INDEPENDENCE RULE (strictly enforced) ==
-Each channel (LinkedIn and Email) operates independently. Messages must NEVER reference activity on a different channel.
-- A LinkedIn message must NEVER mention "my email", "I sent you an email", "as I mentioned in my message", or any reference to email contact.
-- An email must NEVER mention "my LinkedIn message", "I connected with you on LinkedIn", "I reached out on LinkedIn", or any reference to LinkedIn contact.
-- Every message must stand entirely on its own  -  written as if it is the first time this person is hearing from you on that channel.
-- LinkedIn follow-ups build on prior LinkedIn interaction only. Email follow-ups build on prior email interaction only.
-- The reader of any single message should have no idea they were also contacted on another platform."""
+THREAD CONTINUITY (strictly enforced):
+- Emails 2, 3, and 4 must each open with one brief sentence that acknowledges the prior email and creates continuity. The reader should always know this is part of an ongoing thread. One sentence is enough — e.g. "Following up on what I shared earlier this week — wanted to go deeper on how this would actually work for [Brand]." or "Sharing a bit more on the details I sent across — specifically the results from a brand that maps closely to [Brand]'s situation."
+- Any single email in the sequence must make sense if opened in isolation — but must also clearly signal it is part of a conversation already in progress.
+
+COMPETITOR COMPARISONS — STRICTLY BANNED:
+- Never name a competitor site in any email under any circumstance. Not in openers, not in body, not anywhere.
+- The research brief may contain competitor intelligence — use it to understand the prospect's situation, never to write about it in the email.
+- No benchmarking against named third parties. No "unlike X", no "competitors like X publish Y", no "X is doing Z while you are doing W."
+
+== CHANNEL INDEPENDENCE ==
+LinkedIn and email operate independently. A LinkedIn message must never reference emails sent. An email must never reference LinkedIn messages. Every message reads as if it is the first contact on that channel."""
 
     try:
         r = create_with_retry(
