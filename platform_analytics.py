@@ -336,93 +336,75 @@ def _search_social_presence(domain: str) -> list[dict[str, Any]]:
     return out
 
 
+def _simple_platform_presence_check(brand: str, platform: str, host: str) -> dict[str, Any]:
+    """
+    Search "{brand} {platform}" and check if any of the top 3 results
+    have the platform host in their href. Fast, simple, accurate.
+    If present, return the matching results for summarization.
+    """
+    query = f"{brand} {platform}"
+    try:
+        rows = text_search(query, max_results=3)
+    except Exception as e:
+        log.warning("Presence check failed for %s/%s: %s", brand, platform, e)
+        return {"present": False, "results": []}
+
+    matching = []
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        href = (r.get("href") or "").lower()
+        if host in href:
+            matching.append({
+                "title": (r.get("title") or "").strip(),
+                "body": (r.get("body") or "").strip(),
+                "href": href,
+            })
+
+    return {"present": bool(matching), "results": matching}
+
+
 def _platform_positioning_from_search(
     domain: str, presence_results: dict[str, list]
 ) -> dict[str, dict[str, Any]]:
     """
-    For each syndication platform, search for articles that originated from
-    this specific domain, then summarize with Anthropic API.
+    Simple, fast, accurate platform presence and positioning.
+    Step 1: Search "{brand} {platform}" — check top 3 results for platform host in href.
+    Step 2: If present, summarize those results via Anthropic API.
     """
     brand = domain.split(".")[0] if "." in domain else domain
 
-    platform_config = {
-        "msn": {
-            "host": "msn.com",
-            "queries": [
-                f'"{domain}" site:msn.com',
-                f'"{brand}" site:msn.com',
-                f"{brand} msn.com articles news",
-            ],
-        },
-        "yahoo": {
-            "host": "yahoo.com",
-            "queries": [
-                f'"{domain}" site:yahoo.com',
-                f'"{brand}" site:yahoo.com',
-                f"{brand} yahoo.com articles news",
-            ],
-        },
-        "newsbreak": {
-            "host": "newsbreak.com",
-            "queries": [
-                f'"{domain}" site:newsbreak.com',
-                f'"{brand}" site:newsbreak.com',
-                f"{brand} newsbreak.com articles",
-            ],
-        },
+    platforms = {
+        "msn": "msn.com",
+        "yahoo": "yahoo.com",
+        "newsbreak": "newsbreak.com",
     }
 
     positioning = {}
-    for platform, cfg in platform_config.items():
-        host = cfg["host"]
-        all_results = []
+    for platform, host in platforms.items():
+        check = _simple_platform_presence_check(brand, platform, host)
+        present = check["present"]
+        results = check["results"]
 
-        for query in cfg["queries"]:
-            try:
-                rows = text_search(query, max_results=5)
-                for r in (rows or []):
-                    if not isinstance(r, dict):
-                        continue
-                    href = (r.get("href") or "").lower()
-                    title = (r.get("title") or "").strip()
-                    body = (r.get("body") or "").strip()
-                    combined = f"{title} {body}".lower()
-
-                    # Must be on the right platform
-                    if host not in href:
-                        continue
-
-                    # Must actually reference the brand/domain — not just generic platform content
-                    if (
-                        brand.lower() in combined
-                        or domain.lower() in combined
-                        or domain.lower() in href
-                    ):
-                        all_results.append({"title": title, "body": body, "href": href})
-
-                if len(all_results) >= 3:
-                    break
-            except Exception as e:
-                log.warning("Platform positioning search failed for %s/%s: %s", domain, platform, e)
-                continue
-
-        evidence_urls = list(dict.fromkeys(r["href"] for r in all_results if r["href"]))[:5]
-
-        if all_results:
-            summary = _summarize_platform_presence(domain, platform, all_results)
+        if present:
+            summary = _summarize_platform_presence(domain, platform, results)
+            evidence_urls = [r["href"] for r in results if r["href"]][:3]
             mode = "present"
         else:
-            summary = f"No syndicated content from {domain} found on {host}."
-            mode = "unknown"
+            summary = f"{brand} does not appear on {host} in top search results."
+            evidence_urls = []
+            mode = "not_found"
 
         positioning[platform] = {
             "mode": mode,
+            "present": present,
             "summary": summary,
             "evidence_urls": evidence_urls,
-            "result_count": len(all_results),
+            "result_count": len(results),
         }
 
     return positioning
+
 
 
 def _summarize_platform_presence(

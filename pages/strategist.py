@@ -457,6 +457,11 @@ def render():
                 if st.button("🎯 Full Plan", key="gen_plan", use_container_width=True):
                     with st.spinner("Building outreach plan..."):
                         rn = st.session_state.research_cache.get(cid, [])
+                        if not rn:
+                            extra = comp.get("extra_data") or {}
+                            rn = extra.get("research_notes") or []
+                            if not rn and (extra.get("research_full") or "").strip():
+                                rn = [{"title": "Research Document", "content": extra.get("research_full")}]
                         recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
                         plan = generate_outreach_plan(
                             comp, ct, user["id"], sid, sender_name, rn,
@@ -466,6 +471,11 @@ def render():
                         )
                         if plan:
                             st.session_state.pending_plan = plan
+                        else:
+                            st.error(
+                                "Could not generate the outreach plan. "
+                                "Check that research brief and platform presence context are loaded, then try again."
+                            )
 
             # ── Pending plan preview ──
             if st.session_state.pending_plan:
@@ -559,6 +569,11 @@ def render():
                 save_message(sid, "user", prompt)
                 st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
                 rn = st.session_state.research_cache.get(cid, [])
+                if not rn:
+                    extra = comp.get("extra_data") or {}
+                    rn = extra.get("research_notes") or []
+                    if not rn and (extra.get("research_full") or "").strip():
+                        rn = [{"title": "Research Document", "content": extra.get("research_full")}]
                 recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
                 with st.chat_message("assistant"):
                     chunks = []

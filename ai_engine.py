@@ -122,6 +122,279 @@ def _get_product_context_block(product_key: str) -> str:
         return ""
 
 
+def _extract_platform_presence(comp):
+    """
+    Read platform presence from company extra_data.
+    Prefer platform_presence_analytics (fresh snapshot), fallback to platform_presence.
+    """
+    extra = (comp or {}).get("extra_data") or {}
+    analytics = extra.get("platform_presence_analytics") or {}
+    analytics_presence = analytics.get("platform_presence") or {}
+    base_presence = extra.get("platform_presence") or {}
+
+    def _coerce_bool(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in {"true", "yes", "1", "present"}:
+                return True
+            if s in {"false", "no", "0", "absent"}:
+                return False
+        return None
+
+    out = {}
+    source = "none"
+    for platform in ("msn", "yahoo", "newsbreak"):
+        val = _coerce_bool(analytics_presence.get(platform, None))
+        if val is not None:
+            out[platform] = val
+            source = "platform_presence_analytics"
+            continue
+        val = _coerce_bool(base_presence.get(platform, None))
+        if val is not None:
+            out[platform] = val
+            if source == "none":
+                source = "platform_presence"
+            continue
+        # Fallback: many snapshots store presence as top-level booleans.
+        val = _coerce_bool(analytics.get(f"{platform}_presence", None))
+        if val is not None:
+            out[platform] = val
+            if source == "none":
+                source = "platform_presence_analytics"
+            continue
+        # Fallback: infer from positioning evidence.
+        p = (analytics.get("platform_positioning") or {}).get(platform) or {}
+        if int(p.get("result_count") or 0) > 0:
+            out[platform] = True
+            if source == "none":
+                source = "platform_positioning"
+            continue
+        out[platform] = None
+
+    # Final fallback: use the same CSV-backed source as Companies navigation.
+    # This is only used when no deterministic platform signal exists in extra_data.
+    if all(v is None for v in out.values()):
+        try:
+            from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+            domain = (comp or {}).get("domain") or ""
+            tracker_map = load_domain_to_platforms()
+            csv_presence = get_presence_for_domain(domain, tracker_map) or {}
+            for platform in ("msn", "yahoo", "newsbreak"):
+                val = _coerce_bool(csv_presence.get(platform, None))
+                if val is not None:
+                    out[platform] = val
+            if any(v is not None for v in out.values()):
+                source = "tracker_sources_csv_fallback"
+        except Exception:
+            pass
+    return out, source, analytics
+
+
+def _build_platform_presence_block(comp):
+    presence, source, analytics = _extract_platform_presence(comp)
+    labels = []
+    for platform in ("msn", "yahoo", "newsbreak"):
+        state = presence.get(platform, None)
+        txt = "present" if state is True else "absent" if state is False else "unknown"
+        labels.append(f"{platform.upper()}: {txt}")
+
+    details = []
+    positioning = analytics.get("platform_positioning") or {}
+    for platform in ("msn", "yahoo", "newsbreak"):
+        p = positioning.get(platform) or {}
+        summary = (p.get("summary") or "").strip()
+        if summary:
+            details.append(f"- {platform.upper()}: {summary[:500]}")
+
+    details_block = "\n".join(details) if details else "(No platform positioning summaries available.)"
+    return (
+        "== PLATFORM PRESENCE ==\n"
+        f"Source: {source}\n"
+        f"{' | '.join(labels)}\n"
+        "Platform details:\n"
+        f"{details_block}"
+    )
+
+
+def _build_platform_painpoint_block(comp):
+    """
+    Deterministically derive platform pain points, including "present but weak".
+    """
+    presence, _, analytics = _extract_platform_presence(comp)
+    positioning = analytics.get("platform_positioning") or {}
+
+    weak_kws = (
+        "low", "limited", "thin", "inconsistent", "sporadic", "decline",
+        "drop", "weak", "not found", "few", "small volume",
+    )
+    lines = []
+    for platform in ("msn", "yahoo", "newsbreak"):
+        state = presence.get(platform, None)
+        p = positioning.get(platform) or {}
+        summary = (p.get("summary") or "").strip()
+        result_count = int(p.get("result_count") or 0)
+        sl = summary.lower()
+
+        if state is True:
+            weak = (0 < result_count <= 1) or any(k in sl for k in weak_kws)
+            if weak:
+                reason = summary[:220] if summary else "signal count is low"
+                lines.append(
+                    f"- {platform.upper()} is present but under-leveraged. Treat as painpoint: improve consistency/volume/engagement. Evidence: {reason}."
+                )
+            else:
+                lines.append(
+                    f"- {platform.upper()} is present with usable signal. Position as optimization upside, not absence."
+                )
+        elif state is False:
+            lines.append(
+                f"- {platform.upper()} appears absent. Treat as expansion painpoint only if relevant to their content model."
+            )
+        else:
+            lines.append(
+                f"- {platform.upper()} is unknown. Do not assert absence; frame as potential blind spot pending validation."
+            )
+
+    return "== PLATFORM PAINPOINTS (deterministic) ==\n" + "\n".join(lines)
+
+
+def _validate_strategist_context(comp, research_notes=None):
+    """
+    Strategist must have both research brief context and platform presence context.
+    Returns (ok, message_if_not_ok).
+    """
+    extra = (comp or {}).get("extra_data") or {}
+    has_research_full = bool((extra.get("research_full") or "").strip())
+    has_notes = bool(research_notes) or bool(extra.get("research_notes"))
+    has_research_context = has_research_full or has_notes
+
+    presence, _, _ = _extract_platform_presence(comp)
+    has_platform_context = any(v is not None for v in presence.values())
+
+    if has_research_context and has_platform_context:
+        return True, ""
+
+    missing = []
+    if not has_research_context:
+        missing.append("research brief")
+    if not has_platform_context:
+        missing.append("platform presence")
+    missing_txt = " and ".join(missing)
+    msg = (
+        "I need more context before giving strategist guidance. "
+        f"Missing: {missing_txt}. "
+        "Please load the research brief and refresh platform presence analytics for this company, then ask again."
+    )
+    return False, msg
+
+
+def _build_research_context(comp, research_notes=None):
+    """
+    Build a thorough research context from all available sources.
+    """
+    extra = (comp or {}).get("extra_data") or {}
+    parts = []
+    seen_titles = set()
+
+    raw_full = (extra.get("research_full") or "").strip()
+    if raw_full:
+        try:
+            from ui_helpers import is_html_content, html_to_plain_text
+            if is_html_content(raw_full):
+                raw_full = html_to_plain_text(raw_full, max_length=26000)
+        except Exception:
+            pass
+        if raw_full.strip():
+            parts.append("\n--- Research Document ---\n" + raw_full[:26000])
+
+    overrides = extra.get("research_overrides") or {}
+    merged_notes = []
+    if isinstance(research_notes, list):
+        merged_notes.extend(research_notes)
+    if isinstance(extra.get("research_notes"), list):
+        merged_notes.extend(extra.get("research_notes"))
+
+    for note in merged_notes:
+        if not isinstance(note, dict):
+            continue
+        title = (note.get("title") or "Untitled").strip()
+        key = title.lower()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        body = (overrides.get(title) if isinstance(overrides.get(title), str) else note.get("content")) or ""
+        body = (body or "").strip()
+        if not body:
+            continue
+        tag = " (LOCAL OVERRIDE)" if isinstance(overrides.get(title), str) and overrides.get(title).strip() else ""
+        parts.append(f"\n--- {title}{tag} ---\n{body[:5000]}\n")
+
+    return "".join(parts).strip()
+
+
+def _build_research_coverage_block(research_context):
+    sections = re.findall(r"---\s*([^-\n]+?)\s*---", research_context or "")
+    uniq = []
+    seen = set()
+    for s in sections:
+        t = s.strip()
+        k = t.lower()
+        if t and k not in seen:
+            seen.add(k)
+            uniq.append(t)
+    if not uniq:
+        return "== RESEARCH COVERAGE ==\nSections loaded: none"
+    preview = ", ".join(uniq[:12])
+    more = "" if len(uniq) <= 12 else f", +{len(uniq) - 12} more"
+    return f"== RESEARCH COVERAGE ==\nSections loaded ({len(uniq)}): {preview}{more}"
+
+
+def _build_context_health_block(comp, research_notes=None):
+    ok, reason = _validate_strategist_context(comp, research_notes=research_notes)
+    if ok:
+        return "== CONTEXT HEALTH ==\nStatus: complete"
+    return (
+        "== CONTEXT HEALTH ==\n"
+        "Status: partial\n"
+        f"Gap: {reason}\n"
+        "Instruction: Continue with available evidence. Do not fabricate missing details."
+    )
+
+
+def _extract_painpoint_signals(research_context, platform_block, max_items=8):
+    text = ((research_context or "") + "\n" + (platform_block or "")).strip()
+    if not text:
+        return "(No painpoint signals extracted.)"
+    clean = re.sub(r"\s+", " ", text)
+    chunks = re.split(r"(?<=[.!?])\s+", clean)
+    kws = (
+        "gap", "decline", "drop", "under", "low", "limited", "constraint", "bottleneck",
+        "miss", "missing", "risk", "volatility", "dependency", "concentration", "thin",
+        "inconsistent", "slow", "stagnant", "weak", "pressure", "absent"
+    )
+    out = []
+    seen = set()
+    for sent in chunks:
+        s = sent.strip()
+        if len(s) < 30 or len(s) > 260:
+            continue
+        sl = s.lower()
+        if not any(k in sl for k in kws):
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", sl)[:120]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f"- {s}")
+        if len(out) >= max_items:
+            break
+    return "\n".join(out) if out else "(No explicit painpoint wording found. Infer broad + specific constraints from research facts.)"
+
+
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
 def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
@@ -145,36 +418,8 @@ def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=N
         or "(None yet.)"
     )
 
-    # Research context  -  prefer Command Center research_full when set; else Notion notes/overrides
-    research_context = ""
-    extra = comp.get("extra_data") or {}
-    if extra.get("research_full"):
-        raw = (extra["research_full"] or "")[:18000]
-        try:
-            from ui_helpers import is_html_content, html_to_plain_text
-            if is_html_content(raw):
-                raw = html_to_plain_text(raw, max_length=18000)
-        except Exception:
-            pass
-        research_context = "\n--- Research Document ---\n" + raw
-    if not research_context:
-        overrides = extra.get("research_overrides") or {}
-        if research_notes:
-            for note in research_notes:
-                title = note.get("title", "").strip() or "Untitled"
-                ovr = overrides.get(title)
-                if isinstance(ovr, str) and ovr.strip():
-                    research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
-                else:
-                    research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
-        if not research_context:
-            for note in extra.get("research_notes", []):
-                title = note.get("title", "").strip() or "Untitled"
-                ovr = overrides.get(title)
-                if isinstance(ovr, str) and ovr.strip():
-                    research_context += f"\n--- {title} (LOCAL OVERRIDE) ---\n{ovr[:3000]}\n"
-                else:
-                    research_context += f"\n--- {title} ---\n{(note.get('content') or '')[:3000]}\n"
+    # Research context  -  merge research_full + notes for full strategist grounding.
+    research_context = _build_research_context(comp, research_notes=research_notes)
 
     drive_ctx = build_drive_context(comp.get("name", ""), comp.get("domain", ""))
     lh2_knowledge = get_lh2_knowledge_context()
@@ -270,6 +515,11 @@ Signature to use:
         drive_context=drive_ctx,
     )
     strategy_block = format_strategy_profile_block(strategy_profile)
+    platform_presence_block = _build_platform_presence_block(comp)
+    platform_painpoint_block = _build_platform_painpoint_block(comp)
+    research_coverage_block = _build_research_coverage_block(research_context)
+    context_health_block = _build_context_health_block(comp, research_notes=research_notes)
+    painpoint_signals_block = _extract_painpoint_signals(research_context, platform_presence_block)
 
     system = f"""You are the LH2 Strategic Outreach Advisor  -  a digital media partnership strategist with persistent memory.
 
@@ -295,6 +545,12 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 == RESEARCH ==
 {research_context if research_context else '(None available.)'}
+{research_coverage_block}
+{platform_presence_block}
+{platform_painpoint_block}
+{context_health_block}
+== PAINPOINT SIGNALS (extracted from available context) ==
+{painpoint_signals_block}
 
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
 == DYNAMIC STRATEGY PROFILE (deterministic extraction from research) ==
@@ -315,12 +571,15 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
    - Every claim, number, or reference in the draft must trace back to the provided research brief or context folder. If a data point isn't in the research, don't use it.
    - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
+   - Platform claims MUST align with PLATFORM PRESENCE above. Do not assume presence or absence when marked unknown.
+   - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
 
 2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis):
    - Be directive. State what to do and why. Never say "you could" or "consider"  -  say "do this because."
    - Cite the specific research finding, data point, or pattern behind each recommendation.
    - When recommending an approach (Accelerate vs. Acquisition vs. MediaOS door-opener), state the signal from the research brief that drives the decision.
    - Use the DYNAMIC STRATEGY PROFILE as the primary planning scaffold (route, hook, distribution focus, and risk flags), then tailor wording with the research details.
+   - Every recommendation must include: (a) one BROAD painpoint (structural/strategic), and (b) one SPECIFIC painpoint (concrete evidence from research).
 
 3. MESSAGE DRAFTS  -  GENERAL RULES:
    - Voice: One operator writing to another. Calm, senior, grounded. Confident without arrogance, specific without jargon, direct without pressure. Warm but professional.
@@ -343,6 +602,8 @@ WRITING RULES FOR ALL EMAILS:
    - Never say "LH2 Accelerate program" — always just "LH2 Accelerate" or "Accelerate."
    - Operator-to-operator tone throughout: calm, specific, direct, no pressure.
    - Exactly one soft CTA per email.
+   - Every email must contain both: (1) one broad painpoint framing sentence, and (2) one specific painpoint sentence anchored to research evidence.
+   - If a platform is present but weak/limited/inconsistent, explicitly frame that as an under-leveraged painpoint and tie it to the proposed fix.
 
    THREAD CONTINUITY (critical):
    - Every follow-up email (Emails 2, 3, 4) must open with a brief line that acknowledges the prior email and creates continuity. The reader should always know this is part of an ongoing thread — not a random cold email. Examples: "Following up on what I shared earlier this week — wanted to go deeper on how this would actually work for [Brand]." / "Sharing a bit more on the details I sent across — specifically the results from a brand that maps closely to [Brand]'s situation." One sentence is enough. It should feel natural, not mechanical.
@@ -1110,6 +1371,11 @@ def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=No
     Generate a structured outreach sequence.
     Returns list of dicts: [{step, channel, day_offset, description, content_draft, timing_note}, ...]
     """
+    ok, reason = _validate_strategist_context(comp, research_notes=research_notes)
+    if not ok:
+        # Do not hard-block plan generation; keep running and let prompt constraints
+        # ground output to available context. UI can still surface this warning.
+        log.warning("Generating outreach plan with partial context: %s", reason)
     system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
 
     sender_line = f"Sender name: {sender_name}" if sender_name else ""
