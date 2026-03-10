@@ -4228,6 +4228,8 @@ with tabs[11]:  # BULK IMPORT
                 "exists": st.column_config.CheckboxColumn("Exists", disabled=True),
                 "classification": st.column_config.SelectboxColumn("Classification", options=["independent", "media_house"]),
                 "parent_name": st.column_config.TextColumn("AI parent (suggested)", disabled=True),
+                "parent_suggested": st.column_config.TextColumn("DB match (suggested)", disabled=True, help="Suggested from your existing Media House parent names (no hallucination)"),
+                "match_reason": st.column_config.TextColumn("Match reason", disabled=True),
                 "parent_confirmed": st.column_config.SelectboxColumn("Parent (confirmed)", options=parent_options),
                 "status": st.column_config.TextColumn("Status", disabled=True),
             },

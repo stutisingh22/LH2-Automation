@@ -31,6 +31,38 @@ log = logging.getLogger(__name__)
 # Column names we treat as domain (first match wins)
 DOMAIN_COLUMN_CANDIDATES = ("domain", "Domain", "website", "Website", "url", "URL", "site", "Site", "domain_name")
 
+def _norm_parent_key(name: str) -> str:
+    """Normalize parent/company names for matching (case/space/punctuation-insensitive)."""
+    s = (name or "").strip().lower()
+    return "".join(ch for ch in s if ch.isalnum())
+
+
+def _suggest_parent_from_data(ai_parent_name: str, ai_parent_match: str, existing_parents: List[str]) -> tuple[str, str]:
+    """
+    Suggest a parent from the existing list only. Returns (suggested_parent, reason).
+    Never returns a value not present in existing_parents.
+    """
+    if not existing_parents:
+        return "", "no existing parents"
+    existing = list(existing_parents)
+    by_key = {_norm_parent_key(p): p for p in existing if p}
+
+    # If model already provided an allowed exact match, trust it (still grounded in list).
+    if ai_parent_match and ai_parent_match in existing:
+        return ai_parent_match, "model_allowed_exact"
+
+    k = _norm_parent_key(ai_parent_name or "")
+    if k and k in by_key:
+        return by_key[k], f"normalized_key_match({ai_parent_name}→{by_key[k]})"
+
+    # Containment heuristic on normalized keys (e.g. 'voxmedia' vs 'voxmediagroup')
+    if k:
+        for ek, disp in by_key.items():
+            if ek and (ek in k or k in ek):
+                return disp, f"normalized_contains({ai_parent_name}→{disp})"
+
+    return "", "no_safe_match"
+
 
 def _parse_domains_from_file(uploaded_file) -> List[str]:
     """Parse CSV or XLSX and return list of domain-like strings (raw, not yet normalized)."""
@@ -118,7 +150,7 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
         domains.append(norm)
 
     existing_parents = get_existing_parent_media_houses()
-    classified = classify_domains_independent_or_media_house(domains)
+    classified = classify_domains_independent_or_media_house(domains, allowed_parents=existing_parents)
     by_dom = {normalize_domain(c.get("domain") or ""): c for c in classified if c}
 
     for d in domains:
@@ -128,6 +160,10 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
         if cl not in ("independent", "media_house"):
             cl = "independent"
         parent = (c.get("parent_name") or "").strip()
+        parent_match = (c.get("parent_match") or "").strip()
+        suggested, reason = ("", "")
+        if cl == "media_house":
+            suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
         result["rows"].append({
             "do_import": not exists,
             "input": d,
@@ -135,7 +171,9 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
             "exists": exists,
             "classification": cl,
             "parent_name": parent,
-            "parent_confirmed": "",
+            "parent_suggested": suggested,
+            "match_reason": reason,
+            "parent_confirmed": suggested,
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents
@@ -151,7 +189,7 @@ def analyze_from_entries(entries: List[str]) -> dict:
         return result
 
     existing_parents = get_existing_parent_media_houses()
-    classified = classify_entries_independent_or_media_house(entries)
+    classified = classify_entries_independent_or_media_house(entries, allowed_parents=existing_parents)
     # map by exact input (lower) to keep order
     by_inp = {(c.get("input") or "").strip().lower(): c for c in (classified or []) if isinstance(c, dict)}
     for inp in entries:
@@ -162,6 +200,10 @@ def analyze_from_entries(entries: List[str]) -> dict:
         if cl not in ("independent", "media_house"):
             cl = "independent"
         parent = (c.get("parent_name") or "").strip()
+        parent_match = (c.get("parent_match") or "").strip()
+        suggested, reason = ("", "")
+        if cl == "media_house":
+            suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
         result["rows"].append({
             "do_import": not exists,
             "input": inp,
@@ -169,7 +211,9 @@ def analyze_from_entries(entries: List[str]) -> dict:
             "exists": exists,
             "classification": cl,
             "parent_name": parent,
-            "parent_confirmed": "",
+            "parent_suggested": suggested,
+            "match_reason": reason,
+            "parent_confirmed": suggested,
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents

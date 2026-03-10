@@ -1073,7 +1073,7 @@ Output only the insight sentence(s). No preamble, no labels."""}],
 
 # ── Bulk domain classification (independent vs media house) ──
 
-def classify_domains_independent_or_media_house(domains):
+def classify_domains_independent_or_media_house(domains, allowed_parents: list[str] | None = None):
     """
     Classify each domain as independent (standalone publisher) or media_house (owned/held/acquired by another company).
     domains: list of domain strings (e.g. ["example.com", "outlet.org"]).
@@ -1085,6 +1085,11 @@ def classify_domains_independent_or_media_house(domains):
     if not domains:
         return []
     domains_list = "\n".join(f"- {d}" for d in domains[:100])  # cap for token safety
+    allowed = [str(x).strip() for x in (allowed_parents or []) if str(x).strip()]
+    allowed_block = ""
+    if allowed:
+        # Keep this bounded; if you have a very large list, the deterministic matcher in UI will still protect you.
+        allowed_block = "\n\nAllowed parent companies (MUST choose one of these exact strings for parent_match, or null):\n" + "\n".join(f"- {p}" for p in allowed[:250])
     try:
         r = create_with_retry(
             model=AI_MODEL,
@@ -1106,15 +1111,17 @@ Rules:
 
 Output requirements (STRICT):
 - Output only a single JSON array. No markdown, no code fence, no explanation.
-- Each element must have keys: \"domain\", \"classification\", \"parent_name\".
+- Each element must have keys: \"domain\", \"classification\", \"parent_name\", \"parent_match\".
 - classification must be exactly \"independent\" or \"media_house\".
 - parent_name must be null for independent; for media_house it must be a company name string (or empty string only if truly unknown).
+- parent_match must be null for independent. For media_house: if the parent corresponds to an Allowed parent company, set parent_match to the exact allowed string; otherwise parent_match must be null.
 - Keep domain values aligned to the input list (same order).
 
 Domains to classify (one per line):
 {domains_list}
+{allowed_block}
 
-Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media"}}]"""}],
+Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": "Vox Media"}}]"""}],
         )
         text = (r.content[0].text or "").strip()
         # Extract JSON array (allow markdown code block)
@@ -1130,6 +1137,7 @@ Example: [{{"domain": "example.com", "classification": "independent", "parent_na
         # Normalized (lowercase, no www) set for matching; keep first occurrence for canonical domain
         domain_set_norm = {normalize_domain(d) or d.lower().strip(): d for d in domains}
         domain_set = set(domain_set_norm.keys())
+        allowed_set = set([a.strip() for a in allowed])
         for item in parsed:
             if not isinstance(item, dict):
                 continue
@@ -1149,7 +1157,15 @@ Example: [{{"domain": "example.com", "classification": "independent", "parent_na
                 parent = str(parent).strip() or None
             elif parent is not None:
                 parent = (parent or "").strip() or None
-            out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent})
+            pm = item.get("parent_match")
+            if pm is not None and not isinstance(pm, str):
+                pm = str(pm).strip() or None
+            elif pm is not None:
+                pm = (pm or "").strip() or None
+            # Safety: only accept parent_match if it exactly matches an allowed string
+            if pm and pm not in allowed_set:
+                pm = None
+            out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent, "parent_match": pm})
         return out
     except json.JSONDecodeError as e:
         log.warning("classify_domains JSON parse failed: %s", e)
@@ -1159,7 +1175,7 @@ Example: [{{"domain": "example.com", "classification": "independent", "parent_na
         return []
 
 
-def classify_entries_independent_or_media_house(entries):
+def classify_entries_independent_or_media_house(entries, allowed_parents: list[str] | None = None):
     """
     Classify each entry (domain or publishing house name) as independent or media_house.
     entries: list of strings — can be a domain (e.g. "techcrunch.com") or a publication name (e.g. "TechCrunch").
@@ -1172,6 +1188,10 @@ def classify_entries_independent_or_media_house(entries):
     if not entries:
         return []
     entries_list = "\n".join(f"- {e}" for e in entries[:80])
+    allowed = [str(x).strip() for x in (allowed_parents or []) if str(x).strip()]
+    allowed_block = ""
+    if allowed:
+        allowed_block = "\n\nAllowed parent companies (MUST choose one of these exact strings for parent_match, or null):\n" + "\n".join(f"- {p}" for p in allowed[:250])
     try:
         r = create_with_retry(
             model=AI_MODEL,
@@ -1191,16 +1211,18 @@ Rules:
 - Return results in the same order as the input list.
 - Output only a single JSON array. No markdown, no code fence, no explanation.
 
-Entries (one per line):
-{entries_list}
-
 Output format — a JSON array. Each object must have exactly:
 - "input": the exact string from the list above (echo back unchanged)
 - "domain": the primary website domain, lowercase, no www (e.g. techcrunch.com)
 - "classification": exactly one of: "independent" or "media_house" (lowercase, underscore)
 - "parent_name": null for independent; for media_house, the parent company name (e.g. "Yahoo", "Vox Media"). Use null or empty string only if unknown.
+- "parent_match": null for independent. For media_house: if the parent corresponds to an Allowed parent company, set parent_match to the exact allowed string; otherwise parent_match must be null.
 
-Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo"}}, {{"input": "example.com", "domain": "example.com", "classification": "independent", "parent_name": null}}]"""}],
+Entries (one per line):
+{entries_list}
+{allowed_block}
+
+Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo", "parent_match": "Yahoo"}}, {{"input": "example.com", "domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null}}]"""}],
         )
         text = (r.content[0].text or "").strip()
         if "```" in text:
@@ -1213,6 +1235,7 @@ Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification":
             return []
         out = []
         entry_set = {e.lower().strip() for e in entries}
+        allowed_set = set([a.strip() for a in allowed])
         for item in parsed:
             if not isinstance(item, dict):
                 continue
@@ -1235,7 +1258,14 @@ Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification":
                 parent = str(parent).strip() or None
             elif parent is not None:
                 parent = (parent or "").strip() or None
-            out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent})
+            pm = item.get("parent_match")
+            if pm is not None and not isinstance(pm, str):
+                pm = str(pm).strip() or None
+            elif pm is not None:
+                pm = (pm or "").strip() or None
+            if pm and pm not in allowed_set:
+                pm = None
+            out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent, "parent_match": pm})
         return out
     except json.JSONDecodeError as e:
         log.warning("classify_entries JSON parse failed: %s", e)
