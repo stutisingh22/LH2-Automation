@@ -190,3 +190,18 @@ US_TZ = {
         "al", "alabama", "ms", "mississippi",
     ],
 }
+
+
+def normalize_domain(domain):
+    """Normalize domain for existence checks: strip protocol, www., path; lowercase. Use when comparing or storing."""
+    if not domain or not isinstance(domain, str):
+        return ""
+    s = domain.strip().lower()
+    for prefix in ("https://", "http://"):
+        if s.startswith(prefix):
+            s = s[len(prefix) :].strip()
+    if s.startswith("www."):
+        s = s[4:].strip()
+    if "/" in s:
+        s = s.split("/")[0].strip()
+    return s.rstrip("/").strip() or ""

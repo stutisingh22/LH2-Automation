@@ -774,7 +774,7 @@ with st.sidebar:
 # HEADER + TOP TAB BAR (buttons)
 # ══════════════════════════════════════════════════════════════
 
-TAB_NAMES = ["DASHBOARD", "COMPANIES", "INTELLIGENCE", "STRATEGIST", "ACTIONS", "TIMELINE", "CALENDAR", "PIPELINE", "SPOC TRACKING", "HISTORY", "ADVISOR"]
+TAB_NAMES = ["DASHBOARD", "COMPANIES", "INTELLIGENCE", "STRATEGIST", "ACTIONS", "TIMELINE", "CALENDAR", "PIPELINE", "SPOC TRACKING", "HISTORY", "ADVISOR", "BULK IMPORT"]
 
 # Which Notion DB drives the Companies view: Independent (NOTION_DATABASE_ID) or Media Houses (NOTION_DATABASE_ID_2)
 if "notion_companies_source" not in st.session_state:
@@ -843,7 +843,11 @@ with header_cols[2]:
     )
 
 # Professional Admin Navigation using st.tabs()
-tab_labels = [n.title() if n != "ADVISOR" else "Advisor" for n in TAB_NAMES]
+def _tab_label(n):
+    if n == "ADVISOR": return "Advisor"
+    if n == "BULK IMPORT": return "Bulk Import"
+    return n.title()
+tab_labels = [_tab_label(n) for n in TAB_NAMES]
 default_tab_label = tab_labels[TAB_NAMES.index(current_tab)] if current_tab in TAB_NAMES else tab_labels[0]
 tabs = st.tabs(tab_labels, default=default_tab_label)
 
@@ -4156,3 +4160,97 @@ with tabs[10]:  # ADVISOR
         # Auto-save conversation after each exchange
         save_advisor_conversation(user["id"], st.session_state.advisor_messages)
         st.rerun()
+
+# ════════════════════ BULK IMPORT ════════════════════
+with tabs[11]:  # BULK IMPORT
+    import pandas as pd
+    from services.bulk_domain_import import (
+        analyze_from_file, analyze_from_text, _parse_entries_from_text,
+        commit_rows, undo_created, get_existing_parent_media_houses,
+    )
+    st.markdown(sh("BULK DOMAIN IMPORT"), unsafe_allow_html=True)
+    st.caption("Step 1: Analyze (no writes). Step 2: Review/edit classifications and confirm the correct parent media house. Step 3: Commit. Media-house rows will NOT be written unless you explicitly pick an existing parent.")
+
+    uploaded = st.file_uploader("Upload CSV or XLSX", type=["csv", "xlsx", "xls"], key="bulk_import_file")
+    manual_text = st.text_area(
+        "Or enter publishing house name(s) or domain(s)",
+        placeholder="e.g. TechCrunch, The Verge, example.com (one per line or comma-separated)",
+        key="bulk_import_manual",
+        height=120,
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        analyze_file = uploaded and st.button("Analyze file", key="bulk_import_analyze_file")
+    with c2:
+        analyze_text = bool((manual_text or "").strip()) and st.button("Analyze entered names/domains", key="bulk_import_analyze_text")
+    with c3:
+        if st.session_state.get("bulk_import_last_created"):
+            if st.button("Undo last commit", key="bulk_import_undo"):
+                with st.spinner("Undoing last commit…"):
+                    res = undo_created(st.session_state.get("bulk_import_last_created") or [])
+                st.success(f"Undone: {res.get('undone', 0)} item(s)")
+                for e in res.get("errors") or []:
+                    st.error(e)
+                st.session_state.bulk_import_last_created = []
+
+    if analyze_file:
+        with st.spinner("Analyzing file (no writes)…"):
+            preview = analyze_from_file(uploaded)
+        st.session_state.bulk_import_preview = preview
+
+    if analyze_text:
+        with st.spinner("Analyzing entries (no writes)…"):
+            preview = analyze_from_text(manual_text)
+        st.session_state.bulk_import_preview = preview
+
+    preview = st.session_state.get("bulk_import_preview") or {}
+    rows = preview.get("rows") or []
+    existing_parents = preview.get("existing_parents") or get_existing_parent_media_houses()
+    if preview.get("errors"):
+        for e in preview["errors"]:
+            st.error(e)
+
+    if rows:
+        st.markdown("### Review before commit")
+        st.caption("Edit `classification` and (for `media_house`) choose `parent_confirmed`. If you’re unsure, leave parent_confirmed blank and it will be flagged for review (no write).")
+
+        df = pd.DataFrame(rows)
+        parent_options = [""] + list(existing_parents)
+        edited = st.data_editor(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "do_import": st.column_config.CheckboxColumn("Import", help="Uncheck to skip"),
+                "input": st.column_config.TextColumn("Input"),
+                "domain": st.column_config.TextColumn("Domain"),
+                "exists": st.column_config.CheckboxColumn("Exists", disabled=True),
+                "classification": st.column_config.SelectboxColumn("Classification", options=["independent", "media_house"]),
+                "parent_name": st.column_config.TextColumn("AI parent (suggested)", disabled=True),
+                "parent_confirmed": st.column_config.SelectboxColumn("Parent (confirmed)", options=parent_options),
+                "status": st.column_config.TextColumn("Status", disabled=True),
+            },
+        )
+
+        if st.button("Commit reviewed rows", key="bulk_import_commit"):
+            with st.spinner("Committing selected rows…"):
+                summary = commit_rows(edited.to_dict(orient="records"))
+            st.session_state.bulk_import_last_created = summary.get("created") or []
+
+            added_i = summary.get("added_independent") or []
+            added_m = summary.get("added_media_house") or []
+            flagged_exists = summary.get("flagged_already_exists") or []
+            flagged_review = summary.get("flagged_for_review") or []
+            errors = summary.get("errors") or []
+
+            if added_i:
+                st.success(f"Added {len(added_i)} independent: " + ", ".join(added_i[:10]) + (" …" if len(added_i) > 10 else ""))
+            if added_m:
+                st.success(f"Added {len(added_m)} media house (child): " + ", ".join(added_m[:10]) + (" …" if len(added_m) > 10 else ""))
+            if flagged_exists:
+                st.warning(f"Already exists ({len(flagged_exists)}): " + ", ".join(flagged_exists[:10]) + (" …" if len(flagged_exists) > 10 else ""))
+            if flagged_review:
+                st.info(f"Flagged for review / not committed ({len(flagged_review)}): " + ", ".join(flagged_review[:10]) + (" …" if len(flagged_review) > 10 else ""))
+            for e in errors:
+                st.error(e)

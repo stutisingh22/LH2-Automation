@@ -66,6 +66,25 @@ def _notion_post(path, body=None, retries=3):
     return r.json()
 
 
+def _notion_patch(path, body=None, retries=3):
+    for attempt in range(retries):
+        r = requests.patch(
+            f"{NOTION_API}/{path}",
+            headers=_headers(),
+            json=body or {},
+        )
+        if r.status_code == 429:
+            import time
+            wait = float(r.headers.get("Retry-After", 1))
+            log.warning("Rate limited, waiting %.1fs", wait)
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()
+    r.raise_for_status()
+    return r.json()
+
+
 def _gp(props, name, ptype="rich_text"):
     try:
         p = props.get(name)
@@ -82,6 +101,49 @@ def _gp(props, name, ptype="rich_text"):
         return ""
     except (KeyError, IndexError, TypeError):
         return "" if ptype != "number" else None
+
+
+def create_notion_advisor_page(domain, parent_name):
+    """
+    Create a single page in NOTION_DATABASE_ID_2 (Media Houses). Returns page id or None.
+    DB2 schema: title = domain, select "media" / "Media" = parent company.
+    """
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID_2:
+        log.warning("Notion token or NOTION_DATABASE_ID_2 missing; cannot create advisor page")
+        return None
+
+
+def archive_notion_advisor_page(page_id: str) -> bool:
+    """Archive (soft-delete) a Notion page in DB2 by id. Returns True if request succeeded."""
+    if not NOTION_TOKEN or not page_id:
+        return False
+    try:
+        _notion_patch(f"pages/{page_id}", {"archived": True})
+        return True
+    except Exception as e:
+        log.warning("Archive Notion advisor page failed for %s: %s", page_id, e)
+        return False
+    domain = (domain or "").strip()
+    parent_name = (parent_name or "").strip() or "(No parent)"
+    if not domain:
+        return None
+    props = {
+        "Domain": {"title": [{"type": "text", "text": {"content": domain[:2000]}}]},
+    }
+    # Notion select must use an existing option name; if your DB has "Media" with options, set it
+    try:
+        props["Media"] = {"select": {"name": parent_name[:100]}}
+    except Exception:
+        pass
+    try:
+        res = _notion_post("pages", {
+            "parent": {"database_id": NOTION_DATABASE_ID_2},
+            "properties": props,
+        })
+        return res.get("id")
+    except Exception as e:
+        log.error("Create Notion advisor page failed: %s", e)
+        return None
 
 
 def _parse_advisor_page(page):

@@ -23,7 +23,7 @@ from anthropic import Anthropic
 from anthropic_limiter import create_with_retry, stream_slot
 from config import (
     ANTHROPIC_API_KEY, AI_MODEL, AI_MAX_TOKENS, SUMMARY_INTERVAL,
-    MAX_CONTEXT_MESSAGES, TIMEZONE_COUNTRIES, US_TZ,
+    MAX_CONTEXT_MESSAGES, TIMEZONE_COUNTRIES, US_TZ, normalize_domain,
 )
 from db_ops import (
     get_message_count, get_session_summary, save_session_summary,
@@ -1069,6 +1069,180 @@ Output only the insight sentence(s). No preamble, no labels."""}],
     except Exception as e:
         log.error("Insight generation failed: %s", e)
         return None
+
+
+# ── Bulk domain classification (independent vs media house) ──
+
+def classify_domains_independent_or_media_house(domains):
+    """
+    Classify each domain as independent (standalone publisher) or media_house (owned/held/acquired by another company).
+    domains: list of domain strings (e.g. ["example.com", "outlet.org"]).
+    Returns list of dicts: [{"domain": str, "classification": "independent"|"media_house", "parent_name": str or None}, ...].
+    """
+    if not domains:
+        return []
+    domains = [str(d).strip() for d in domains if d and str(d).strip()]
+    if not domains:
+        return []
+    domains_list = "\n".join(f"- {d}" for d in domains[:100])  # cap for token safety
+    try:
+        r = create_with_retry(
+            model=AI_MODEL,
+            max_tokens=8000,
+            messages=[{"role": "user", "content": f"""You classify each domain as either independent or owned by a parent company.
+
+You are a media ownership classifier. For each domain in the input list, determine whether it is independently owned or owned/operated by a parent company.
+
+Definitions:
+- independent: The site operates on its own with no parent company. It is a standalone publisher not owned by a larger media group, holding company, or network.
+- media_house: The site is owned by, operated by, or has been acquired by a larger company. This includes subsidiaries, brands, and properties of media groups (e.g. Hearst, Condé Nast, Vox Media, IAC, Yahoo, News Corp, Dotdash Meredith, Penske Media, G/O Media, BDG, Red Ventures, Arena Group).
+
+Rules:
+- Classify based on current ownership, not historical. If a site was independent but has since been acquired, classify as media_house.
+- If the site is one brand within a multi-brand media portfolio, it is media_house — identify the portfolio/parent by name.
+- Only classify as independent if you have reasonable confidence there is no parent. Do not default to independent on uncertainty — if a site operates in a category where consolidation is common (entertainment, news, lifestyle, tech), research your knowledge carefully before deciding.
+- parent_name must be the name of the direct or ultimate parent company, not the brand itself. If independent, set parent_name to null.
+- Return results in exactly the same order as the input list.
+
+Output requirements (STRICT):
+- Output only a single JSON array. No markdown, no code fence, no explanation.
+- Each element must have keys: \"domain\", \"classification\", \"parent_name\".
+- classification must be exactly \"independent\" or \"media_house\".
+- parent_name must be null for independent; for media_house it must be a company name string (or empty string only if truly unknown).
+- Keep domain values aligned to the input list (same order).
+
+Domains to classify (one per line):
+{domains_list}
+
+Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media"}}]"""}],
+        )
+        text = (r.content[0].text or "").strip()
+        # Extract JSON array (allow markdown code block)
+        if "```" in text:
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return []
+        out = []
+        # Normalized (lowercase, no www) set for matching; keep first occurrence for canonical domain
+        domain_set_norm = {normalize_domain(d) or d.lower().strip(): d for d in domains}
+        domain_set = set(domain_set_norm.keys())
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            dom = (item.get("domain") or "").strip()
+            if not dom:
+                continue
+            norm = normalize_domain(dom) or dom.lower()
+            if norm not in domain_set:
+                continue
+            # Use canonical form from input list when possible
+            canonical_domain = domain_set_norm.get(norm, dom)
+            cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
+            if cl not in ("independent", "media_house"):
+                cl = "independent"
+            parent = item.get("parent_name")
+            if parent is not None and not isinstance(parent, str):
+                parent = str(parent).strip() or None
+            elif parent is not None:
+                parent = (parent or "").strip() or None
+            out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent})
+        return out
+    except json.JSONDecodeError as e:
+        log.warning("classify_domains JSON parse failed: %s", e)
+        return []
+    except Exception as e:
+        log.error("classify_domains failed: %s", e)
+        return []
+
+
+def classify_entries_independent_or_media_house(entries):
+    """
+    Classify each entry (domain or publishing house name) as independent or media_house.
+    entries: list of strings — can be a domain (e.g. "techcrunch.com") or a publication name (e.g. "TechCrunch").
+    Returns list of dicts: [{"input": str, "domain": str, "classification": "independent"|"media_house", "parent_name": str or None}, ...].
+    For names, "domain" is the resolved primary website domain (e.g. techcrunch.com for "TechCrunch").
+    """
+    if not entries:
+        return []
+    entries = [str(e).strip() for e in entries if e and str(e).strip()]
+    if not entries:
+        return []
+    entries_list = "\n".join(f"- {e}" for e in entries[:80])
+    try:
+        r = create_with_retry(
+            model=AI_MODEL,
+            max_tokens=10000,
+            messages=[{"role": "user", "content": f"""You classify each entry (domain or publication name) as either independent or owned by a parent company, and you resolve each to its primary website domain.
+
+Definitions:
+- **independent**: The publication or site operates on its own. No other company owns, operates, or has acquired it.
+- **media_house**: The publication or site is owned by, operated by, or acquired by another company (the parent). Identify the parent company by name (e.g. Vox Media, Condé Nast, Yahoo).
+
+For each entry you must return:
+- **domain**: The primary website domain. If the input is already a domain (e.g. techcrunch.com), use it normalized (lowercase, no www or protocol). If the input is a publication name (e.g. TechCrunch, The Verge), resolve it to the main website domain (e.g. techcrunch.com, theverge.com).
+
+Rules:
+- Classify based on current ownership. Subsidiaries or brands of a parent are media_house.
+- If unsure about ownership, use "independent" and parent_name null.
+- Return results in the same order as the input list.
+- Output only a single JSON array. No markdown, no code fence, no explanation.
+
+Entries (one per line):
+{entries_list}
+
+Output format — a JSON array. Each object must have exactly:
+- "input": the exact string from the list above (echo back unchanged)
+- "domain": the primary website domain, lowercase, no www (e.g. techcrunch.com)
+- "classification": exactly one of: "independent" or "media_house" (lowercase, underscore)
+- "parent_name": null for independent; for media_house, the parent company name (e.g. "Yahoo", "Vox Media"). Use null or empty string only if unknown.
+
+Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo"}}, {{"input": "example.com", "domain": "example.com", "classification": "independent", "parent_name": null}}]"""}],
+        )
+        text = (r.content[0].text or "").strip()
+        if "```" in text:
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return []
+        out = []
+        entry_set = {e.lower().strip() for e in entries}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            inp = (item.get("input") or "").strip()
+            if not inp or inp.lower() not in entry_set:
+                continue
+            dom = (item.get("domain") or "").strip().lower()
+            # Normalize domain: no www, no path
+            if dom.startswith("www."):
+                dom = dom[4:].strip()
+            if " " in dom or not dom or "." not in dom:
+                dom = inp if "." in inp else None
+            if not dom:
+                continue
+            cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
+            if cl not in ("independent", "media_house"):
+                cl = "independent"
+            parent = item.get("parent_name")
+            if parent is not None and not isinstance(parent, str):
+                parent = str(parent).strip() or None
+            elif parent is not None:
+                parent = (parent or "").strip() or None
+            out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent})
+        return out
+    except json.JSONDecodeError as e:
+        log.warning("classify_entries JSON parse failed: %s", e)
+        return []
+    except Exception as e:
+        log.error("classify_entries failed: %s", e)
+        return []
 
 
 # ── Intelligence request (research suggestions / what's missing) ──

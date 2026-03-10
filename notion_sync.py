@@ -250,6 +250,23 @@ def create_notion_contact_page(domain, name, email=None, linkedin=None, role=Non
     if not NOTION_TOKEN or not NOTION_DATABASE_ID:
         log.warning("Notion token or database ID missing; cannot create page")
         return None
+
+
+def archive_notion_page(page_id: str) -> bool:
+    """Archive (soft-delete) a Notion page by id. Returns True if request succeeded."""
+    if not NOTION_TOKEN or not page_id:
+        return False
+    try:
+        r = requests.patch(
+            f"{NOTION_API}/pages/{page_id}",
+            headers=_headers(),
+            json={"archived": True},
+        )
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning("Archive Notion page failed for %s: %s", page_id, e)
+        return False
     if not (domain and name):
         log.warning("Domain and name required to create Notion contact page")
         return None

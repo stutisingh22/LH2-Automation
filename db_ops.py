@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool, StaticPool, NullPool
 from sqlalchemy.exc import OperationalError
 
-from config import DATABASE_URL, CONTACT_STATUSES
+from config import DATABASE_URL, CONTACT_STATUSES, normalize_domain
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
@@ -297,6 +297,34 @@ def get_company(company_id):
     with db() as s:
         c = s.get(Company, company_id)
         return _comp_dict(c) if c else None
+
+
+def get_company_by_domain(domain):
+    """Return company dict if a company with this domain exists (normalized: www trimmed). None otherwise."""
+    norm = normalize_domain(domain)
+    if not norm:
+        return None
+    with db() as s:
+        c = s.query(Company).filter(
+            (Company.domain == norm) | (Company.domain == ("www." + norm))
+        ).first()
+        return _comp_dict(c) if c else None
+
+
+def delete_company_by_domain(domain) -> bool:
+    """Delete a company row by domain (normalized: www trimmed). Returns True if deleted."""
+    norm = normalize_domain(domain)
+    if not norm:
+        return False
+    with db() as s:
+        c = s.query(Company).filter(
+            (Company.domain == norm) | (Company.domain == ("www." + norm))
+        ).first()
+        if not c:
+            return False
+        s.delete(c)
+        s.flush()
+        return True
 
 
 def merge_company_extra_data(company_id: int, patch: dict):

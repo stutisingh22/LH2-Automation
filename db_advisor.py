@@ -13,6 +13,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import StaticPool
 
+from config import normalize_domain
+
 log = logging.getLogger(__name__)
 
 _DB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -169,6 +171,25 @@ def upsert_advisor_company(domain, parent_name, notion_page_id=None):
         return row.id
 
 
+def delete_advisor_company(domain, parent_name) -> bool:
+    """Delete an advisor company row by (domain, parent_name). Returns True if deleted."""
+    AdvisorCompany = _model()
+    d = normalize_domain(domain)
+    p = (parent_name or "").strip()
+    if not d or not p:
+        return False
+    with db_advisor() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=d.strip(), parent_name=p).first()
+        if not row:
+            # try raw domain in case existing row stored with www
+            row = s.query(AdvisorCompany).filter_by(domain=domain.strip(), parent_name=p).first()
+        if not row:
+            return False
+        s.delete(row)
+        s.flush()
+        return True
+
+
 def bulk_upsert_advisor_companies(companies_list):
     """
     Upsert many companies in a single transaction. Much faster than calling
@@ -231,6 +252,19 @@ def merge_advisor_company_extra_data(advisor_id, patch):
             current = {}
         row.extra_data = {**(current or {}), **patch}
         s.flush()
+
+
+def get_advisor_company_by_domain(domain):
+    """Return advisor company dict if one with this domain exists (normalized: www trimmed). None otherwise."""
+    norm = normalize_domain(domain)
+    if not norm:
+        return None
+    AdvisorCompany = _model()
+    with db_advisor() as s:
+        row = s.query(AdvisorCompany).filter(
+            (AdvisorCompany.domain == norm) | (AdvisorCompany.domain == ("www." + norm))
+        ).first()
+        return _advisor_comp_dict(row) if row else None
 
 
 def get_all_advisor_companies():
