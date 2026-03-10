@@ -32,6 +32,7 @@ from ai_engine import (
     extract_episodic_memories,
     parse_ai_actions,
     rewrite_sequence_steps_with_research,
+    learn_user_preference,
 )
 from product_profiles import get_product_options
 from signalhire_enrichment import (
@@ -41,6 +42,65 @@ from signalhire_enrichment import (
 from gmail_service import parse_email_content
 from ui_helpers import display_full_name, sh, sh_small, bdg, has_perm
 from app_helpers import select_contact, build_ics, render_save_to_gmail
+
+MAX_CHAT_MESSAGES_UI = 16
+
+
+def _trim_chat_history(messages, limit=MAX_CHAT_MESSAGES_UI):
+    msgs = messages or []
+    if not isinstance(msgs, list):
+        return []
+    if len(msgs) <= limit:
+        return msgs
+    return msgs[-limit:]
+
+
+def _latest_sequence_any(sequences):
+    if not sequences:
+        return None
+    best = None
+    best_ts = ""
+    for seq in sequences:
+        steps = seq.get("steps") or []
+        seq_ts = max([(s.get("created_at") or "") for s in steps], default=(seq.get("created_at") or ""))
+        if best is None or seq_ts > best_ts:
+            best = seq
+            best_ts = seq_ts
+    return best
+
+
+def _first_email_step(sequence):
+    if not sequence:
+        return None
+    steps = sequence.get("steps") or []
+    emails = [s for s in steps if "email" in (s.get("channel") or "").lower()]
+    if not emails:
+        return None
+    emails = sorted(emails, key=lambda s: (s.get("sequence_step") or 9999, s.get("created_at") or ""))
+    return emails[0]
+
+
+def _extract_email1_from_text(text):
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"(?is)\bemail\s*1\s*:\s*(.+?)(?:\n\s*email\s*2\s*:|\Z)", raw)
+    if m:
+        block = (m.group(1) or "").strip()
+        return block or None
+    if "subject:" in raw.lower():
+        return raw
+    return None
+
+
+def _first_email_from_plan(plan):
+    if not plan:
+        return None
+    emails = [s for s in plan if "email" in (s.get("channel") or "").lower() and (s.get("content_draft") or "").strip()]
+    if not emails:
+        return None
+    emails = sorted(emails, key=lambda s: (s.get("step") or 9999))
+    return (emails[0].get("content_draft") or "").strip() or None
 
 
 def _is_sequence_edit_request(prompt: str) -> bool:
@@ -127,6 +187,7 @@ def render():
     elif not has_perm("can_use_strategist"):
         st.warning("Strategist access required.")
     else:
+        st.session_state.chat_messages = _trim_chat_history(st.session_state.get("chat_messages") or [])
         comp = get_company(cid)
         ct = get_contact(ctid)
         if not comp or not ct:
@@ -549,7 +610,48 @@ def render():
                             st.session_state.pending_plan = None
                             st.rerun()
 
+                plan_email1 = _first_email_from_plan(plan)
+                if plan_email1:
+                    if st.button("↺ Replace Email 1 in Active Sequence", key="replace_email1_from_plan", use_container_width=True):
+                        seqs_now = get_active_sequences(sid)
+                        seq_target = _latest_sequence_with_drafts(seqs_now) or _latest_sequence_any(seqs_now)
+                        email1_step = _first_email_step(seq_target)
+                        if email1_step and email1_step.get("id"):
+                            update_action(email1_step["id"], content_sent=plan_email1, draft_revisions=[], draft_original="")
+                            st.success("Replaced Email 1 draft in the active sequence.")
+                            st.rerun()
+                        else:
+                            st.warning("No active sequence email step found to replace.")
+
             # ── Chat messages ──
+            pending_replace = st.session_state.get("email1_replace_candidate")
+            if isinstance(pending_replace, dict) and pending_replace.get("sid") == sid:
+                st.markdown(sh_small("Use latest strategist draft"), unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='c' style='padding:10px;'>Replace Email 1 with latest strategist output ({pending_replace.get('source','chat')}).</div>",
+                    unsafe_allow_html=True,
+                )
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if st.button("↺ Replace Email 1", key="replace_email1_from_chat", use_container_width=True):
+                        seqs_now = get_active_sequences(sid)
+                        seq_target = _latest_sequence_with_drafts(seqs_now) or _latest_sequence_any(seqs_now)
+                        email1_step = _first_email_step(seq_target)
+                        content = (pending_replace.get("content") or "").strip()
+                        if email1_step and email1_step.get("id") and content:
+                            update_action(email1_step["id"], content_sent=content, draft_revisions=[], draft_original="")
+                            st.session_state.pop("email1_replace_candidate", None)
+                            st.success("Replaced Email 1 draft in the active sequence.")
+                            st.rerun()
+                        else:
+                            st.warning("No active sequence email step found to replace.")
+                with rc2:
+                    if st.button("✕ Clear", key="clear_email1_replace_candidate", use_container_width=True):
+                        st.session_state.pop("email1_replace_candidate", None)
+                        st.rerun()
+
+            if len(st.session_state.chat_messages) >= MAX_CHAT_MESSAGES_UI:
+                st.caption(f"Showing latest {MAX_CHAT_MESSAGES_UI} messages for focus.")
             for m in st.session_state.chat_messages:
                 ts = (m.get("created_at") or "")
                 ts_short = ts[11:16] if len(ts) > 16 else ""
@@ -568,6 +670,7 @@ def render():
                     st.markdown(prompt)
                 save_message(sid, "user", prompt)
                 st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
+                st.session_state.chat_messages = _trim_chat_history(st.session_state.chat_messages)
                 rn = st.session_state.research_cache.get(cid, [])
                 if not rn:
                     extra = comp.get("extra_data") or {}
@@ -585,6 +688,16 @@ def render():
                     ph.markdown(response)
                 save_message(sid, "assistant", response)
                 st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+                st.session_state.chat_messages = _trim_chat_history(st.session_state.chat_messages)
+                learn_user_preference(user["id"], prompt, response, source="strategist_chat")
+                candidate_email1 = _extract_email1_from_text(response)
+                if candidate_email1:
+                    st.session_state.email1_replace_candidate = {
+                        "sid": sid,
+                        "content": candidate_email1,
+                        "source": "chat",
+                        "created_at": datetime.utcnow().isoformat(),
+                    }
 
                 if _is_sequence_edit_request(prompt):
                     seqs_now = get_active_sequences(sid)

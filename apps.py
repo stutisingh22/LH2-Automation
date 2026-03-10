@@ -76,6 +76,7 @@ from ai_engine import (
     generate_insight_from_outcome, parse_ai_actions, export_session_csv,
     intelligence_request, research_person_for_company, summarize_research_to_context,
     advisor_chat, refine_email_draft, rewrite_sequence_steps_with_research,
+    learn_user_preference,
 )
 from product_profiles import get_product_options
 from research import (
@@ -4150,6 +4151,7 @@ with tabs[10]:  # ADVISOR
                 )
             st.markdown(reply)
         st.session_state.advisor_messages.append({"role": "assistant", "content": reply})
+        learn_user_preference(user["id"], prompt, reply, source="advisor_chat")
         
         # Auto-save conversation after each exchange
         save_advisor_conversation(user["id"], st.session_state.advisor_messages)

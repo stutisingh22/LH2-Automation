@@ -35,6 +35,7 @@ from drive_sync import build_drive_context, get_lh2_knowledge_context, get_conte
 from services.outreach_strategy import build_strategy_profile, format_strategy_profile_block
 
 log = logging.getLogger(__name__)
+_PREF_PREFIX = "PREFMEM|"
 
 
 # ── AI Client ─────────────────────────────────────────────────
@@ -120,6 +121,146 @@ def _get_product_context_block(product_key: str) -> str:
     except Exception as e:
         log.warning("Failed to load product profile '%s': %s", product_key, e)
         return ""
+
+
+def _infer_intent_tags(text):
+    t = (text or "").lower()
+    tags = set()
+    if any(k in t for k in ("acquire", "acquisition", "buyout", "term sheet", "due diligence")):
+        tags.add("acquisition")
+    if any(k in t for k in ("accelerate", "pod", "full-stack", "full stack", "rev share", "revenue share")):
+        tags.add("accelerate")
+    if "mediaos" in t:
+        tags.add("mediaos")
+    if any(k in t for k in ("tone", "voice", "wording", "style", "operator-to-operator", "operator to operator")):
+        tags.add("tone")
+    if any(k in t for k in ("email", "sequence", "subject", "cta", "follow-up", "follow up", "linkedin")):
+        tags.add("messaging")
+    return sorted(tags)
+
+
+def _is_preference_instruction(text):
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    pref_markers = (
+        "always", "never", "must", "strictly", "do not", "don't", "should",
+        "use this tone", "use tone", "my ask", "my approach", "keep context",
+        "for acquisition", "for accelerate", "when", "if", "do this",
+        "avoid", "no ", "please make sure",
+    )
+    return any(m in t for m in pref_markers) and len(t) >= 20
+
+
+def _parse_pref_insight(insight_text):
+    txt = (insight_text or "").strip()
+    if not txt.startswith(_PREF_PREFIX):
+        return None
+    payload = txt[len(_PREF_PREFIX):].strip()
+    try:
+        data = json.loads(payload)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def _extract_preference_rationale(text):
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"(?i)\b(?:because|so that|so we can|so that we can)\b(.+)$", t)
+    if m:
+        return m.group(1).strip()[:220]
+    return ""
+
+
+def learn_user_preference(uid, user_text, assistant_text="", source="strategist"):
+    """
+    Persist user preference signals as tagged global insights.
+    Additive only; deduped to avoid noise.
+    """
+    try:
+        raw = (user_text or "").strip()
+        if not _is_preference_instruction(raw):
+            return False
+        pref_text = re.sub(r"\s+", " ", raw)[:420]
+        intent_tags = _infer_intent_tags(pref_text)
+        record = {
+            "kind": "user_preference",
+            "source": source,
+            "intent_tags": intent_tags or ["general"],
+            "preference": pref_text,
+            "rationale": _extract_preference_rationale(pref_text),
+            "captured_at": datetime.utcnow().isoformat(),
+        }
+        existing = get_all_global_insights(limit=120)
+        norm_pref = pref_text.lower()
+        for row in existing:
+            parsed = _parse_pref_insight(row.get("insight") or "")
+            if not parsed:
+                continue
+            if (parsed.get("preference") or "").strip().lower() == norm_pref:
+                return False
+        save_global_insight(uid, _PREF_PREFIX + json.dumps(record, ensure_ascii=True), 0.75)
+        return True
+    except Exception as e:
+        log.warning("learn_user_preference failed: %s", e)
+        return False
+
+
+def get_relevant_preference_memories(query, limit=5):
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    q_tags = set(_infer_intent_tags(q))
+    q_words = set(re.findall(r"\b[a-z]{4,}\b", q))
+    rows = get_all_global_insights(limit=120)
+    ranked = []
+    for row in rows:
+        parsed = _parse_pref_insight(row.get("insight") or "")
+        if not parsed:
+            continue
+        pref = (parsed.get("preference") or "").strip()
+        if not pref:
+            continue
+        tags = set(parsed.get("intent_tags") or [])
+        pref_words = set(re.findall(r"\b[a-z]{4,}\b", pref.lower()))
+        overlap = len(q_words & pref_words)
+        tag_overlap = len(q_tags & tags) if q_tags else 0
+        if q_tags and tag_overlap == 0 and overlap == 0:
+            continue
+        score = float(row.get("confidence_score") or 0.5) + (0.8 * tag_overlap) + (0.15 * overlap)
+        ranked.append({
+            "preference": pref[:260],
+            "rationale": (parsed.get("rationale") or "").strip()[:180],
+            "tags": sorted(tags),
+            "score": score,
+        })
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    out = []
+    seen = set()
+    for item in ranked:
+        key = item["preference"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_preference_memory_block(query):
+    prefs = get_relevant_preference_memories(query, limit=5)
+    if not prefs:
+        return "== USER PREFERENCE MEMORY ==\n(None captured yet for this ask.)"
+    lines = []
+    for p in prefs:
+        why = f" | why: {p['rationale']}" if p.get("rationale") else ""
+        lines.append(f"- [{', '.join(p.get('tags') or ['general'])}] {p['preference']}{why}")
+    return "== USER PREFERENCE MEMORY ==\n" + "\n".join(lines)
 
 
 def _extract_platform_presence(comp):
@@ -397,7 +538,7 @@ def _extract_painpoint_signals(research_context, platform_block, max_items=8):
 
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
-def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, query=None):
     """Build the full context system prompt. If sender_email provided, includes training docs and sender profile.
     If product_key provided ('accelerate' or 'mediaos'), injects focused product pitch context.
     If recipient_research provided, includes social research on the recipient."""
@@ -520,6 +661,7 @@ Signature to use:
     research_coverage_block = _build_research_coverage_block(research_context)
     context_health_block = _build_context_health_block(comp, research_notes=research_notes)
     painpoint_signals_block = _extract_painpoint_signals(research_context, platform_presence_block)
+    preference_memory_block = _build_preference_memory_block(query or "")
 
     system = f"""You are the LH2 Strategic Outreach Advisor  -  a digital media partnership strategist with persistent memory.
 
@@ -549,6 +691,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 {platform_presence_block}
 {platform_painpoint_block}
 {context_health_block}
+{preference_memory_block}
 == PAINPOINT SIGNALS (extracted from available context) ==
 {painpoint_signals_block}
 
@@ -573,6 +716,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
    - Platform claims MUST align with PLATFORM PRESENCE above. Do not assume presence or absence when marked unknown.
    - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
+   - Apply USER PREFERENCE MEMORY only when relevant to the current ask. Do not inject unrelated old preferences.
 
 2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis):
    - Be directive. State what to do and why. Never say "you could" or "consider"  -  say "do this because."
@@ -1080,7 +1224,7 @@ Tone: institutional, factual. No filler. Output only the brief."""
         return None
 
 
-def get_advisor_system_prompt(uid, sender_email=None):
+def get_advisor_system_prompt(uid, sender_email=None, query=None):
     """Build system prompt for the Advisor bot: LH2 knowledge + pipeline + companies + recent sessions."""
     lh2 = get_lh2_knowledge_context()
     
@@ -1120,6 +1264,7 @@ Signature to use:
         f"- {s.get('company_domain', '?')} / {s.get('contact_name', '?')} (msgs: {get_message_count(s['id'])})"
         for s in sessions
     ]) or "(None.)"
+    preference_memory_block = _build_preference_memory_block(query or "")
     return f"""You are the LH2 Command Center Advisor. You have full visibility into the user's pipeline, active sessions, and research status. Your job is to tell them exactly what to do next and why.
 
 == LH2 OFFERINGS ==
@@ -1134,6 +1279,7 @@ Total companies: {len(companies)} | Active outreach: {stats.get('outreach_sent',
 
 == RECENT SESSIONS ==
 {sessions_blob}
+{preference_memory_block}
 
 == RULES ==
 1. Prioritization requests ("who should I reach out to"): Recommend 2-3 specific companies from the list with reasoning  -  cite research status, publisher type, visit volume, or pipeline gaps.
@@ -1147,7 +1293,7 @@ def advisor_chat(uid, user_message, history, sender_email=None):
     One turn of Advisor chat. history is list of {"role": "user"|"assistant", "content": str}.
     Returns assistant reply text.
     """
-    system = get_advisor_system_prompt(uid, sender_email=sender_email)
+    system = get_advisor_system_prompt(uid, sender_email=sender_email, query=user_message)
     messages = [{"role": m["role"], "content": m["content"]} for m in history[-24:]]
     messages.append({"role": "user", "content": user_message})
     try:
@@ -1273,7 +1419,7 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
     FIX: The user_msg is already in `messages` (appended by the caller).
     We do NOT append again to avoid sending it twice.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, query=user_msg)
 
     # Add retrieved memories for this specific query
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
@@ -1301,7 +1447,7 @@ def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, resea
     """
     Streaming version of the strategist. Yields text chunks.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
+    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research, query=user_msg)
 
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
@@ -1575,7 +1721,17 @@ def replan_on_response(comp, ct, uid, sid, completed_action, response_text, rema
     When a response is received, replan remaining sequence steps.
     Returns updated action dicts for remaining steps.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key)
+    replan_query = f"{completed_action.get('description', '')}\n{response_text or ''}".strip()
+    system = _build_system_prompt(
+        comp,
+        ct,
+        uid,
+        sid,
+        research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        query=replan_query,
+    )
 
     remaining_desc = "\n".join([
         f"  Step {a['sequence_step']}: {a['channel']}  -  {a['description'][:100]}"
