@@ -9,7 +9,7 @@ import logging
 import os
 import shutil
 from contextlib import contextmanager
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_, func
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import StaticPool
 
@@ -255,16 +255,32 @@ def merge_advisor_company_extra_data(advisor_id, patch):
 
 
 def get_advisor_company_by_domain(domain):
-    """Return advisor company dict if one with this domain exists (normalized: www trimmed). None otherwise."""
+    """Return advisor company dict if one with this domain exists. Compares using normalized domain (protocol/www/path stripped). None otherwise."""
     norm = normalize_domain(domain)
     if not norm:
         return None
     AdvisorCompany = _model()
     with db_advisor() as s:
-        row = s.query(AdvisorCompany).filter(
-            (AdvisorCompany.domain == norm) | (AdvisorCompany.domain == ("www." + norm))
-        ).first()
-        return _advisor_comp_dict(row) if row else None
+        www = "www." + norm
+        row = (
+            s.query(AdvisorCompany)
+            .filter(
+                or_(
+                    AdvisorCompany.domain == norm,
+                    AdvisorCompany.domain == www,
+                    func.lower(AdvisorCompany.domain) == norm,
+                    func.lower(AdvisorCompany.domain) == www,
+                )
+            )
+            .first()
+        )
+        if row:
+            return _advisor_comp_dict(row)
+        # Fallback: stored value may have protocol/path (e.g. https://allrecipes.com). Match by normalizing stored domain.
+        for r in s.query(AdvisorCompany).all():
+            if normalize_domain(r.domain or "") == norm:
+                return _advisor_comp_dict(r)
+    return None
 
 
 def get_all_advisor_companies():

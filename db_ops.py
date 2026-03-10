@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 import streamlit as st
 from passlib.hash import pbkdf2_sha256
-from sqlalchemy import create_engine, or_, text
+from sqlalchemy import create_engine, or_, text, func
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool, StaticPool, NullPool
 from sqlalchemy.exc import OperationalError
@@ -305,9 +305,19 @@ def get_company_by_domain(domain):
     if not norm:
         return None
     with db() as s:
-        c = s.query(Company).filter(
-            (Company.domain == norm) | (Company.domain == ("www." + norm))
-        ).first()
+        www = "www." + norm
+        c = (
+            s.query(Company)
+            .filter(
+                or_(
+                    Company.domain == norm,
+                    Company.domain == www,
+                    func.lower(Company.domain) == norm,
+                    func.lower(Company.domain) == www,
+                )
+            )
+            .first()
+        )
         return _comp_dict(c) if c else None
 
 
@@ -317,9 +327,19 @@ def delete_company_by_domain(domain) -> bool:
     if not norm:
         return False
     with db() as s:
-        c = s.query(Company).filter(
-            (Company.domain == norm) | (Company.domain == ("www." + norm))
-        ).first()
+        www = "www." + norm
+        c = (
+            s.query(Company)
+            .filter(
+                or_(
+                    Company.domain == norm,
+                    Company.domain == www,
+                    func.lower(Company.domain) == norm,
+                    func.lower(Company.domain) == www,
+                )
+            )
+            .first()
+        )
         if not c:
             return False
         s.delete(c)

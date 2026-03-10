@@ -15,6 +15,7 @@ load_dotenv(".env")
 
 from config import NOTION_TOKEN
 from db_advisor import bulk_upsert_advisor_companies
+from config import normalize_domain
 
 
 def _clean_notion_id(raw: str) -> str:
@@ -111,18 +112,6 @@ def create_notion_advisor_page(domain, parent_name):
     if not NOTION_TOKEN or not NOTION_DATABASE_ID_2:
         log.warning("Notion token or NOTION_DATABASE_ID_2 missing; cannot create advisor page")
         return None
-
-
-def archive_notion_advisor_page(page_id: str) -> bool:
-    """Archive (soft-delete) a Notion page in DB2 by id. Returns True if request succeeded."""
-    if not NOTION_TOKEN or not page_id:
-        return False
-    try:
-        _notion_patch(f"pages/{page_id}", {"archived": True})
-        return True
-    except Exception as e:
-        log.warning("Archive Notion advisor page failed for %s: %s", page_id, e)
-        return False
     domain = (domain or "").strip()
     parent_name = (parent_name or "").strip() or "(No parent)"
     if not domain:
@@ -144,6 +133,40 @@ def archive_notion_advisor_page(page_id: str) -> bool:
     except Exception as e:
         log.error("Create Notion advisor page failed: %s", e)
         return None
+
+
+def archive_notion_advisor_page(page_id: str) -> bool:
+    """Archive (soft-delete) a Notion page in DB2 by id. Returns True if request succeeded."""
+    if not NOTION_TOKEN or not page_id:
+        return False
+
+
+def notion_advisor_page_exists_by_domain(domain: str) -> str | None:
+    """Live lookup in Notion DB2 by Domain (title). Returns page_id if found, else None."""
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID_2:
+        return None
+    d = normalize_domain(domain)
+    if not d:
+        return None
+    try:
+        res = _notion_post(
+            f"databases/{NOTION_DATABASE_ID_2}/query",
+            body={
+                "page_size": 1,
+                "filter": {"property": "Domain", "title": {"contains": d}},
+            },
+        )
+        results = res.get("results") or []
+        return results[0]["id"] if results else None
+    except Exception as e:
+        log.warning("Notion DB2 exists-by-domain failed for %s: %s", d, e)
+        return None
+    try:
+        _notion_patch(f"pages/{page_id}", {"archived": True})
+        return True
+    except Exception as e:
+        log.warning("Archive Notion advisor page failed for %s: %s", page_id, e)
+        return False
 
 
 def _parse_advisor_page(page):

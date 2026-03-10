@@ -4178,6 +4178,8 @@ with tabs[11]:  # BULK IMPORT
         key="bulk_import_manual",
         height=120,
     )
+    verify_ownership = st.checkbox("Verify media-house ownership via web evidence (slower)", value=True, key="bulk_import_verify_owner")
+    allow_new_parents = st.checkbox("Allow creating new Media House parent names on commit", value=False, key="bulk_import_allow_new_parents")
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
@@ -4196,12 +4198,12 @@ with tabs[11]:  # BULK IMPORT
 
     if analyze_file:
         with st.spinner("Analyzing file (no writes)…"):
-            preview = analyze_from_file(uploaded)
+            preview = analyze_from_file(uploaded, verify_ownership=verify_ownership)
         st.session_state.bulk_import_preview = preview
 
     if analyze_text:
         with st.spinner("Analyzing entries (no writes)…"):
-            preview = analyze_from_text(manual_text)
+            preview = analyze_from_text(manual_text, verify_ownership=verify_ownership)
         st.session_state.bulk_import_preview = preview
 
     preview = st.session_state.get("bulk_import_preview") or {}
@@ -4226,10 +4228,13 @@ with tabs[11]:  # BULK IMPORT
                 "input": st.column_config.TextColumn("Input"),
                 "domain": st.column_config.TextColumn("Domain"),
                 "exists": st.column_config.CheckboxColumn("Exists", disabled=True),
+                "exists_source": st.column_config.TextColumn("Exists source", disabled=True),
                 "classification": st.column_config.SelectboxColumn("Classification", options=["independent", "media_house"]),
                 "parent_name": st.column_config.TextColumn("AI parent (suggested)", disabled=True),
                 "parent_suggested": st.column_config.TextColumn("DB match (suggested)", disabled=True, help="Suggested from your existing Media House parent names (no hallucination)"),
                 "match_reason": st.column_config.TextColumn("Match reason", disabled=True),
+                "evidence": st.column_config.TextColumn("Evidence URLs", disabled=True, help="Top URLs used for ownership verification (when enabled)"),
+                "new_parent_candidate": st.column_config.TextColumn("New parent candidate", disabled=True, help="If not in your DB, this is the direct/ultimate parent name inferred from evidence. You can copy it into Parent (confirmed) if you want to create it."),
                 "parent_confirmed": st.column_config.SelectboxColumn("Parent (confirmed)", options=parent_options),
                 "status": st.column_config.TextColumn("Status", disabled=True),
             },
@@ -4237,7 +4242,7 @@ with tabs[11]:  # BULK IMPORT
 
         if st.button("Commit reviewed rows", key="bulk_import_commit"):
             with st.spinner("Committing selected rows…"):
-                summary = commit_rows(edited.to_dict(orient="records"))
+                summary = commit_rows(edited.to_dict(orient="records"), allow_new_parents=allow_new_parents)
             st.session_state.bulk_import_last_created = summary.get("created") or []
 
             added_i = summary.get("added_independent") or []

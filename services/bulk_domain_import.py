@@ -25,6 +25,7 @@ from notion_sync import create_notion_contact_page, archive_notion_page
 from notion_sync_advisor import create_notion_advisor_page, archive_notion_advisor_page
 from ai_engine import classify_domains_independent_or_media_house, classify_entries_independent_or_media_house
 from services.ui_data_loader import clear_ui_cache
+from services.ownership_verifier import verify_parent_from_web
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +48,7 @@ def _suggest_parent_from_data(ai_parent_name: str, ai_parent_match: str, existin
     existing = list(existing_parents)
     by_key = {_norm_parent_key(p): p for p in existing if p}
 
-    # If model already provided an allowed exact match, trust it (still grounded in list).
-    if ai_parent_match and ai_parent_match in existing:
-        return ai_parent_match, "model_allowed_exact"
+    # Do NOT trust model-provided matches by themselves; they must be verified via evidence (or deterministic normalization).
 
     k = _norm_parent_key(ai_parent_name or "")
     if k and k in by_key:
@@ -120,19 +119,19 @@ def get_existing_parent_media_houses() -> List[str]:
     return sorted(list(dict.fromkeys(out)))
 
 
-def analyze_from_file(uploaded_file) -> dict:
+def analyze_from_file(uploaded_file, verify_ownership: bool = True, max_verify: int = 20) -> dict:
     """Analyze a CSV/XLSX and return preview rows; no writes."""
     domains_raw = _parse_domains_from_file(uploaded_file)
-    return analyze_from_domains(domains_raw)
+    return analyze_from_domains(domains_raw, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_text(text: str) -> dict:
+def analyze_from_text(text: str, verify_ownership: bool = True, max_verify: int = 20) -> dict:
     """Analyze manual input (names/domains) and return preview rows; no writes."""
     entries = _parse_entries_from_text(text or "")
-    return analyze_from_entries(entries)
+    return analyze_from_entries(entries, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_domains(domains_raw: List[str]) -> dict:
+def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, max_verify: int = 20) -> dict:
     """Analyze list of domains (strings). Returns {"rows": [...], "errors": [...]}. No writes."""
     result = {"rows": [], "errors": []}
     if not domains_raw:
@@ -154,7 +153,14 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
     by_dom = {normalize_domain(c.get("domain") or ""): c for c in classified if c}
 
     for d in domains:
-        exists = bool(get_company_by_domain(d) or get_advisor_company_by_domain(d))
+        existing_company = get_company_by_domain(d)
+        existing_advisor = get_advisor_company_by_domain(d)
+        exists_db = bool(existing_company or existing_advisor)
+        exists = bool(exists_db)
+        # If domain already exists as a media house child, use only its existing parent — no new group, no re-tagging.
+        existing_parent = (existing_advisor or {}).get("parent_name") or ""
+        existing_parent = (existing_parent or "").strip() if existing_parent else ""
+
         c = by_dom.get(d) or {}
         cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
         if cl not in ("independent", "media_house"):
@@ -162,17 +168,44 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
         parent = (c.get("parent_name") or "").strip()
         parent_match = (c.get("parent_match") or "").strip()
         suggested, reason = ("", "")
-        if cl == "media_house":
+        evidence_urls = ""
+        display_parent = parent
+        new_parent_candidate = ""
+
+        # If domain already exists in advisor DB with a parent, always use that parent (no verification, no AI override).
+        if existing_advisor and existing_parent:
+            suggested = existing_parent
+            display_parent = existing_parent
+            reason = "existing_in_db"
+            if cl != "media_house":
+                cl = "media_house"  # show as media_house so the existing parent is meaningful
+        elif cl == "media_house":
+            # New domain: suggest only from existing media houses; never create a new group here.
             suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
+            if verify_ownership and max_verify > 0:
+                ver = verify_parent_from_web(d, existing_parents)
+                if ver.get("parent_match"):
+                    suggested = ver["parent_match"]
+                    reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
+                    display_parent = suggested
+                elif ver.get("direct_parent") or ver.get("ultimate_parent"):
+                    display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
+                new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
+                ev = ver.get("evidence") or []
+                evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
+                max_verify -= 1
         result["rows"].append({
             "do_import": not exists,
             "input": d,
             "domain": d,
             "exists": exists,
+            "exists_source": ("db" if exists_db else ""),
             "classification": cl,
-            "parent_name": parent,
+            "parent_name": display_parent,
             "parent_suggested": suggested,
             "match_reason": reason,
+            "evidence": evidence_urls,
+            "new_parent_candidate": new_parent_candidate,
             "parent_confirmed": suggested,
             "status": "exists" if exists else "new",
         })
@@ -180,7 +213,7 @@ def analyze_from_domains(domains_raw: List[str]) -> dict:
     return result
 
 
-def analyze_from_entries(entries: List[str]) -> dict:
+def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_verify: int = 20) -> dict:
     """Analyze list of names/domains. Returns preview rows; no writes."""
     result = {"rows": [], "errors": []}
     entries = [e.strip() for e in (entries or []) if e and str(e).strip()]
@@ -195,24 +228,56 @@ def analyze_from_entries(entries: List[str]) -> dict:
     for inp in entries:
         c = by_inp.get(inp.strip().lower()) or {}
         dom = normalize_domain(c.get("domain") or inp)
-        exists = bool(get_company_by_domain(dom) or get_advisor_company_by_domain(dom))
+        existing_company = get_company_by_domain(dom)
+        existing_advisor = get_advisor_company_by_domain(dom)
+        exists_db = bool(existing_company or existing_advisor)
+        exists = bool(exists_db)
+        existing_parent = (existing_advisor or {}).get("parent_name") or ""
+        existing_parent = (existing_parent or "").strip() if existing_parent else ""
+
         cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
         if cl not in ("independent", "media_house"):
             cl = "independent"
         parent = (c.get("parent_name") or "").strip()
         parent_match = (c.get("parent_match") or "").strip()
         suggested, reason = ("", "")
-        if cl == "media_house":
+        evidence_urls = ""
+        display_parent = parent
+        new_parent_candidate = ""
+
+        # If domain already exists in advisor DB with a parent, always use that parent (no verification, no AI override).
+        if existing_advisor and existing_parent:
+            suggested = existing_parent
+            display_parent = existing_parent
+            reason = "existing_in_db"
+            if cl != "media_house":
+                cl = "media_house"
+        elif cl == "media_house":
             suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
+            if verify_ownership and max_verify > 0:
+                ver = verify_parent_from_web(dom, existing_parents)
+                if ver.get("parent_match"):
+                    suggested = ver["parent_match"]
+                    reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
+                    display_parent = suggested
+                elif ver.get("direct_parent") or ver.get("ultimate_parent"):
+                    display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
+                new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
+                ev = ver.get("evidence") or []
+                evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
+                max_verify -= 1
         result["rows"].append({
             "do_import": not exists,
             "input": inp,
             "domain": dom,
             "exists": exists,
+            "exists_source": ("db" if exists_db else ""),
             "classification": cl,
-            "parent_name": parent,
+            "parent_name": display_parent,
             "parent_suggested": suggested,
             "match_reason": reason,
+            "evidence": evidence_urls,
+            "new_parent_candidate": new_parent_candidate,
             "parent_confirmed": suggested,
             "status": "exists" if exists else "new",
         })
@@ -220,7 +285,7 @@ def analyze_from_entries(entries: List[str]) -> dict:
     return result
 
 
-def commit_rows(rows: List[dict]) -> dict:
+def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
     """
     Commit reviewed rows into DBs/Notion. Requires explicit parent_confirmed for media_house rows.
     Returns summary + created items for undo.
@@ -267,7 +332,10 @@ def commit_rows(rows: List[dict]) -> dict:
         else:
             parent_confirmed = (r.get("parent_confirmed") or "").strip()
             # Safety: do not write media_house unless parent is explicitly selected and exists
-            if not parent_confirmed or parent_confirmed not in existing_parents:
+            if not parent_confirmed:
+                result["flagged_for_review"].append(label)
+                continue
+            if (parent_confirmed not in existing_parents) and (not allow_new_parents):
                 result["flagged_for_review"].append(label)
                 continue
             try:

@@ -16,6 +16,7 @@ import streamlit as st
 
 from config import NOTION_TOKEN, NOTION_DATABASE_ID
 from db_ops import upsert_company, upsert_contact
+from config import normalize_domain
 
 log = logging.getLogger(__name__)
 
@@ -297,6 +298,28 @@ def archive_notion_page(page_id: str) -> bool:
 def lookup_lead_in_notion(linkedin_url):
     if not NOTION_TOKEN or not NOTION_DATABASE_ID:
         st.error("Notion token or database ID is missing")
+        return None
+
+
+def notion_page_exists_by_domain(domain: str) -> str | None:
+    """Live lookup in Notion DB1 by Domain (title). Returns page_id if found, else None."""
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        return None
+    d = normalize_domain(domain)
+    if not d:
+        return None
+    try:
+        res = _notion_post(
+            f"databases/{NOTION_DATABASE_ID}/query",
+            body={
+                "page_size": 1,
+                "filter": {"property": "Domain", "title": {"contains": d}},
+            },
+        )
+        results = res.get("results") or []
+        return results[0]["id"] if results else None
+    except Exception as e:
+        log.warning("Notion exists-by-domain failed for %s: %s", d, e)
         return None
 
     clean_url = linkedin_url.strip().rstrip("/")
