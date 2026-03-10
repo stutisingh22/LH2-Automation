@@ -2187,7 +2187,7 @@ with tabs[3]:  # STRATEGIST
             ctid = st.session_state.sel_contact
             _ro = (comp.get("extra_data") or {}).get("recommended_offering") or {}
             recommended_product_key = (_ro.get("product_key") or "").strip().lower()
-            if recommended_product_key not in ("mediaos", "accelerate"):
+            if recommended_product_key not in ("mediaos", "accelerate", "acquisition"):
                 recommended_product_key = None
             ct = get_contact(ctid) if ctid else None
             if not ct:
@@ -2296,6 +2296,28 @@ with tabs[3]:  # STRATEGIST
                         f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
                         unsafe_allow_html=True)
 
+                # ── Pitching: Accelerate / MediaOS / Acquisition (then Accelerate) ──
+                _product_cc_key = "command_center_product_key"
+                if _product_cc_key not in st.session_state:
+                    st.session_state[_product_cc_key] = recommended_product_key or "accelerate"
+                _product_opts = get_product_options()
+                _product_labels = {k: lbl for k, lbl in _product_opts}
+                _product_keys = [k for k, _ in _product_opts]
+                _idx = _product_keys.index(st.session_state[_product_cc_key]) if st.session_state[_product_cc_key] in _product_keys else 0
+                st.markdown(sh_small("Pitching"), unsafe_allow_html=True)
+                _sel_product = st.radio(
+                    "Product",
+                    options=_product_keys,
+                    format_func=lambda x: _product_labels.get(x, x),
+                    horizontal=True,
+                    key="pitching_product_radio",
+                    help="Accelerate = default outreach. Acquisition = emails 1–3 acquisition, 4–5 partnership.",
+                    index=_idx,
+                    label_visibility="collapsed",
+                )
+                st.session_state[_product_cc_key] = _sel_product
+                _product_key_for_strategist = st.session_state[_product_cc_key]
+
                 # Enrich contact with SPOC email/LinkedIn/name so plan and strategist use context for the selected recipient
                 ct_ctx = dict(ct)
                 if not (ct_ctx.get("email") or "").strip():
@@ -2313,8 +2335,8 @@ with tabs[3]:  # STRATEGIST
                 if not (ct_ctx.get("role") or "").strip() and _email:
                     ct_ctx["role"] = spoc_role_by_email.get(_email) or spoc_role_by_parent_id.get(ctid) or ct_ctx.get("role", "")
 
-                if not recommended_product_key:
-                    st.warning("Run offering recommendation in Intelligence first so outreach uses the right product (MediaOS or Accelerate).")
+                if not recommended_product_key and _product_key_for_strategist == "accelerate":
+                    st.caption("Tip: Run offering recommendation in Intelligence to get a MediaOS vs Accelerate suggestion; you can still choose any product above.")
                 # ── Contact details & enrichment ──
                 st.markdown(sh_small("Contact details & enrichment"), unsafe_allow_html=True)
                 enrich_result_key = f"enrich_result_{ctid}"
@@ -3216,7 +3238,7 @@ with tabs[3]:  # STRATEGIST
                             with st.spinner("Building outreach plan..."):
                                 rn = st.session_state.research_cache.get(research_cache_key, [])
                                 recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
-                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=recommended_product_key, recipient_research=recipient_research_data)
+                                plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=_product_key_for_strategist, recipient_research=recipient_research_data)
                                 if plan:
                                     st.session_state.pending_plan = plan
 
@@ -3324,7 +3346,7 @@ with tabs[3]:  # STRATEGIST
                         with st.chat_message("assistant"):
                             chunks = []
                             ph = st.empty()
-                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=recommended_product_key, recipient_research=recipient_research_data):
+                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=_product_key_for_strategist, recipient_research=recipient_research_data):
                                 chunks.append(chunk)
                                 ph.markdown("".join(chunks) + "▌")
                             response = "".join(chunks)
@@ -3348,7 +3370,7 @@ with tabs[3]:  # STRATEGIST
                                         prompt,
                                         research_notes=rn,
                                         sender_email=sender_email,
-                                        product_key=recommended_product_key,
+                                        product_key=_product_key_for_strategist,
                                         recipient_research=recipient_research_data,
                                     )
                                     applied = 0

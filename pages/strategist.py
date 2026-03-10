@@ -277,16 +277,13 @@ def render():
             # FROM selector drives the outreach voice — no separate selector needed
             st.session_state.selected_sender = sender_email
 
-            # ── Product / Offering selector ──
+            # ── Product / Offering selector (Accelerate default; Acquisition = emails 1–3 acquisition, 4–5 partnership) ──
             st.markdown("---")
-            st.write("DEBUG: Product selector should appear below this line")
-            
             if "selected_product" not in st.session_state:
-                st.session_state.selected_product = None
+                st.session_state.selected_product = "accelerate"
 
             try:
                 product_options = get_product_options()
-                st.write(f"DEBUG: product_options = {product_options}")
                 product_labels = {k: lbl for k, lbl in product_options}
                 product_keys = [None] + [k for k, _ in product_options]
 

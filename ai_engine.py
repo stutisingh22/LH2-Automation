@@ -753,7 +753,8 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 
 3. MESSAGE DRAFTS  -  GENERAL RULES:
    - Voice: One operator writing to another. Calm, senior, grounded. Confident without arrogance, specific without jargon, direct without pressure. Warm but professional.
-   - Accelerate is the product. In 95% of cases, pitch Accelerate directly. Acquisition and MediaOS are door-openers only  -  use when the research brief clearly warrants it (acquisition for very small brands < $10K/month revenue with syndication presence; MediaOS for very large/sophisticated publishers where a pod pitch feels too forward cold).
+   - When PRODUCT FOCUS is Acquisition (user selected Acquisition): Use the ACQUISITION SEQUENCE only — LinkedIn + Acquisition Emails 1, 2, 3 (acquisition tone) + Email 4 (pivot to partnership/Accelerate) + Email 5 (optional partnership close). Do not use the default Accelerate email format for that thread. In Acquisition sequence, Emails 1, 2, and 3 have NO attachments — do not attach LH2 Accelerate Deck or any deck in those emails. Only Email 4 (pivot) and optionally 5 attach the Accelerate deck.
+   - When PRODUCT FOCUS is Accelerate or MediaOS (or not set): Accelerate is the default. In 95% of cases, pitch Accelerate directly. MediaOS is a door-opener only for very large/sophisticated publishers where a pod pitch feels too forward cold.
    - Adapt voice to the selected sender. Upneet: first-person founder ("I co-founded LH2..."). Aman: corp dev professional ("We at LH2 own and operate..."). Section 6 and signature adapt accordingly.
    - Templates in the training doc are structural guides, not fill-in-the-blank forms. The structure stays fixed. The language inside every section must be custom to the prospect based on the research brief. Test: if you swapped the prospect's name for a different prospect, would the email still make sense? If yes, it's not customized enough. Rewrite.
 
@@ -835,13 +836,50 @@ WRITING RULES FOR ALL EMAILS:
    Para 2: Offer to compare notes on a specific topic from the research brief (syndication, content ops, distribution strategy, etc.) separately from any partnership conversation. "We're operators in the same space."
    No ask. No attachments.
 
-   ACQUISITION SEQUENCE (very small brands only — estimated revenue < $10K/month with MSN/Yahoo presence):
-   Email 1 — Subject: Regarding Acquisition of [Website Name] || LH2 Holdings
-   Very short. Sender + LH2 identity + why this specific brand caught LH2's attention + ask if open to exploring acquisition + process timeline (2 weeks term sheet, 4 weeks due diligence, 6 weeks to close). No attachments.
-   Email 2 — Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings
-   Short follow-up. Restate LH2 portfolio context. One sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." No attachments.
-   Email 3 — Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings
-   Pivot to Accelerate. Acknowledge they may not want to sell. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed Accelerate pitch with workstreams and case studies. Attachments: LH2 Accelerate Deck + Case Studies deck.
+   ACQUISITION SEQUENCE (use only when PRODUCT FOCUS = "Acquisition" — 5 emails + 1 LinkedIn note):
+   CRITICAL — ATTACHMENTS: Emails 1, 2, and 3 must have NO attachments. Do not attach LH2 Accelerate Deck or any deck in acquisition emails 1–3. Only Email 4 (pivot to partnership) and optionally Email 5 attach LH2 Accelerate Deck + Case Studies. Never attach the Accelerate deck in acquisition Email 1, 2, or 3.
+
+LinkedIn (Day 0):
+   - One line: who you are + one genuine observation about their brand
+   - End with: "Would be great to connect."
+   - No pitch. No mention of acquisition.
+
+Email 1 — Subject: Acquiring [Website Name]
+   - 3 sentences max. This is a signal, not a pitch.
+   - Sentence 1: Who you are and what LH2 does (one line — portfolio scale, niche focus and strictly brands under LH2 Holdings only)
+   - Sentence 2: Why this specific brand. Not generic ("love your content") — specific (niche, audience, positioning, growth signal)
+   - Sentence 3: "We move fast — term sheet in 2 weeks, close in 6. Worth a quick call?"
+   - No attachments. No timeline breakdown. No fluff.
+
+Email 2 — Subject: Re: Acquiring [Website Name]
+   - 3 sentences. Assume they saw it, didn't reply yet.
+   - Restate LH2 briefly (what happens to brands post-acquisition — they grow, keep identity, get infrastructure)
+   - One line on fit: what specifically about their brand makes it a good LH2 asset
+   - Close: "Open to a 15-minute call this week?"
+   - No attachments. Do NOT mention partnership yet.
+
+Email 3 — Subject: Re: Acquiring [Website Name]
+   - 2 sentences. Pure persistence, no new info.
+   - Something like: "Still interested in [Website Name] if the timing ever makes sense. No pressure — just wanted to make sure this didn't get buried."
+   - This email exists to be human, not to sell. Keep it that way.
+   - No attachments.
+
+Email 4 — Subject: Re: Acquiring [Website Name]
+   - Pivot to Accelerate — but frame it as a different kind of relationship, not a fallback
+   - Open: 1 sentence acknowledging acquisition may not be the right move right now (timing, valuation, attachment to the brand — keep it light, no dwelling)
+   - Introduce Accelerate in 2 sentences: zero cost, zero equity, pure revenue share. If no uplift, no cost.
+   - 3–4 sentences on what Accelerate looks like specifically for THIS publisher — use the research. What's their actual constraint? What would the pod focus on? What distribution infrastructure do they already have that Accelerate plugs into? Make it feel scoped, not templated.
+   - 1 proof point: one portfolio brand with a concrete before/after that's as close to this publisher's profile as possible (scale, niche, model). One sentence only.
+   - Close: "I've attached the Accelerate deck and case studies — worth 20 minutes to walk through what this looks like for [Website Name] specifically?"
+   - Attachments: LH2 Accelerate Deck + Case Studies Deck
+   - Length: 150–180 words max. This email's job is to intrigue, not to close. Save the full pitch for the call.
+
+Email 5 — Subject: Re: Acquiring [Website Name]
+   - Last touch. Make it feel like a person, not a sequence.
+   - Acknowledge: this is the last email, you won't keep following up
+   - Leave both doors open: acquisition when timing is right, Accelerate if they want revenue upside now
+   - One line that's genuinely warm — not corporate-warm, actually warm
+   - Attachment: Case Studies Deck only if not already sent in Email 4
 
    MEDIAOS SEQUENCE (large/sophisticated publishers only — use sparingly):
    Frame as "what we built to run our own newsrooms." Show the tooling, build credibility, steer toward "we can run this for you" (Accelerate). Never disclose that MediaOS was always aimed at Accelerate. Attachment: MediaOS Deck.
@@ -1772,12 +1810,9 @@ CONTENT: <full message text>
 
 == SEQUENCE STRUCTURE ==
 
-Use the DYNAMIC STRATEGY PROFILE in the system context as your decision framework for sequence type, hook priority, and channel emphasis.
+Use the PRODUCT FOCUS in the system context: if it is Acquisition (Acquisition then Accelerate), generate the ACQUISITION SEQUENCE (5 steps) below — LinkedIn + Acquisition Emails 1, 2, 3 + Email 4 (pivot to partnership) + Email 5 (optional). Otherwise use the ACCELERATE SEQUENCE (LinkedIn + Emails 1-4 + optional 5).
 
-First, determine the correct sequence type:
-- ACCELERATE (default, 95% of cases): Always generate the full sequence — LinkedIn note + 4 emails + optional Email 5.
-- ACQUISITION (only if estimated revenue < $10K/month with MSN/Yahoo presence): 3-email acquisition sequence.
-- MEDIAOS (only for very large/sophisticated publishers where a pod pitch is too forward): MediaOS door-opener sequence.
+Use the DYNAMIC STRATEGY PROFILE for hook priority and channel emphasis.
 
 == ACCELERATE SEQUENCE ==
 
@@ -1837,10 +1872,14 @@ Always generate all steps. Do not skip the LinkedIn step regardless of whether a
 
 If no LinkedIn URL is on file, note it in the execution notes at the end of the sequence so the sender knows to find the profile manually before sending Step 1.
 
-== ACQUISITION SEQUENCE ==
-  Step 1 — Email (Day 0): Subject: Regarding Acquisition of [Website Name] || LH2 Holdings. Very short. Sender + LH2 identity + why this brand specifically caught LH2's attention + ask if open to acquisition + process timeline. No attachments.
-  Step 2 — Email (Day 5-7): Subject: Re: ... Short follow-up. LH2 portfolio context + one sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." No attachments.
-  Step 3 — Email (Day 12-14): Subject: Re: ... Pivot to Accelerate. Acknowledge they may not want to sell. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed pitch with workstreams and case studies. Attachments: LH2 Accelerate Deck + Case Studies deck.
+== ACQUISITION SEQUENCE (use when PRODUCT FOCUS is Acquisition — 6 steps total) ==
+  CRITICAL — Do NOT attach any deck (not LH2 Accelerate Deck, not any deck) in Steps 2, 3, or 4 (Acquisition Emails 1, 2, 3). Only Step 5 (Email 4 — pivot to partnership) and optionally Step 6 attach LH2 Accelerate Deck + Case Studies.
+  Step 1 — LinkedIn (Day 0): Connection note. Hard limit 300 characters. Sender identity + one specific observation about their brand + "Would be great to connect." No acquisition pitch on LinkedIn.
+  Step 2 — Email 1 (Day 1-2): Subject: Regarding Acquisition of [Website Name] || LH2 Holdings. Very short. Sender + LH2 identity + why this brand specifically caught LH2's attention + ask if open to exploring acquisition + process timeline (2 weeks term sheet, 4 weeks due diligence, 6 weeks to close). NO ATTACHMENTS — do not attach any deck.
+  Step 3 — Email 2 (Day 5-7): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Short follow-up. LH2 portfolio context + one sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." NO ATTACHMENTS.
+  Step 4 — Email 3 (Day 10-12): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Still acquisition tone. Short follow-up: restate interest, invite reply, keep door open. No pivot yet. NO ATTACHMENTS.
+  Step 5 — Email 4 (Day 16-18): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Pivot to partnership. Acknowledge they may not want to sell or may need time. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed Accelerate pitch with workstreams and case studies. ONLY from this step onward: Attachments: LH2 Accelerate Deck + Case Studies deck.
+  Step 6 — Email 5 (Day 22-25, OPTIONAL): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Partnership close: "Totally understand if this isn't the right time. If partnership (Accelerate) is ever of interest, we're here." No pressure. Attachments optional (Case Studies if not sent in Step 5).
 
 == HARD CONSTRAINTS ==
 - Every CONTENT block must be fully written — no placeholders, no [INSERT X HERE].

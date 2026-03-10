@@ -139,6 +139,49 @@ PRODUCT_PROFILES = {
             "Don't open with the product name before establishing the operational problem",
         ],
     },
+
+    "acquisition": {
+        "label": "Acquisition (then Accelerate)",
+        "tagline": "Acquisition lead-in — emails 1–3 acquisition; emails 4–5 pivot to partnership",
+        "pitch_summary": (
+            "When the user selects Acquisition, the sequence leads with acquisition: "
+            "Emails 1–3 are acquisition-focused (LH2 interest in acquiring the brand, process timeline, "
+            "option to explore a revenue partnership if they are not looking to sell). "
+            "Emails 4 and 5 pivot to partnership — LH2 Accelerate: zero upfront cost, revenue share, "
+            "so the prospect can choose growth without selling. Tone in 1–3 is direct, M&A-appropriate; "
+            "in 4–5 it shifts to partnership and Accelerate positioning."
+        ),
+        "target_signals": [
+            "Very small brand (e.g. estimated revenue < $10K/month) with syndication presence (MSN/Yahoo)",
+            "Founder or owner who might consider exit or strategic options",
+            "Hyperlocal or niche publisher where acquisition is a plausible first conversation",
+        ],
+        "key_facts": [
+            "Emails 1–3: acquisition tone — LH2 identity, why this brand, ask if open to acquisition, timeline (2 weeks term sheet, 4 weeks DD, 6 weeks to close). NO attachments in emails 1, 2, or 3 — do not attach any deck.",
+            "Email 2 footer: 'If you're not looking for acquisition — we can help 2–5x your revenue via a revenue partnership.'",
+            "Emails 4–5: pivot to Accelerate — acknowledge they may not want to sell; introduce LH2 Accelerate; condensed partnership pitch and case studies. Only from email 4 onward: LH2 Accelerate Deck + Case Studies.",
+        ],
+        "pitch_angle": (
+            "Lead with acquisition in emails 1–3: direct, professional, clear process. "
+            "In emails 4–5, pivot to partnership without pressure — frame Accelerate as the alternative "
+            "if they are not looking to sell, so the thread stays valuable either way."
+        ),
+        "tone_notes": (
+            "Emails 1–3: M&A tone — direct, respectful, clear timeline and ask. No hype. "
+            "Emails 4–5: partnership tone — same operator-to-operator voice as Accelerate; "
+            "position Accelerate as the no-sale growth option."
+        ),
+        "opener_hooks": [
+            "why this brand caught LH2's attention for acquisition",
+            "fit with LH2 portfolio and acquisition criteria",
+            "process timeline and next steps if open to exploring",
+        ],
+        "avoid": [
+            "Don't mix acquisition and partnership tone in emails 1–3",
+            "Don't push Accelerate in emails 1–3 — save partnership pivot for 4–5",
+            "Don't make email 4–5 feel like a fallback — frame as a real option (growth without selling)",
+        ],
+    },
 }
 
 
