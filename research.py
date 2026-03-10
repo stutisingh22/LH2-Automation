@@ -359,9 +359,29 @@ def _html_to_blocks(html):
 # RESEARCH PROMPT
 # ══════════════════════════════════════════════════════════════
 
-def build_research_prompt(domain, context=""):
-    """The full institutional-grade research prompt. Research is produced from scratch by Claude; no extraction from Notion."""
-    return f"""{context}
+def build_research_prompt(domain, context="", platform_presence=None):
+    """The full institutional-grade research prompt. Research is produced from scratch by Claude; no extraction from Notion.
+    When platform_presence is provided (from tracker_sources), syndication presence (MSN/Yahoo/NewsBreak) drives verdict to Proceed unless multiple blocking constraints exist."""
+    syndication_block = ""
+    if platform_presence and isinstance(platform_presence, dict):
+        msn = bool(platform_presence.get("msn"))
+        yahoo = bool(platform_presence.get("yahoo"))
+        newsbreak = bool(platform_presence.get("newsbreak"))
+        any_syndication = msn or yahoo or newsbreak
+        if any_syndication:
+            channels = [c for c, v in [("MSN", msn), ("Yahoo", yahoo), ("NewsBreak", newsbreak)] if v]
+            syndication_block = f"""
+------------------------------------------------------------
+SYNDICATION PRESENCE (from tracker_sources — use this for verdict)
+------------------------------------------------------------
+Platform presence for this domain: {", ".join(channels)}.
+LH2 is strong in syndication; presence on these channels means we can pull up the game regardless of scale.
+
+VERDICT RULE: Because syndication (MSN, Yahoo, and/or NewsBreak) is present, the Eligibility Verdict MUST be "Proceed". Only output "Stop" if there are multiple other blocking constraints (e.g. paywall plus wrong category plus purely evergreen content). In the verdict rationale, state that syndication presence supports proceeding and is an LH2 strength.
+------------------------------------------------------------
+
+"""
+    return f"""{context}{syndication_block}
 
 You are producing institutional-grade strategic account research for LH2 Corp Dev & Partnerships. Produce the full research from scratch — do not extract or use any existing research content from Notion or elsewhere. You have web search capability; for Section 3 (Power Mapping) you MUST use it aggressively — never rely on training data alone for specific people. Completely ignore any contact details or SPOC data stored in Notion.
 This document must read like an internal Investment Committee memorandum — the kind a PE associate would write before a first meeting with a target.
@@ -1025,7 +1045,7 @@ def _is_search_noise(text):
     return any(lowered.startswith(prefix) for prefix in _SEARCH_NOISE_PREFIXES)
 
 
-def run_research(domain, context="", progress_callback=None):
+def run_research(domain, context="", progress_callback=None, platform_presence=None):
     """
     Run the full research prompt against Claude.
     Returns the research text, or None on failure.
@@ -1033,6 +1053,9 @@ def run_research(domain, context="", progress_callback=None):
     progress_callback(chars_received, elapsed_seconds) is called periodically.
     Search process narration is filtered from the stream so it never reaches
     the frontend or the final output.
+    platform_presence: optional dict with msn, yahoo, newsbreak (bool). When provided and any is True,
+    the prompt instructs the model to output Proceed/Proceed with Caveats unless multiple blocking constraints.
+    Source should be tracker_sources (CSV or extra_data populated from it).
     """
     if not ANTHROPIC_API_KEY:
         return None
@@ -1041,7 +1064,7 @@ def run_research(domain, context="", progress_callback=None):
     if len(context) > MAX_CONTEXT:
         context = context[:MAX_CONTEXT] + "\n\n[... trimmed ...]\n"
 
-    prompt = build_research_prompt(domain, context)
+    prompt = build_research_prompt(domain, context, platform_presence=platform_presence)
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
     for attempt in range(1, 3):

@@ -584,3 +584,90 @@ def build_platform_analytics_for_domain(
         })
 
     return result
+
+
+def _similarweb_snapshot_from_fetch(sw: dict[str, Any]) -> dict[str, Any]:
+    """Build the similarweb dict for platform_presence_analytics from _similarweb_monthly_visits result."""
+    visits = sw.get("visits")
+    date_range = sw.get("date_range") or ""
+    # Parse "YYYY|MM|01 to YYYY|MM|DD" -> "Jan 2026"
+    latest_visits_month = "latest"
+    if date_range:
+        parts = date_range.split(" to ")
+        if len(parts) >= 2:
+            to_part = parts[-1].strip()
+            if "|" in to_part:
+                ymd = to_part.split("|")
+                if len(ymd) >= 2:
+                    try:
+                        from datetime import datetime
+                        dt = datetime(int(ymd[0]), int(ymd[1]), 1)
+                        latest_visits_month = dt.strftime("%b %Y")
+                    except (ValueError, IndexError):
+                        pass
+    errors = []
+    if sw.get("error"):
+        errors.append(sw["error"])
+    return {
+        "available": bool(visits),
+        "errors": errors,
+        "latest_monthly_visits": visits,
+        "latest_visits_month": latest_visits_month,
+        "date_range": date_range,
+        "country": sw.get("country", "US"),
+        "channel_shares": {},
+        "top_social_networks": [],
+        "top_referral_domains": [],
+        "traffic_source": sw.get("source", "unknown"),
+        "traffic_note": sw.get("note", ""),
+    }
+
+
+def run_similarweb_for_independent_companies(
+    progress_callback=None,
+    min_delay_sec: float = 2.0,
+    max_delay_sec: float = 5.0,
+) -> tuple[int, str]:
+    """
+    Fetch Similarweb AvgMonthVisits for all independent companies and merge into
+    Company.extra_data["platform_presence_analytics"]["similarweb"] only. Existing
+    platform_presence, platform_details, etc. are left unchanged.
+
+    Expects SIMILARWEB_COOKIES in environment (e.g. from keys.env). Stops on cookie expiry.
+    Returns (updated_count, "" on success or error_message).
+    """
+    import random
+    import time
+    from db_ops import get_all_companies, get_company, merge_company_extra_data
+
+    companies = get_all_companies(exclude_advisor_shadows=True)
+    to_process = [
+        c for c in companies
+        if (c.get("domain") or "").strip()
+        and not (c.get("domain") or "").strip().startswith("__advisor_")
+    ]
+    updated = 0
+    for i, c in enumerate(to_process):
+        cid = c["id"]
+        domain = normalize_domain((c.get("domain") or "").strip())
+        if not domain:
+            continue
+        if progress_callback:
+            progress_callback(i + 1, len(to_process), domain)
+        sw = _similarweb_monthly_visits(domain)
+        if sw.get("error") == "cookie_expired":
+            return updated, "Similarweb cookie expired. Update SIMILARWEB_COOKIES in keys.env and re-run."
+        existing = (get_company(cid) or {}).get("extra_data") or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        analytics = dict(existing.get("platform_presence_analytics") or {})
+        if not isinstance(analytics, dict):
+            analytics = {}
+        analytics["similarweb"] = _similarweb_snapshot_from_fetch(sw)
+        analytics["updated_at"] = datetime.utcnow().isoformat()
+        analytics["status"] = "ok"
+        if merge_company_extra_data(cid, {"platform_presence_analytics": analytics}):
+            updated += 1
+        if i < len(to_process) - 1:
+            time.sleep(random.uniform(min_delay_sec, max_delay_sec))
+    return updated, ""

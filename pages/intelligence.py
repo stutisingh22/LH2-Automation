@@ -125,7 +125,16 @@ def render():
                         pb = st.progress(0, text="Starting…")
                         def _prog(c, e):
                             pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
-                        result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                        _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
+                        _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                        if not _platform_presence:
+                            try:
+                                from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                                _tracker_map = load_domain_to_platforms()
+                                _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                            except Exception:
+                                _platform_presence = {}
+                        result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
                     except Exception as e:
                         err_msg = str(e)
                     if result:
@@ -145,7 +154,16 @@ def render():
                         pb = st.progress(0, text="Re-running deep research…")
                         def _prog(c, e):
                             pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
-                        result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                        _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
+                        _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                        if not _platform_presence:
+                            try:
+                                from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                                _tracker_map = load_domain_to_platforms()
+                                _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                            except Exception:
+                                _platform_presence = {}
+                        result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
                     except Exception as e:
                         err_msg = str(e)
                     if result:

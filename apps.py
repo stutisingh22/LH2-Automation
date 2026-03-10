@@ -1468,8 +1468,18 @@ with tabs[2]:  # INTELLIGENCE
                     def _prog(c, e):
                         pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
                     
+                    # Platform presence from tracker_sources (extra_data first, then CSV) so verdict can be Proceed when syndication present
+                    _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
+                    _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                    if not _platform_presence:
+                        try:
+                            from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                            _tracker_map = load_domain_to_platforms()
+                            _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                        except Exception:
+                            _platform_presence = {}
                     # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
-                    result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                    result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
                 except Exception as e:
                     err_msg = str(e)
                 
@@ -1545,8 +1555,18 @@ with tabs[2]:  # INTELLIGENCE
                         def _prog(c, e):
                             pb.progress(min(c / 40000, 0.95), text=f"Researching… {c:,} chars")
                         
+                        # Platform presence from tracker_sources for syndication verdict rule
+                        _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
+                        _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                        if not _platform_presence:
+                            try:
+                                from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                                _tracker_map = load_domain_to_platforms()
+                                _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                            except Exception:
+                                _platform_presence = {}
                         # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
-                        result = run_research(comp.get("domain", ""), progress_callback=_prog)
+                        result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
                     except Exception as e:
                         err_msg = str(e)
                     
@@ -1785,16 +1805,23 @@ with tabs[2]:  # INTELLIGENCE
                 editing_section = st.session_state.get(research_editing_section_key)
                 section_edits = []
                 for i, (sec_title, body) in enumerate(sections):
-                    section_html = research_display_to_editor_html(body) if body else ""
+                    # When syndication presence overrides verdict, replace verdict line in section 0 so display shows Proceed explicitly
+                    _body_for_display = body
+                    if i == 0 and _elig_override_proceed and body and isinstance(body, str):
+                        _syndication_channels = [c for c, v in [("MSN", platform_presence.get("msn")), ("Yahoo", platform_presence.get("yahoo")), ("NewsBreak", platform_presence.get("newsbreak"))] if v]
+                        _repl = f"Eligibility Verdict: Proceed (syndication presence: {', '.join(_syndication_channels)} — LH2 strength)"
+                        _body_for_display = _re.sub(r"(?im)^\s*Eligibility\s*Verdict\s*:\s*.+$", _repl, body, count=1)
+                    section_html = research_display_to_editor_html(_body_for_display) if _body_for_display else ""
                     effective_content = (overrides.get(i) if i in overrides and overrides.get(i) is not None else section_html) or ""
                     with st.expander(sec_title, expanded=(i == 0)):
                         if i == 0:
                             msn = bool(platform_presence.get("msn", False))
                             yahoo = bool(platform_presence.get("yahoo", False))
                             newsbreak = bool(platform_presence.get("newsbreak", False))
+                            _syndication_list = ", ".join(c for c, v in [("MSN", msn), ("Yahoo", yahoo), ("NewsBreak", newsbreak)] if v) if (msn or yahoo or newsbreak) else ""
                             _override_div = (
-                                "<div style='font-size:12px;color:#166534;margin-top:6px;'><b>Proceed override:</b> "
-                                "Verdict is Stop/Fail or Proceed with Caveats, but platform distribution is available → proceed (Syndication/Accelerate path).</div>"
+                                f"<div style='font-size:12px;color:#166534;margin-top:6px;'><b>Eligibility Verdict: Proceed</b> — "
+                                f"Syndication presence ({_syndication_list}) from tracker_sources. LH2 strength; proceed unless multiple other constraints block.</div>"
                                 if _elig_override_proceed else ""
                             )
                             st.markdown(

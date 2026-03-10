@@ -265,13 +265,13 @@ def _build_preference_memory_block(query):
 
 def _extract_platform_presence(comp):
     """
-    Read platform presence from company extra_data.
-    Prefer platform_presence_analytics (fresh snapshot), fallback to platform_presence.
+    Read platform presence for MSN, Yahoo, NewsBreak.
+    tracker_sources (CSV) is the canonical source when the company has a domain, so the
+    strategist always acts on the same data as the Companies UI and avoids stale or
+    false-positive analytics (e.g. platform_positioning from search) overriding CSV.
     """
     extra = (comp or {}).get("extra_data") or {}
     analytics = extra.get("platform_presence_analytics") or {}
-    analytics_presence = analytics.get("platform_presence") or {}
-    base_presence = extra.get("platform_presence") or {}
 
     def _coerce_bool(v):
         if isinstance(v, bool):
@@ -288,50 +288,58 @@ def _extract_platform_presence(comp):
 
     out = {}
     source = "none"
-    for platform in ("msn", "yahoo", "newsbreak"):
-        val = _coerce_bool(analytics_presence.get(platform, None))
-        if val is not None:
-            out[platform] = val
-            source = "platform_presence_analytics"
-            continue
-        val = _coerce_bool(base_presence.get(platform, None))
-        if val is not None:
-            out[platform] = val
-            if source == "none":
-                source = "platform_presence"
-            continue
-        # Fallback: many snapshots store presence as top-level booleans.
-        val = _coerce_bool(analytics.get(f"{platform}_presence", None))
-        if val is not None:
-            out[platform] = val
-            if source == "none":
-                source = "platform_presence_analytics"
-            continue
-        # Fallback: infer from positioning evidence.
-        p = (analytics.get("platform_positioning") or {}).get(platform) or {}
-        if int(p.get("result_count") or 0) > 0:
-            out[platform] = True
-            if source == "none":
-                source = "platform_positioning"
-            continue
-        out[platform] = None
-
-    # Final fallback: use the same CSV-backed source as Companies navigation.
-    # This is only used when no deterministic platform signal exists in extra_data.
-    if all(v is None for v in out.values()):
+    domain = (comp or {}).get("domain") or ""
+    domain = (domain or "").strip()
+    # Skip advisor shadow domains (e.g. __advisor_123) for CSV lookup
+    if domain and not domain.startswith("__advisor_"):
         try:
             from tracker_sources import load_domain_to_platforms, get_presence_for_domain
-            domain = (comp or {}).get("domain") or ""
             tracker_map = load_domain_to_platforms()
             csv_presence = get_presence_for_domain(domain, tracker_map) or {}
-            for platform in ("msn", "yahoo", "newsbreak"):
-                val = _coerce_bool(csv_presence.get(platform, None))
-                if val is not None:
-                    out[platform] = val
-            if any(v is not None for v in out.values()):
-                source = "tracker_sources_csv_fallback"
+            if csv_presence:
+                for platform in ("msn", "yahoo", "newsbreak"):
+                    val = _coerce_bool(csv_presence.get(platform, None))
+                    if val is not None:
+                        out[platform] = val
+                if any(v is not None for v in out.values()):
+                    source = "tracker_sources_csv"
         except Exception:
             pass
+
+    # If CSV did not resolve (no domain, or no rows for this domain), use extra_data
+    if source == "none":
+        analytics_presence = analytics.get("platform_presence") or {}
+        base_presence = extra.get("platform_presence") or {}
+        for platform in ("msn", "yahoo", "newsbreak"):
+            if out.get(platform) is not None:
+                continue
+            val = _coerce_bool(analytics_presence.get(platform, None))
+            if val is not None:
+                out[platform] = val
+                source = "platform_presence_analytics"
+                continue
+            val = _coerce_bool(base_presence.get(platform, None))
+            if val is not None:
+                out[platform] = val
+                source = "platform_presence"
+                continue
+            val = _coerce_bool(analytics.get(f"{platform}_presence", None))
+            if val is not None:
+                out[platform] = val
+                source = "platform_presence_analytics"
+                continue
+            p = (analytics.get("platform_positioning") or {}).get(platform) or {}
+            if int(p.get("result_count") or 0) > 0:
+                out[platform] = True
+                source = "platform_positioning"
+            else:
+                out[platform] = None
+
+    # Ensure all three keys exist
+    for platform in ("msn", "yahoo", "newsbreak"):
+        if platform not in out:
+            out[platform] = None
+
     return out, source, analytics
 
 
@@ -352,12 +360,29 @@ def _build_platform_presence_block(comp):
             details.append(f"- {platform.upper()}: {summary[:500]}")
 
     details_block = "\n".join(details) if details else "(No platform positioning summaries available.)"
+    syndication_note = ""
+    # Order: MSN first when present (LH2 specialty), then Yahoo, then NewsBreak — so we only talk about whichever 1/2/3 are present, with LH2's strongest first
+    present_platforms = [p for p in ("msn", "yahoo", "newsbreak") if presence.get(p)]
+    if present_platforms:
+        present_list = [p.upper() for p in present_platforms]
+        lead_instruction = " The list is ordered with LH2's strongest channel first; when mentioning syndication, lead with the first in the list." if len(present_platforms) > 1 else ""
+        syndication_note = (
+            f"\nLH2 SYNDICATION (only for platforms marked PRESENT above): {', '.join(present_list)}. "
+            f"Emphasize syndication only for these—use in positioning, wedge, and email openings where relevant. No matter scale, we can pull up the game on these channels.{lead_instruction} "
+            "Do NOT mention or reference any syndication platform that is absent or unknown for this target."
+        )
+    else:
+        syndication_note = (
+            "\nNo syndication platform is confirmed PRESENT for this target (see labels above: absent or unknown). "
+            "Do NOT mention NewsBreak, MSN, or Yahoo in a syndication context in any draft. Do not assert or imply they have syndication on these platforms."
+        )
     return (
         "== PLATFORM PRESENCE ==\n"
         f"Source: {source}\n"
         f"{' | '.join(labels)}\n"
         "Platform details:\n"
         f"{details_block}"
+        f"{syndication_note}"
     )
 
 
@@ -715,6 +740,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
    - Every claim, number, or reference in the draft must trace back to the provided research brief or context folder. If a data point isn't in the research, don't use it.
    - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
    - Platform claims MUST align with PLATFORM PRESENCE above. Do not assume presence or absence when marked unknown.
+   - Syndication: Only mention or emphasize syndication for platforms explicitly marked PRESENT in PLATFORM PRESENCE above. If a platform is absent or unknown, do NOT mention it—do not assert the target has NewsBreak, MSN, or Yahoo syndication unless that platform is marked present. When multiple are present, the list there is ordered with LH2's strongest first—lead with the first in that list.
    - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
    - Apply USER PREFERENCE MEMORY only when relevant to the current ask. Do not inject unrelated old preferences.
 
@@ -761,9 +787,9 @@ WRITING RULES FOR ALL EMAILS:
    Subject: LH2 Accelerate Details <> [Brand Name]
    ALWAYS start with: "Hi [First Name],"
    Keep this short. 3-4 paragraphs maximum. This is the hook — not the pitch.
-   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. Must feel like you've genuinely studied their operation. No flattery — a real observation.
+   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. If we are talking about syndication for a certain platform, refer research brief or you must research yourself about their presence and standing on the platform- majorly number of articles published per day on that platform. Must feel like you've genuinely studied their operation. No flattery — a real observation.
    Para 2: The gap or opportunity — 1-2 sentences identifying the specific constraint or unrealized opportunity you've spotted for them. Drawn from the research. This is what makes the email feel relevant rather than random.
-   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." Nothing about the model yet.
+   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names owned/held/operated by LH2 Holdings only- strictly no other brands/companies/entities/etc. that are not a part of LH2 Holdings]." Nothing about the model yet.
    Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate route) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS route) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition route)
    ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach.
    No case studies. No workstream details. No MediaOS explanation. No team bio. Short, specific, ends with the deck named.
@@ -783,7 +809,7 @@ WRITING RULES FOR ALL EMAILS:
    ALWAYS start with: "Hi [First Name],"
    Opening sentence: One natural line continuing the thread — e.g. "Following up on the Accelerate model I outlined — here's how we'd actually structure this for [Brand] specifically."
    Para 1: Which model fits and why — drawn directly from the research brief. State the specific fit (Full-Stack or Editorial Pod) and the specific reason (their team size, content velocity, existing infrastructure, editorial setup). One concise paragraph.
-   Para 2: Content operations tailored to them — plain prose. What the pod would actually do for this brand specifically: which coverage gaps it fills, which content types it handles, how it integrates with their existing team and workflow. Drawn from research — not generic.
+   Para 2: Content operations tailored to them — plain prose. What the pod would actually do for this brand specifically: which coverage gaps it fills, which content types it handles, how it integrates with their existing team and workflow and which platform would it focus on. Drawn from research — not generic.
    Para 3: Distribution tailored to them — plain prose. Which channels make sense for their specific profile. Syndication-heavy for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile and syndication presence from the research brief.
    Para 4: Monetization tailored to them — plain prose. Which revenue levers apply to their specific situation. Close with: "Not all of this applies to every brand — we scope what's relevant during onboarding."
    Closing line: "Happy to go deeper on any of this whenever it works."
@@ -1785,7 +1811,7 @@ Always generate all steps. Do not skip the LinkedIn step regardless of whether a
   Opening: Thread continuity — one natural line. e.g. "Following up on the Accelerate overview — wanted to get specific about how we'd structure this for [Brand]."
   Para 1: Which model fits and why — Full-Stack or Editorial Pod, with the specific reason drawn from the research brief (their team size, content velocity, existing infrastructure, editorial setup). One concise paragraph.
   Para 2: Content operations tailored to them — what the pod would actually do for this brand: which coverage gaps it fills, which content types, how it integrates with their existing team and workflow. Drawn from research — not generic.
-  Para 3: Distribution tailored to them — which channels make sense for their specific profile. Syndication-heavy (MSN/NewsBreak/Yahoo) for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile from the research brief.
+  Para 3: Distribution tailored to them — which channels make sense for their specific profile. Reference only syndication platforms that are PRESENT for this target (PLATFORM PRESENCE); do not name MSN, NewsBreak, or Yahoo if absent. When present, syndication-heavy (e.g. MSN, NewsBreak, Yahoo) for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile from the research brief.
   Para 4: Monetization tailored to them — which revenue levers apply to their specific model. Close: "Not all of this applies to every brand — we scope what's relevant during onboarding."
   Closing: "Happy to go deeper on any of this whenever it works."
   No attachments.
