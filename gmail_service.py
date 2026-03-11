@@ -7,6 +7,7 @@ Scope: gmail.compose only. No Streamlit UI in this module.
 
 import base64
 import logging
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from google_auth import get_google_credentials
@@ -34,7 +35,7 @@ def parse_email_content(content):
     return subject, body
 
 
-def create_gmail_draft(user_email, to_email, subject, body):
+def create_gmail_draft(user_email, to_email, subject, body, body_html=None):
     """
     Create a Gmail draft for the given account. Does not send the email.
 
@@ -43,6 +44,7 @@ def create_gmail_draft(user_email, to_email, subject, body):
         to_email: recipient address.
         subject: draft subject line.
         body: draft body (plain text).
+        body_html: optional HTML body; if set, message is multipart/alternative (plain + HTML).
 
     Returns:
         dict: {"success": bool, "draft_id": str|None, "error": str|None}
@@ -58,9 +60,17 @@ def create_gmail_draft(user_email, to_email, subject, body):
         from googleapiclient.discovery import build
         service = build("gmail", "v1", credentials=creds)
 
-        message = MIMEText(body or "", "plain", "utf-8")
-        message["to"] = to_email or ""
-        message["subject"] = subject or "(No subject)"
+        if body_html and (body_html or "").strip():
+            message = MIMEMultipart("alternative")
+            message["to"] = to_email or ""
+            message["subject"] = subject or "(No subject)"
+            message.attach(MIMEText(body or "", "plain", "utf-8"))
+            message.attach(MIMEText(body_html.strip(), "html", "utf-8"))
+        else:
+            message = MIMEText(body or "", "plain", "utf-8")
+            message["to"] = to_email or ""
+            message["subject"] = subject or "(No subject)"
+
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         body_param = {"message": {"raw": raw}}
 

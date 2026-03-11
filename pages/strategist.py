@@ -569,6 +569,9 @@ def render():
                             render_save_to_gmail(
                                 ct.get("email", ""), subj, bod,
                                 f"plan_{st.session_state.session_id}_{step['step']}",
+                                product_key=st.session_state.get("selected_product"),
+                                step_index=step.get("step"),
+                                lead_brand=None,
                             )
 
                 st.markdown("</div>", unsafe_allow_html=True)

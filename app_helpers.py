@@ -22,6 +22,7 @@ from ai_engine import compute_lead_score, refine_email_draft
 from config import ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS
 from ui_helpers import bdg, display_full_name
 from gmail_service import create_gmail_draft, parse_email_content
+from services.deck_links import inject_deck_links_into_email_body
 
 
 def get_current_notion_database_id():
@@ -159,8 +160,9 @@ def render_calendar_event(ax):
                     st.rerun()
 
 
-def render_save_to_gmail(to_email, subject, body, draft_id):
-    """Render Save to Gmail section: account dropdown + Save to Gmail Drafts button."""
+def render_save_to_gmail(to_email, subject, body, draft_id, product_key=None, step_index=None, lead_brand=None):
+    """Render Save to Gmail section: account dropdown + Save to Gmail Drafts button.
+    If product_key, step_index, or lead_brand are provided, deck phrases in body are turned into hyperlinks."""
     all_users = get_all_users()
     if not all_users:
         return
@@ -185,11 +187,22 @@ def render_save_to_gmail(to_email, subject, body, draft_id):
         )
     with gcol2:
         has_to_email = bool((to_email or "").strip())
-        disabled = not (subject or body) or not has_to_email
+        disabled = not (subject or body)
         if not has_to_email:
-            st.caption("Add email for this contact to create draft.")
+            st.caption("Recipient can be added in Gmail if needed.")
         if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
-            out = create_gmail_draft(gmail_sel, to_email or "", subject or "", body or "")
+            body_html = None
+            try:
+                body_html = inject_deck_links_into_email_body(
+                    body or "", product_key=product_key, step_index=step_index, lead_brand=lead_brand
+                )
+                if not (body_html or "").strip():
+                    body_html = None
+            except Exception:
+                body_html = None
+            out = create_gmail_draft(
+                gmail_sel, to_email or "", subject or "", body or "", body_html=body_html
+            )
             if out.get("success"):
                 st.success("Draft saved to Gmail.")
             else:

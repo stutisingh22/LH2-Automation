@@ -199,6 +199,7 @@ from signalhire_enrichment import (
     has_verified_email,
 )
 from gmail_service import create_gmail_draft, parse_email_content
+from services.deck_links import inject_deck_links_into_email_body
 from google_auth import get_google_credentials
 from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 
@@ -478,8 +479,9 @@ def _render_calendar_event(ax):
                     st.rerun()
 
 
-def _render_save_to_gmail(to_email, subject, body, draft_id):
-    """Render 'Save to Gmail' section: account dropdown + Save to Gmail Drafts button."""
+def _render_save_to_gmail(to_email, subject, body, draft_id, product_key=None, step_index=None, lead_brand=None):
+    """Render 'Save to Gmail' section: account dropdown + Save to Gmail Drafts button.
+    If product_key, step_index, or lead_brand are provided, deck phrases in body are turned into hyperlinks."""
     all_users = get_all_users()
     if not all_users:
         return
@@ -505,11 +507,22 @@ def _render_save_to_gmail(to_email, subject, body, draft_id):
         )
     with gcol2:
         has_to_email = bool((to_email or "").strip())
-        disabled = not (subject or body) or not has_to_email
+        disabled = not (subject or body)
         if not has_to_email:
-            st.caption("Add email for this contact to create draft.")
+            st.caption("Recipient can be added in Gmail if needed.")
         if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
-            out = create_gmail_draft(gmail_sel, to_email or "", subject or "", body or "")
+            body_html = None
+            try:
+                body_html = inject_deck_links_into_email_body(
+                    body or "", product_key=product_key, step_index=step_index, lead_brand=lead_brand
+                )
+                if not (body_html or "").strip():
+                    body_html = None
+            except Exception:
+                body_html = None
+            out = create_gmail_draft(
+                gmail_sel, to_email or "", subject or "", body or "", body_html=body_html
+            )
             if out.get("success"):
                 st.success("Draft saved to Gmail.")
             else:
@@ -3276,6 +3289,9 @@ with tabs[3]:  # STRATEGIST
                                 _render_save_to_gmail(
                                     ct_ctx.get("email", ""), subj, bod,
                                     f"plan_{st.session_state.session_id}_{step['step']}",
+                                    product_key=_product_key_for_strategist,
+                                    step_index=step.get("step"),
+                                    lead_brand=None,
                                 )
 
                     st.markdown("</div>", unsafe_allow_html=True)
@@ -3526,7 +3542,12 @@ with tabs[4]:  # ACTIONS
                                 st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
                                 single_draft = _display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
                                 subj, bod = parse_email_content(single_draft)
-                                _render_save_to_gmail(ct.get("email", ""), subj, bod, f"act_{step['id']}")
+                                _render_save_to_gmail(
+                                    ct.get("email", ""), subj, bod, f"act_{step['id']}",
+                                    product_key=st.session_state.get("command_center_product_key"),
+                                    step_index=step.get("sequence_step"),
+                                    lead_brand=None,
+                                )
 
                 # ── Replan trigger ──
                 replan_key = f"replan_{seq['id']}"

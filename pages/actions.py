@@ -165,7 +165,12 @@ def render():
                             st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
                             single_draft = display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
                             subj, bod = parse_email_content(single_draft)
-                            render_save_to_gmail(ct.get("email", ""), subj, bod, f"act_{step['id']}")
+                            render_save_to_gmail(
+                                ct.get("email", ""), subj, bod, f"act_{step['id']}",
+                                product_key=st.session_state.get("selected_product"),
+                                step_index=step.get("sequence_step"),
+                                lead_brand=None,
+                            )
 
                 # ── Replan trigger ──
                 replan_key = f"replan_{seq['id']}"

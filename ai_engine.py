@@ -783,14 +783,42 @@ WRITING RULES FOR ALL EMAILS:
    BANNED IN ALL EMAILS — NO EXCEPTIONS:
    - Never name or reference a competitor site in any email. The research brief may contain competitor intelligence for your context, but it must never appear in the outreach. No "competitors like X publish Y articles", no "unlike X, you...", no benchmarking against named third parties.
    - Never compare the prospect to other publishers in any paragraph — opening or otherwise.
+   - Never put short names of companies.
+   - Never hallucinate names of companies in LH2 Holdings portfolio.
+   - Never look down upon any category of brands or anything. Keep the tone positive.
+
+   LH2 PORTFOLIO (STRICT ALLOWLIST — DO NOT INVENT NAMES):
+   - You may ONLY mention portfolio brands from this exact list (case-sensitive spellings):
+     - Inquisitr
+     - CheatSheet
+     - NoFilmSchool
+     - Vintage Aviation News
+     - Whatnow
+     - Cultofmac
+     - F4W Wrestling
+     - Ewrestling News
+     - The Aviationist
+   - If you are not confident a brand is in the LH2 portfolio, DO NOT mention it.
+   - If none of the above are relevant to the prospect, OMIT portfolio brand names entirely (do not replace with other names).
+
+   PORTFOLIO NAME SELECTION (pick the best-fit 2–3, otherwise omit):
+   - Syndication-first / breaking / high-velocity news: prefer Inquisitr
+   - Entertainment / celebrity / lifestyle: prefer CheatSheet
+   - Creator / filmmaking / enthusiast niche: prefer NoFilmSchool
+   - Aviation niche: prefer Vintage Aviation News
+   - Local / city guides / events / food & nightlife / "what to do" discovery: prefer Whatnow
+   - Apple / Mac / consumer tech news: prefer Cultofmac
+   - Pro wrestling / MMA / fight sports media: prefer F4W Wrestling
+   - Pro wrestling news & rumors / WWE-AEW coverage: prefer Ewrestling News
+   - Aviation (defense/military aviation, aerospace, aviation reporting): prefer The Aviationist
 
    EMAIL 1 — SHORT PERSONALIZED OPENER:
    Subject: LH2 Accelerate Details <> [Brand Name]
    ALWAYS start with: "Hi [First Name],"
    Keep this short. 3-4 paragraphs maximum. This is the hook — not the pitch.
-   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. If we are talking about syndication for a certain platform, refer research brief or you must research yourself about their presence and standing on the platform- majorly number of articles published per day on that platform. Must feel like you've genuinely studied their operation. No flattery — a real observation.
+   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. If we are talking about syndication for a certain platform, refer research brief or you must research yourself about their presence and standing on the platform- majorly number of articles published per day on that platform. Must feel like you've genuinely studied their operation. Do not make sentences that look down upon other brands. No flattery — a real observation. Make sure not to use any short form and use the exact full name of the brand wherever required. Make sure you only use companies strictly in LH2 portfolio. NEVER hallucinate names.
    Para 2: The gap or opportunity — 1-2 sentences identifying the specific constraint or unrealized opportunity you've spotted for them. Drawn from the research. This is what makes the email feel relevant rather than random.
-   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names owned/held/operated by LH2 Holdings only- strictly no other brands/companies/entities/etc. that are not a part of LH2 Holdings]." Nothing about the model yet.
+   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." If you include brand names, you MUST pick ONLY from the LH2 PORTFOLIO ALLOWLIST above. If none are relevant, omit brand names (do not substitute other names). Nothing about the model yet.
    Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate route) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS route) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition route)
    ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach.
    No case studies. No workstream details. No MediaOS explanation. No team bio. Short, specific, ends with the deck named.
@@ -826,7 +854,12 @@ WRITING RULES FOR ALL EMAILS:
    Para 4: MediaOS — plain prose. Enabling technology, not a product. Scans search demand, social signals, syndication networks, competitor coverage in real time. 10-15% of daily output drives majority of traffic — MediaOS picks more winners. Human-written only, no AI content. Include video link: https://www.youtube.com/watch?v=H055-BfpK8g
    Para 5: Team — plain prose. Founder exits (Upneet → Getmyuni → CarDekho; Shobhit → Gradeup → Byju's). 150+ person editorial desk, SEO and distribution teams, in-house engineering. First-person if Upneet, third-person if Aman.
    Close: "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up."
-   Attachments: LH2 Accelerate Deck + Case Studies deck (always); Inquisitr Detailed Case Study (if Inquisitr is lead).
+   Attachments: LH2 Accelerate Deck + Case Studies deck (always).
+   If you chose a lead case study from the LH2 portfolio, also include THAT lead brand's deck for reference (only if it exists in the allowlist):
+   - If lead = Inquisitr → include "Inquisitr Detailed Case Study"
+   - If lead = CheatSheet → include "CheatSheet Detailed Case Study"
+   - If lead = NoFilmSchool → include "NoFilmSchool Detailed Case Study"
+   - If lead = Vintage Aviation News → include "Vintage Aviation News Detailed Case Study"
 
    EMAIL 5 — OPTIONAL GRACEFUL CLOSE (only if no response to Emails 1-4):
    Subject: Re: LH2 Accelerate Details <> [Brand Name]
@@ -847,9 +880,9 @@ LinkedIn (Day 0):
 Email 1 — Subject: Acquiring [Website Name]
    - 3 sentences max. This is a signal, not a pitch.
    - Sentence 1: Who you are and what LH2 does (one line — portfolio scale, niche focus and strictly brands under LH2 Holdings only)
-   - Sentence 2: Why this specific brand. Not generic ("love your content") — specific (niche, audience, positioning, growth signal)
+   - Sentence 2: Why this specific brand (exact brand name should be written in the email). Not generic ("love your content") — specific (niche, audience, positioning, growth signal)
    - Sentence 3: "We move fast — term sheet in 2 weeks, close in 6. Worth a quick call?"
-   - No attachments. No timeline breakdown. No fluff.
+   - No timeline breakdown. No fluff.
 
 Email 2 — Subject: Re: Acquiring [Website Name]
    - 3 sentences. Assume they saw it, didn't reply yet.
@@ -868,7 +901,7 @@ Email 4 — Subject: Re: Acquiring [Website Name]
    - Pivot to Accelerate — but frame it as a different kind of relationship, not a fallback
    - Open: 1 sentence acknowledging acquisition may not be the right move right now (timing, valuation, attachment to the brand — keep it light, no dwelling)
    - Introduce Accelerate in 2 sentences: zero cost, zero equity, pure revenue share. If no uplift, no cost.
-   - 3–4 sentences on what Accelerate looks like specifically for THIS publisher — use the research. What's their actual constraint? What would the pod focus on? What distribution infrastructure do they already have that Accelerate plugs into? Make it feel scoped, not templated.
+   - 3–4 sentences on what Accelerate looks like specifically for THIS publisher — use the deep research. What's their actual constraint? What would the pod focus on? What distribution infrastructure do they already have that Accelerate plugs into? Make it feel scoped, not templated. NEVER hallucinate on any details or numbers.
    - 1 proof point: one portfolio brand with a concrete before/after that's as close to this publisher's profile as possible (scale, niche, model). One sentence only.
    - Close: "I've attached the Accelerate deck and case studies — worth 20 minutes to walk through what this looks like for [Website Name] specifically?"
    - Attachments: LH2 Accelerate Deck + Case Studies Deck
@@ -1860,7 +1893,12 @@ Always generate all steps. Do not skip the LinkedIn step regardless of whether a
   Para 4: MediaOS — plain prose. Enabling technology, not a product. Scans search demand, social signals, syndication networks, competitor coverage in real time. 10-15% of daily output drives majority of traffic — MediaOS picks more winners. Human-written only, no AI content. Include video link: https://www.youtube.com/watch?v=H055-BfpK8g
   Para 5: Team — plain prose. Upneet (Getmyuni → CarDekho) and Shobhit (Gradeup → Byju's). 150+ person editorial desk, SEO and distribution teams, in-house engineering. First-person if Upneet, third-person if Aman.
   Close: "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up."
-  Attachments: LH2 Accelerate Deck + Case Studies deck (always); Inquisitr Detailed Case Study (if Inquisitr is lead).
+  Attachments: LH2 Accelerate Deck + Case Studies deck (always).
+  If you chose a lead case study from the LH2 portfolio, also include THAT lead brand's deck for reference (only if it exists in the allowlist):
+  - If lead = Inquisitr → include "Inquisitr Detailed Case Study"
+  - If lead = CheatSheet → include "CheatSheet Detailed Case Study"
+  - If lead = NoFilmSchool → include "NoFilmSchool Detailed Case Study"
+  - If lead = Vintage Aviation News → include "Vintage Aviation News Detailed Case Study"
 
   Step 6 — Email 5 (Day 22-25, OPTIONAL — only if no response to Emails 1-4):
   Subject: Re: LH2 Accelerate Details <> [Brand Name]
