@@ -18,7 +18,7 @@ from db_ops import (
     update_action,
     delete_action,
 )
-from ai_engine import compute_lead_score, refine_email_draft
+from ai_engine import refine_email_draft
 from config import ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS
 from ui_helpers import bdg, display_full_name
 from gmail_service import create_gmail_draft, parse_email_content
@@ -41,8 +41,7 @@ def select_contact(comp_id, ct_id):
         return
     st.session_state.sel_company = comp_id
     st.session_state.sel_contact = ct_id
-    score = compute_lead_score(comp, ct)
-    sid = get_or_create_session(comp_id, ct_id, user["id"], score)
+    sid = get_or_create_session(comp_id, ct_id, user["id"], 0)
     st.session_state.session_id = sid
     st.session_state.chat_messages = load_messages(sid)
     st.session_state.auto_brief_text = None

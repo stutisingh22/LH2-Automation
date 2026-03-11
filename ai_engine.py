@@ -625,8 +625,7 @@ Signature to use:
     )
 
     local_time, tz_str = get_local_time(ct.get("country", ""), ct.get("state", ""))
-    score = compute_lead_score(comp, ct)
-    
+
     # Build recipient research context if available
     recipient_context = ""
     if recipient_research and recipient_research.get("status") == "completed":
@@ -681,6 +680,21 @@ Signature to use:
         drive_context=drive_ctx,
     )
     strategy_block = format_strategy_profile_block(strategy_profile)
+    # Inject an impossible-to-miss REVENUE MIX VERDICT when programmatic is dominant so the model cannot lead with syndication.
+    revenue_mix_verdict_block = ""
+    if strategy_profile.get("revenue_mix_focus") == "seo_dominant":
+        revenue_mix_verdict_block = """
+== REVENUE MIX VERDICT (mandatory — apply to every email) ==
+Programmatic/core revenue is the primary driver; syndication is a minor line (e.g. 5-10%). You MUST lead EVERY email (1–4) with programmatic, content volume, and production capacity. Do NOT open with or emphasize MSN or syndication. Mention syndication only in passing as supporting distribution. The prospect's main revenue is from programmatic; treat syndication as secondary throughout the sequence.
+"""
+    elif research_context:
+        _rc_lower = research_context.lower()
+        if "75-85%" in research_context or "75-85" in research_context or "75–85" in research_context:
+            if ("5-10%" in research_context or "5-10" in research_context or "5–10" in research_context) and "programmatic" in _rc_lower and ("syndication" in _rc_lower or "revenue-share" in _rc_lower or "revenue share" in _rc_lower or "wire service" in _rc_lower):
+                revenue_mix_verdict_block = """
+== REVENUE MIX VERDICT (mandatory — apply to every email) ==
+The RESEARCH section shows programmatic/core revenue is the primary driver (e.g. 75-85%); syndication is a minor line (e.g. 5-10%). You MUST lead EVERY email (1–4) with programmatic, content volume, and production capacity. Do NOT open with or emphasize MSN or syndication. Mention syndication only in passing as supporting. Treat syndication as secondary throughout the sequence.
+"""
     platform_presence_block = _build_platform_presence_block(comp)
     platform_painpoint_block = _build_platform_painpoint_block(comp)
     research_coverage_block = _build_research_coverage_block(research_context)
@@ -694,7 +708,7 @@ Your job: Give decisive, research-backed outreach recommendations. Every respons
 
 == TARGET ==
 Domain: {comp.get('domain','?')} | Type: {comp.get('publisher_type','?')} | Content: {comp.get('content_type','?')}
-Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')} | Lead Score: {score}/100
+Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')}
 
 == CONTACT ==
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
@@ -723,6 +737,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 {"== DRIVE RESEARCH ==" + chr(10) + drive_ctx if drive_ctx else ""}
 == DYNAMIC STRATEGY PROFILE (deterministic extraction from research) ==
 {strategy_block}
+{revenue_mix_verdict_block}
 {"== LH2 OFFERINGS (reference when positioning value) ==\n" + lh2_knowledge[:12000] if lh2_knowledge else ""}
 {_get_product_context_block(product_key)}
 {sender_context}
@@ -738,21 +753,34 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 1. GROUNDING (mandatory for all outputs):
    - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
    - Every claim, number, or reference in the draft must trace back to the provided research brief or context folder. If a data point isn't in the research, don't use it.
+   - DATES + PROJECTIONS (STRICT): Never write "projected for [year]" or any forward-looking projection for a year that is in the past relative to today. If you cannot confidently anchor a statement to an explicit dated data point in RESEARCH/DRIVE RESEARCH, omit it. Never invent projections.
    - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
    - Platform claims MUST align with PLATFORM PRESENCE above. Do not assume presence or absence when marked unknown.
    - Syndication: Only mention or emphasize syndication for platforms explicitly marked PRESENT in PLATFORM PRESENCE above. If a platform is absent or unknown, do NOT mention it—do not assert the target has NewsBreak, MSN, or Yahoo syndication unless that platform is marked present. When multiple are present, the list there is ordered with LH2's strongest first—lead with the first in that list.
    - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
    - Apply USER PREFERENCE MEMORY only when relevant to the current ask. Do not inject unrelated old preferences.
 
+   REVENUE MIX → DISTRIBUTION FOCUS (strictly from RESEARCH — never hallucinate):
+   - The ratio of organic/SEO revenue to syndication revenue MUST be taken ONLY from the deep research (e.g. "1C. Business Model Breakdown", revenue stream weights, traffic or revenue breakdown). If the research does not state or clearly imply this ratio, do NOT invent it. Do not guess or infer from general knowledge.
+   - If research does not contain clear revenue/traffic mix data: use "organic + syndication side by side" as the pitch focus; do not claim a primary channel.
+   - When the research DOES provide or imply the ratio, apply exactly:
+     • Organic/SEO revenue > 4x syndication: Primary focus = organic search / SEO growth. Secondary = syndication on whatever platform(s) the site is present on (from PLATFORM PRESENCE). Lead messaging and proof with SEO; mention syndication as supporting.
+     • Organic/SEO revenue < 0.25x syndication (syndication dominates): Primary focus = syndication first (on platform(s) present). Secondary = SEO and organic growth. Lead messaging and proof with syndication; then SEO.
+     • Roughly equal (in between): Focus = organic and syndication side by side. Pitch both in parallel; no single primary.
+   - Every recommendation and message draft must follow this focus. Never assert a ratio or primary channel that is not explicitly or clearly stated in RESEARCH.
+   - Do not infer or state an organic-vs-syndication revenue ratio unless it is stated or clearly implied in RESEARCH (e.g. Business Model Breakdown, revenue/traffic breakdown). If in doubt, use "organic + syndication side by side" and do not claim a primary.
+   - If RESEARCH contains a revenue breakdown (e.g. programmatic 75-85%, syndication/wire 5-10%), you MUST lead all emails with the dominant stream; the smaller stream is secondary only. Do not lead with syndication or MSN when it is a minority revenue line in the research.
+
 2. YOUR STRATEGIC ADVICE (recommendations, action plans, analysis):
    - Be directive. State what to do and why. Never say "you could" or "consider"  -  say "do this because."
    - Cite the specific research finding, data point, or pattern behind each recommendation.
    - When recommending an approach (Accelerate vs. Acquisition vs. MediaOS door-opener), state the signal from the research brief that drives the decision.
-   - Use the DYNAMIC STRATEGY PROFILE as the primary planning scaffold (route, hook, distribution focus, and risk flags), then tailor wording with the research details.
+   - Use the DYNAMIC STRATEGY PROFILE as the primary planning scaffold (route, hook, distribution focus, and risk flags), then tailor wording with the research details. Set distribution focus (SEO-primary vs syndication-primary vs side-by-side) strictly from the REVENUE MIX rule above using only RESEARCH; never hallucinate the ratio.
    - Every recommendation must include: (a) one BROAD painpoint (structural/strategic), and (b) one SPECIFIC painpoint (concrete evidence from research).
 
 3. MESSAGE DRAFTS  -  GENERAL RULES:
    - Voice: One operator writing to another. Calm, senior, grounded. Confident without arrogance, specific without jargon, direct without pressure. Warm but professional.
+   - Do not add redundant attachment footers like "ATTACHMENT: ..." or "**Attachments:**" anywhere in the message body. If a deck needs to be referenced, name it naturally in the closing line only.
    - When PRODUCT FOCUS is Acquisition (user selected Acquisition): Use the ACQUISITION SEQUENCE only — LinkedIn + Acquisition Emails 1, 2, 3 (acquisition tone) + Email 4 (pivot to partnership/Accelerate) + Email 5 (optional partnership close). Do not use the default Accelerate email format for that thread. In Acquisition sequence, Emails 1, 2, and 3 have NO attachments — do not attach LH2 Accelerate Deck or any deck in those emails. Only Email 4 (pivot) and optionally 5 attach the Accelerate deck.
    - When PRODUCT FOCUS is Accelerate or MediaOS (or not set): Accelerate is the default. In 95% of cases, pitch Accelerate directly. MediaOS is a door-opener only for very large/sophisticated publishers where a pod pitch feels too forward cold.
    - Adapt voice to the selected sender. Upneet: first-person founder ("I co-founded LH2..."). Aman: corp dev professional ("We at LH2 own and operate..."). Section 6 and signature adapt accordingly.
@@ -761,6 +789,7 @@ This target is a child company/brand. Stick to the leadership of THIS child comp
 4. MESSAGE DRAFTS — EMAIL SEQUENCE FORMAT
 
 Always generate the full sequence: LinkedIn connection note + Emails 1-4 + optional Email 5. Never skip the LinkedIn step. The 6 content sections of the Trust Builder are distributed across Emails 1-4. Each email has a natural reason for being sent — it is a conversation thread, not a document delivered in installments.
+CRITICAL: Obey the NARRATIVE LEAD in the DYNAMIC STRATEGY PROFILE for every email in the sequence. If the profile says "Do NOT lead with syndication or MSN", then Email 1 Para 1, Email 2, Email 3, and Email 4 must all lead with programmatic/content volume/search — syndication is mentioned only in passing. Do not reframe the story around syndication in later emails.
 
    LINKEDIN CONNECTION NOTE (Step 1, Day 0):
    Hard limit 300 characters. Always the first touch.
@@ -816,11 +845,11 @@ WRITING RULES FOR ALL EMAILS:
    Subject: LH2 Accelerate Details <> [Brand Name]
    ALWAYS start with: "Hi [First Name],"
    Keep this short. 3-4 paragraphs maximum. This is the hook — not the pitch.
-   Para 1: Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, syndication presence, or a timing signal. If we are talking about syndication for a certain platform, refer research brief or you must research yourself about their presence and standing on the platform- majorly number of articles published per day on that platform. Must feel like you've genuinely studied their operation. Do not make sentences that look down upon other brands. No flattery — a real observation. Make sure not to use any short form and use the exact full name of the brand wherever required. Make sure you only use companies strictly in LH2 portfolio. NEVER hallucinate names.
+   Para 1 (opening): Do NOT open with syndication or MSN when the RESEARCH contains a revenue breakdown where programmatic/core revenue is dominant (e.g. programmatic 75-85%, syndication/wire 5-10%). In that case open with content volume, production capacity, or programmatic upside — mention syndication only later as supporting. Personalized opening — 2-3 sentences drawn directly from the research brief. Something specific about their brand: traffic, engagement metrics, content model, or a timing signal. You MUST lead with the PRIMARY economic driver implied by the research business model (REVENUE MIX rule): if programmatic/organic is dominant, lead with that; if syndication revenue-share is dominant, lead with that; if unclear, keep it balanced. If syndication (e.g. MSN) is a small minority line item in the business model, you may mention it only as supporting distribution — never as the lead. If we are talking about syndication for a certain platform, it must be explicitly supported by the research brief; do not invent platform performance. Must feel like you've genuinely studied their operation. Do not make sentences that look down upon other brands. No flattery — a real observation. Make sure not to use any short form and use the exact full name of the brand wherever required. Make sure you only use companies strictly in LH2 portfolio. NEVER hallucinate names.
    Para 2: The gap or opportunity — 1-2 sentences identifying the specific constraint or unrealized opportunity you've spotted for them. Drawn from the research. This is what makes the email feel relevant rather than random.
-   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." If you include brand names, you MUST pick ONLY from the LH2 PORTFOLIO ALLOWLIST above. If none are relevant, omit brand names (do not substitute other names). Nothing about the model yet.
+   Para 3: One-line on who LH2 is — "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." If you include brand names, you MUST pick ONLY from the LH2 PORTFOLIO ALLOWLIST above. If none are relevant, omit brand names (do not substitute other names). Nothing about the model yet. Then one clear sentence stating what we would lead/focus on with them (e.g. "We'd focus on scaling content volume and programmatic upside for you" or "We'd prioritize syndication amplification first, then organic growth" or "We'd work on both organic search and syndication side by side") — so the reader knows exactly what the partnership would center on. Match this to the NARRATIVE LEAD / Distribution Focus (programmatic-first, syndication-first, or both).
    Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate route) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS route) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition route)
-   ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach.
+  ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach. Do NOT add any "ATTACHMENT:" footer line in the email body.
    No case studies. No workstream details. No MediaOS explanation. No team bio. Short, specific, ends with the deck named.
 
    EMAIL 2 — WHAT IS ACCELERATE (the pitch):
@@ -839,7 +868,7 @@ WRITING RULES FOR ALL EMAILS:
    Opening sentence: One natural line continuing the thread — e.g. "Following up on the Accelerate model I outlined — here's how we'd actually structure this for [Brand] specifically."
    Para 1: Which model fits and why — drawn directly from the research brief. State the specific fit (Full-Stack or Editorial Pod) and the specific reason (their team size, content velocity, existing infrastructure, editorial setup). One concise paragraph.
    Para 2: Content operations tailored to them — plain prose. What the pod would actually do for this brand specifically: which coverage gaps it fills, which content types it handles, how it integrates with their existing team and workflow and which platform would it focus on. Drawn from research — not generic.
-   Para 3: Distribution tailored to them — plain prose. Which channels make sense for their specific profile. Syndication-heavy for entertainment/politics/sports; Discover/SEO-heavy for niche/tech. Reference their specific traffic profile and syndication presence from the research brief.
+   Para 3: Distribution tailored to them — plain prose. Follow the NARRATIVE LEAD and Distribution Focus in the strategy profile: if the profile is SEO-dominant, emphasize search/organic and programmatic; mention syndication only as secondary. If syndication-dominant, lead with syndication. Do not emphasize a channel that is a minor revenue line in the research (e.g. if business model shows syndication 5-10%, do not lead with MSN).
    Para 4: Monetization tailored to them — plain prose. Which revenue levers apply to their specific situation. Close with: "Not all of this applies to every brand — we scope what's relevant during onboarding."
    Closing line: "Happy to go deeper on any of this whenever it works."
    No attachments.
@@ -848,9 +877,10 @@ WRITING RULES FOR ALL EMAILS:
    Subject: Re: LH2 Accelerate Details <> [Brand Name]
    ALWAYS start with: "Hi [First Name],"
    Opening sentence: One natural line — e.g. "Wanted to share the results from the brand in our portfolio that maps most closely to [Brand]'s situation."
+   Case study selection (mandatory): When Distribution Focus is SEO/Discover-heavy or NARRATIVE LEAD says do not lead with syndication, lead with the case study that reflects web/organic/programmatic growth (e.g. NoFilmSchool). Use Inquisitr only as supporting. When syndication-dominant, lead with Inquisitr. Do not lead Email 4 with a syndication-first case study when the prospect's revenue model is programmatic-dominant.
    Para 1: Lead case study as plain prose narrative — where they started, what LH2 did, what the results were. Use exact numbers. No bullets. Tell it as a story.
    Para 2: Supporting case study — shorter, plain prose, key numbers, why relevant to this prospect.
-   Para 3: Connect the case study starting point explicitly to this prospect's current situation in 1-2 sentences.
+   Para 3: Connect the case study starting point explicitly to this prospect's current situation in 1-2 sentences. Match the NARRATIVE LEAD: if SEO-dominant, frame the constraint as content volume and programmatic upside, not syndication.
    Para 4: MediaOS — plain prose. Enabling technology, not a product. Scans search demand, social signals, syndication networks, competitor coverage in real time. 10-15% of daily output drives majority of traffic — MediaOS picks more winners. Human-written only, no AI content. Include video link: https://www.youtube.com/watch?v=H055-BfpK8g
    Para 5: Team — plain prose. Founder exits (Upneet → Getmyuni → CarDekho; Shobhit → Gradeup → Byju's). 150+ person editorial desk, SEO and distribution teams, in-house engineering. First-person if Upneet, third-person if Aman.
    Close: "Happy to walk through any of this whenever it works for you. Please take your time reviewing and let me know what questions come up."
@@ -917,10 +947,11 @@ Email 5 — Subject: Re: Acquiring [Website Name]
    MEDIAOS SEQUENCE (large/sophisticated publishers only — use sparingly):
    Frame as "what we built to run our own newsrooms." Show the tooling, build credibility, steer toward "we can run this for you" (Accelerate). Never disclose that MediaOS was always aimed at Accelerate. Attachment: MediaOS Deck.
 
-   CASE STUDY ROUTING:
-   Syndication-first (low web traffic + MSN/Yahoo + entertainment/politics/sports/local): Lead Inquisitr, supporting CheatSheet and NoFilmSchool.
-   Web-growth (1M+ web traffic, primarily web-driven, niche/enthusiast): Lead NoFilmSchool, supporting CheatSheet and Inquisitr (Discover/organic).
-   Blended (meaningful web traffic AND syndication presence): Lead with most analogous case study, blend both angles.
+   CASE STUDY ROUTING (must follow REVENUE MIX rule above — never hallucinate ratios):
+   - SEO-dominant (organic/search-driven revenue clearly >4x syndication based on RESEARCH — for example, business model breakdowns where programmatic/SEO is 75–85% of revenue and syndication/wire is only 5–10%): Treat syndication as secondary infrastructure. Lead NoFilmSchool or the most analogous web-growth case study; use Inquisitr/CheatSheet only as supporting if relevant.
+   - Syndication-dominant (syndication/wire or platform rev-share is the primary or clearly dominant revenue stream in RESEARCH): Lead Inquisitr (syndication-first), supporting CheatSheet and NoFilmSchool.
+   - Blended (meaningful revenue from both web/SEO and syndication, with no clear >4x advantage either way): Lead with the most analogous case study and explicitly blend both angles.
+   - When business model tables show syndication/wire revenue-share as a small minority line item (e.g. 5–10%) next to a much larger core revenue stream (e.g. programmatic display 75–85%), you MUST state that syndication (MSN, etc.) is helpful but not the main economic lever. Focus the pitch economics on the primary revenue driver (content velocity, search/SEO, core programmatic), with syndication framed as supporting distribution.
 
    GENERAL RULES:
    - Customization test: if you swapped the prospect's name for a different prospect and the email still made sense, it's not customized enough. Rewrite.

@@ -57,7 +57,7 @@ from lh2_platform.core.database import (
     get_pipeline_stats, get_recent_activity,
 )
 from lh2_platform.core.strategist import (
-    get_strategist_response, compute_lead_score,
+    get_strategist_response,
     maybe_update_summary, extract_episodic_memories,
     generate_insight_from_outcome, parse_ai_actions, get_local_time,
 )
@@ -409,7 +409,6 @@ with tab_intel:
         else:
             # Company profile
             st.markdown(section_header("COMPANY PROFILE"), unsafe_allow_html=True)
-            score_base = compute_lead_score(comp)
             r1 = st.columns(5)
             fields1 = [
                 ("Domain", comp.get("domain")),
@@ -482,7 +481,7 @@ with tab_intel:
                     if st.button("Select", key=f"sel_ct_{ct['id']}", use_container_width=True):
                         st.session_state.selected_contact_id = ct["id"]
                         # Create/load session
-                        sid = get_or_create_session(company_id, ct["id"], user["id"], compute_lead_score(comp, ct))
+                        sid = get_or_create_session(company_id, ct["id"], user["id"], 0)
                         st.session_state.session_id = sid
                         st.session_state.chat_messages = load_messages(sid)
                         st.rerun()
@@ -493,9 +492,8 @@ with tab_intel:
                 if ct:
                     st.markdown(section_header(f"ACTIVE WORKSPACE — {ct['name']}"), unsafe_allow_html=True)
 
-                    r2 = st.columns(5)
+                    r2 = st.columns(4)
                     fields2 = [
-                        ("Lead Score", f"{'🟢' if score_base >= 60 else '🟡' if score_base >= 35 else '🔴'} {compute_lead_score(comp, ct)}/100"),
                         ("Email", ct.get("email")),
                         ("Location", ", ".join(filter(None, [ct.get("city"), ct.get("state"), ct.get("country")]))),
                         ("Local Time", get_local_time(ct.get("country", ""), ct.get("state", ""))[0]),
@@ -835,13 +833,10 @@ with tab_pipeline:
                 for item in items:
                     ct_data = item["contact"]
                     comp_data = item["company"]
-                    score = compute_lead_score(comp_data, ct_data)
-                    score_icon = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
                     st.markdown(
                         f"<div class='pc'>"
                         f"<div style='font-size:13px; font-weight:500;'>{ct_data['name']}</div>"
                         f"<div style='font-size:11px; color:var(--text-3); margin-top:2px;'>{comp_data['domain']}</div>"
-                        f"<div style='font-size:11px; color:var(--text-2); margin-top:3px;'>{score_icon} {score}/100</div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -914,7 +909,7 @@ with tab_history:
                 ac = len(get_session_actions(s["id"]))
                 st.markdown(
                     f"<div class='c'><div class='c-l'>Activity</div>"
-                    f"<div class='c-v' style='font-size:13px;'>{mc} messages · {ac} actions · Score {s['lead_score']}</div>"
+                    f"<div class='c-v' style='font-size:13px;'>{mc} messages · {ac} actions</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )

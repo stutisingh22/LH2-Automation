@@ -24,7 +24,6 @@ from db_ops import (
 )
 from sender_profiles import get_all_sender_profiles
 from ai_engine import (
-    compute_lead_score,
     get_local_time,
     get_strategist_response_stream,
     generate_outreach_plan,
@@ -265,12 +264,10 @@ def render():
                     st.rerun()
 
             with sel3:
-                score = compute_lead_score(comp, ct)
                 lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
-                si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
                 st.markdown(
                     f"<div style='padding:8px 0;'>"
-                    f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
+                    f"<div style='font-size:12px;color:var(--text-3);'>{lt}</div>"
                     f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
                     unsafe_allow_html=True)
 

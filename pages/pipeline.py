@@ -4,7 +4,6 @@ import streamlit as st
 
 from config import CONTACT_STATUSES, CONTACT_STATUS_LABELS_STRIP, normalize_contact_status
 from db_ops import get_all_companies, get_contacts
-from ai_engine import compute_lead_score
 from ui_helpers import lh2_section_header, lh2_kpi_cell, lh2_pipeline_row
 
 
@@ -28,9 +27,7 @@ def render():
         with bcols[i]:
             for item in pipeline[s]:
                 ctd, cd = item["contact"], item["company"]
-                score = compute_lead_score(cd, ctd)
-                si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], f"{si} {score}/100"), unsafe_allow_html=True)
+                st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], ""), unsafe_allow_html=True)
             if not pipeline[s]:
                 st.markdown(
                     "<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>",

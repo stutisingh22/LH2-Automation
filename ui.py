@@ -1108,14 +1108,13 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid):
     actions = get_session_actions(sid)
     action_history = "\n".join([f"- [{a['status']}] {a['action_type']} via {a['channel']}: {a['description'][:100]}" for a in actions[:10]]) or "(No prior actions.)"
     local_time, tz_str = get_local_time(ct.get("country", ""), ct.get("state", ""))
-    score = compute_lead_score(comp, ct)
 
     system = f"""You are the LH2 Strategic Outreach Advisor for digital media partnerships.
 You have layered memory — you remember everything about this target across the entire conversation, plus patterns from all past outreach.
 
 == SECTION A: COMPANY PROFILE ==
 Domain: {comp.get('domain','?')} | Type: {comp.get('publisher_type','?')} | Content: {comp.get('content_type','?')}
-Monthly Visits: {comp.get('monthly_visits','?')} | Research: {comp.get('research_status','?')} | Score: {score}/100
+Monthly Visits: {comp.get('monthly_visits','?')} | Research: {comp.get('research_status','?')}
 
 == SECTION B: CONTACT PROFILE ==
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
@@ -1394,7 +1393,7 @@ with tab_intel:
                 with ct3:
                     if st.button("Select", key=f"sct_{ct['id']}", use_container_width=True):
                         st.session_state.sel_contact = ct["id"]
-                        sid = get_or_create_session(cid, ct["id"], user["id"], compute_lead_score(comp, ct))
+                        sid = get_or_create_session(cid, ct["id"], user["id"], 0)
                         st.session_state.session_id = sid; st.session_state.chat_messages = load_messages(sid); st.rerun()
 
             # Active workspace
@@ -1402,10 +1401,9 @@ with tab_intel:
                 ct = get_contact(ctid)
                 if ct:
                     st.markdown(sh(f"ACTIVE WORKSPACE — {ct['name']}"), unsafe_allow_html=True)
-                    r2 = st.columns(5)
-                    score = compute_lead_score(comp, ct)
+                    r2 = st.columns(4)
                     _norm = normalize_contact_status(ct.get("status", "not_contacted"))
-                    for col, (l, v) in zip(r2, [("Lead Score", f"{'🟢' if score>=60 else '🟡' if score>=35 else '🔴'} {score}/100"), ("Email", ct.get("email")), ("Location", ", ".join(filter(None, [ct.get("city"), ct.get("state"), ct.get("country")]))), ("Local Time", get_local_time(ct.get("country",""), ct.get("state",""))[0]), ("Status", CONTACT_STATUS_LABELS.get(_norm, _norm))]):
+                    for col, (l, v) in zip(r2, [("Email", ct.get("email")), ("Location", ", ".join(filter(None, [ct.get("city"), ct.get("state"), ct.get("country")]))), ("Local Time", get_local_time(ct.get("country",""), ct.get("state",""))[0]), ("Status", CONTACT_STATUS_LABELS.get(_norm, _norm))]):
                         with col: st.markdown(crd(l, v), unsafe_allow_html=True)
 
                     ns = st.selectbox("Update Contact Status", CONTACT_STATUSES, index=CONTACT_STATUSES.index(_norm) if _norm in CONTACT_STATUSES else 0, format_func=lambda x: CONTACT_STATUS_LABELS.get(x,x), key="ctss")
@@ -1597,9 +1595,7 @@ with tab_pipe:
             if items:
                 for item in items:
                     ctd, cd = item["contact"], item["company"]
-                    score = compute_lead_score(cd, ctd)
-                    si = "🟢" if score>=60 else "🟡" if score>=35 else "🔴"
-                    st.markdown(f"<div class='pc'><div style='font-size:13px;font-weight:500;'>{ctd['name']}</div><div style='font-size:11px;color:var(--text-3);margin-top:2px;'>{cd['domain']}</div><div style='font-size:11px;color:var(--text-2);margin-top:3px;'>{si} {score}/100</div></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='pc'><div style='font-size:13px;font-weight:500;'>{ctd['name']}</div><div style='font-size:11px;color:var(--text-3);margin-top:2px;'>{cd['domain']}</div></div>", unsafe_allow_html=True)
             else:
                 st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:#ccc;'>—</div>", unsafe_allow_html=True)
 
@@ -1637,7 +1633,7 @@ with tab_hist:
                 st.markdown(f"<div class='c'><div class='c-l'>{sx.get('company_domain','?')}</div><div class='c-v'>{sx.get('contact_name','?')}{mt}</div></div>", unsafe_allow_html=True)
             with sh2:
                 mc2 = get_message_count(sx["id"]); ac2 = len(get_session_actions(sx["id"]))
-                st.markdown(f"<div class='c'><div class='c-l'>Activity</div><div class='c-v' style='font-size:13px;'>{mc2} messages · {ac2} actions · Score {sx['lead_score']}</div></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='c'><div class='c-l'>Activity</div><div class='c-v' style='font-size:13px;'>{mc2} messages · {ac2} actions</div></div>", unsafe_allow_html=True)
             with sh3:
                 b1, b2 = st.columns(2)
                 with b1:

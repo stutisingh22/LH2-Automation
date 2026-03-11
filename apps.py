@@ -68,7 +68,7 @@ from notion_sync_advisor import sync_notion_advisor_to_db
 from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children, merge_advisor_company_extra_data
 from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts, get_lh2_knowledge_context
 from ai_engine import (
-    compute_lead_score, get_local_time,
+    get_local_time,
     get_strategist_response_stream, auto_brief,
     generate_outreach_plan, replan_on_response,
     recommend_offering_for_company,
@@ -419,8 +419,7 @@ def select_contact(comp_id, ct_id):
         return
     st.session_state.sel_company = comp_id
     st.session_state.sel_contact = ct_id
-    score = compute_lead_score(comp, ct)
-    sid = get_or_create_session(comp_id, ct_id, user["id"], score)
+    sid = get_or_create_session(comp_id, ct_id, user["id"], 0)
     st.session_state.session_id = sid
     st.session_state.chat_messages = load_messages(sid)
     st.session_state.auto_brief_text = None
@@ -2300,12 +2299,10 @@ with tabs[3]:  # STRATEGIST
                         st.rerun()
 
                 with sel3:
-                    score = compute_lead_score(comp, ct)
                     lt, _ = get_local_time(ct.get("country", ""), ct.get("state", ""))
-                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
                     st.markdown(
                         f"<div style='padding:8px 0;'>"
-                        f"<div style='font-size:12px;color:var(--text-3);'>Score: {si} {score} · {lt}</div>"
+                        f"<div style='font-size:12px;color:var(--text-3);'>{lt}</div>"
                         f"<div style='font-size:11px;color:var(--text-3);'>{comp['domain']}</div></div>",
                         unsafe_allow_html=True)
 
@@ -3733,16 +3730,13 @@ with tabs[7]:  # PIPELINE
                 status = normalize_contact_status((ch.get("extra_data") or {}).get("pipeline_status", "not_contacted"))
                 shadow_cid, shadow_ctid = get_or_create_shadow_company_for_advisor(ch["id"])
                 spoc_name = "—"
-                score = 0
                 if shadow_ctid:
                     ct = get_contact(shadow_ctid)
                     if ct:
                         spoc_name = ct.get("name") or "Leadership"
-                        comp_for_score = {"domain": ch.get("domain"), "monthly_visits": None}
-                        score = compute_lead_score(comp_for_score, ct)
                 if status in pipeline_advisor:
                     pipeline_advisor[status].append(1)
-                enriched.append({"child": ch, "spoc_name": spoc_name, "score": score, "status": status})
+                enriched.append({"child": ch, "spoc_name": spoc_name, "status": status})
             groups_enriched.append({"parent_name": display_parent, "children": enriched})
         kpi_pipeline = [(len(pipeline_advisor[s]), CONTACT_STATUS_LABELS_STRIP.get(s, s)) for s in CONTACT_STATUSES]
         st.markdown(
@@ -3758,11 +3752,9 @@ with tabs[7]:  # PIPELINE
                 for item in children:
                     ch = item["child"]
                     spoc_name = item["spoc_name"]
-                    score = item["score"]
                     status = item["status"]
                     domain_line = ch.get("domain", "—") + (" · " + parent_name if parent_name != "(No parent)" else "")
-                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                    st.markdown(lh2_pipeline_row(spoc_name, domain_line, f"{si} {score}/100"), unsafe_allow_html=True)
+                    st.markdown(lh2_pipeline_row(spoc_name, domain_line, ""), unsafe_allow_html=True)
                     new_status = st.selectbox(
                         "Status",
                         CONTACT_STATUSES,
@@ -3794,9 +3786,7 @@ with tabs[7]:  # PIPELINE
             with bcols[i]:
                 for item in pipeline[s]:
                     ctd, cd = item["contact"], item["company"]
-                    score = compute_lead_score(cd, ctd)
-                    si = "🟢" if score >= 60 else "🟡" if score >= 35 else "🔴"
-                    st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], f"{si} {score}/100"), unsafe_allow_html=True)
+                    st.markdown(lh2_pipeline_row(ctd["name"], cd["domain"], ""), unsafe_allow_html=True)
                 if not pipeline[s]:
                     st.markdown("<div style='text-align:center;padding:24px 0;font-size:11px;color:var(--text-2);'>—</div>", unsafe_allow_html=True)
 
