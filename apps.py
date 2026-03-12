@@ -2080,21 +2080,28 @@ with tabs[2]:  # INTELLIGENCE
                 if not _research:
                     st.warning("No research to save.")
                 else:
+                    # For advisor (Media Houses), store research in the same canonical text format used for splitting (like Independent),
+                    # and use the HTML/_research only for Drive. This keeps tables intact on reload.
                     if is_advisor:
-                        merge_advisor_company_extra_data(aid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        _research_for_db = (research_full_display or _research).strip()
+                        if not _research_for_db:
+                            _research_for_db = _research
+                        merge_advisor_company_extra_data(aid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
                         invalidate_group("advisor")
                         if cid:
-                            merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                            merge_company_extra_data(cid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
-                        merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        _research_for_db = _research
+                        merge_company_extra_data(cid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
                     _doc_name = comp.get("domain") or comp.get("name", "Company")
-                    _content_for_drive = research_display_to_editor_html(_research) if _research and not is_html_content(_research) else _research
-                    fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _content_for_drive or _research)
+                    # Drive gets the same canonical content as the app, converted to HTML with tables
+                    _content_for_drive = research_display_to_editor_html(_research_for_db) if _research_for_db and not is_html_content(_research_for_db) else (_research_for_db or _research)
+                    fid, _, err_drive = create_doc_in_drive(f"{_doc_name} - Research", _content_for_drive or _research_for_db or _research)
                     st.session_state.auto_brief_text = None
                     st.session_state.pop(wysiwyg_key, None)
                     st.session_state.pop(f"research_editing_section_{cache_key}", None)
                     st.session_state.pop(f"research_section_edits_{cache_key}", None)
-                    st.session_state[_fresh_key] = _research
+                    st.session_state[_fresh_key] = _research_for_db
                     if fid:
                         st.toast("Research saved to DB and Drive (with tables and formatting).")
                     else:
