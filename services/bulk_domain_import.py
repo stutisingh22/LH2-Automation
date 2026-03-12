@@ -119,19 +119,19 @@ def get_existing_parent_media_houses() -> List[str]:
     return sorted(list(dict.fromkeys(out)))
 
 
-def analyze_from_file(uploaded_file, verify_ownership: bool = True, max_verify: int = 20) -> dict:
+def analyze_from_file(uploaded_file, verify_ownership: bool = True, max_verify: int = 500) -> dict:
     """Analyze a CSV/XLSX and return preview rows; no writes."""
     domains_raw = _parse_domains_from_file(uploaded_file)
     return analyze_from_domains(domains_raw, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_text(text: str, verify_ownership: bool = True, max_verify: int = 20) -> dict:
+def analyze_from_text(text: str, verify_ownership: bool = True, max_verify: int = 500) -> dict:
     """Analyze manual input (names/domains) and return preview rows; no writes."""
     entries = _parse_entries_from_text(text or "")
     return analyze_from_entries(entries, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, max_verify: int = 20) -> dict:
+def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, max_verify: int = 500) -> dict:
     """Analyze list of domains (strings). Returns {"rows": [...], "errors": [...]}. No writes."""
     result = {"rows": [], "errors": []}
     if not domains_raw:
@@ -157,43 +157,52 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
         existing_advisor = get_advisor_company_by_domain(d)
         exists_db = bool(existing_company or existing_advisor)
         exists = bool(exists_db)
-        # If domain already exists as a media house child, use only its existing parent — no new group, no re-tagging.
         existing_parent = (existing_advisor or {}).get("parent_name") or ""
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
 
         c = by_dom.get(d) or {}
-        cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
-        if cl not in ("independent", "media_house"):
-            cl = "independent"
-        parent = (c.get("parent_name") or "").strip()
-        parent_match = (c.get("parent_match") or "").strip()
         suggested, reason = ("", "")
         evidence_urls = ""
-        display_parent = parent
         new_parent_candidate = ""
 
-        # If domain already exists in advisor DB with a parent, always use that parent (no verification, no AI override).
-        if existing_advisor and existing_parent:
-            suggested = existing_parent
-            display_parent = existing_parent
-            reason = "existing_in_db"
-            if cl != "media_house":
-                cl = "media_house"  # show as media_house so the existing parent is meaningful
-        elif cl == "media_house":
-            # New domain: suggest only from existing media houses; never create a new group here.
-            suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
-            if verify_ownership and max_verify > 0:
-                ver = verify_parent_from_web(d, existing_parents)
-                if ver.get("parent_match"):
-                    suggested = ver["parent_match"]
-                    reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
-                    display_parent = suggested
-                elif ver.get("direct_parent") or ver.get("ultimate_parent"):
-                    display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
-                new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
-                ev = ver.get("evidence") or []
-                evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
-                max_verify -= 1
+        # If domain exists in DB in any form: use only DB classification and parent — never override with AI.
+        if exists_db:
+            if existing_advisor:
+                cl = "media_house"
+                display_parent = existing_parent
+                suggested = existing_parent
+                reason = "existing_in_db"
+            else:
+                cl = "independent"
+                display_parent = ""
+                suggested = ""
+                reason = "existing_in_db (independent)"
+        else:
+            cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
+            if cl not in ("independent", "media_house"):
+                cl = "independent"
+            parent = (c.get("parent_name") or "").strip()
+            parent_match = (c.get("parent_match") or "").strip()
+            display_parent = parent
+
+            if cl == "media_house":
+                # New domain: run full research (web verification) to get operational/ultimate parent, then suggest from existing only.
+                if verify_ownership and max_verify > 0:
+                    ver = verify_parent_from_web(d, existing_parents)
+                    if ver.get("parent_match"):
+                        suggested = ver["parent_match"]
+                        display_parent = suggested
+                        reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
+                    elif ver.get("direct_parent") or ver.get("ultimate_parent"):
+                        display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
+                        new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
+                    ev = ver.get("evidence") or []
+                    evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
+                    max_verify -= 1
+                if not suggested:
+                    suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
+                    if suggested:
+                        display_parent = suggested
         result["rows"].append({
             "do_import": not exists,
             "input": d,
@@ -213,7 +222,7 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
     return result
 
 
-def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_verify: int = 20) -> dict:
+def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_verify: int = 500) -> dict:
     """Analyze list of names/domains. Returns preview rows; no writes."""
     result = {"rows": [], "errors": []}
     entries = [e.strip() for e in (entries or []) if e and str(e).strip()]
@@ -235,37 +244,47 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
         existing_parent = (existing_advisor or {}).get("parent_name") or ""
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
 
-        cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
-        if cl not in ("independent", "media_house"):
-            cl = "independent"
-        parent = (c.get("parent_name") or "").strip()
-        parent_match = (c.get("parent_match") or "").strip()
         suggested, reason = ("", "")
         evidence_urls = ""
-        display_parent = parent
         new_parent_candidate = ""
 
-        # If domain already exists in advisor DB with a parent, always use that parent (no verification, no AI override).
-        if existing_advisor and existing_parent:
-            suggested = existing_parent
-            display_parent = existing_parent
-            reason = "existing_in_db"
-            if cl != "media_house":
+        # If domain exists in DB in any form: use only DB classification and parent — never override with AI.
+        if exists_db:
+            if existing_advisor:
                 cl = "media_house"
-        elif cl == "media_house":
-            suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
-            if verify_ownership and max_verify > 0:
-                ver = verify_parent_from_web(dom, existing_parents)
-                if ver.get("parent_match"):
-                    suggested = ver["parent_match"]
-                    reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
-                    display_parent = suggested
-                elif ver.get("direct_parent") or ver.get("ultimate_parent"):
-                    display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
-                new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
-                ev = ver.get("evidence") or []
-                evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
-                max_verify -= 1
+                display_parent = existing_parent
+                suggested = existing_parent
+                reason = "existing_in_db"
+            else:
+                cl = "independent"
+                display_parent = ""
+                suggested = ""
+                reason = "existing_in_db (independent)"
+        else:
+            cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
+            if cl not in ("independent", "media_house"):
+                cl = "independent"
+            parent = (c.get("parent_name") or "").strip()
+            parent_match = (c.get("parent_match") or "").strip()
+            display_parent = parent
+
+            if cl == "media_house":
+                if verify_ownership and max_verify > 0:
+                    ver = verify_parent_from_web(dom, existing_parents)
+                    if ver.get("parent_match"):
+                        suggested = ver["parent_match"]
+                        display_parent = suggested
+                        reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
+                    elif ver.get("direct_parent") or ver.get("ultimate_parent"):
+                        display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
+                        new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
+                    ev = ver.get("evidence") or []
+                    evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
+                    max_verify -= 1
+                if not suggested:
+                    suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
+                    if suggested:
+                        display_parent = suggested
         result["rows"].append({
             "do_import": not exists,
             "input": inp,

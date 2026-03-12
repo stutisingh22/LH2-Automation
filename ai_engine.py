@@ -1234,7 +1234,8 @@ Rules:
 - Classify based on current ownership, not historical. If a site was independent but has since been acquired, classify as media_house.
 - If the site is one brand within a multi-brand media portfolio, it is media_house — identify the portfolio/parent by name.
 - Only classify as independent if you have reasonable confidence there is no parent. Do not default to independent on uncertainty — if a site operates in a category where consolidation is common (entertainment, news, lifestyle, tech), research your knowledge carefully before deciding.
-- parent_name must be the name of the direct or ultimate parent company, not the brand itself. If independent, set parent_name to null.
+- parent_name must be the MAIN / ULTIMATE parent company (the top-level owner or holding company), not a subsidiary or division. Example: for polygon.com use "Vox Media" (the main parent), NOT "Group 9 Media" if Group 9 is owned by Vox. If independent, set parent_name to null.
+- When matching to Allowed parent companies, use the exact string that represents the main parent (e.g. "Vox Media" over a subsidiary name when both exist in the list).
 - Return results in exactly the same order as the input list.
 
 Output requirements (STRICT):
@@ -1335,6 +1336,7 @@ For each entry you must return:
 
 Rules:
 - Classify based on current ownership. Subsidiaries or brands of a parent are media_house.
+- parent_name must be the MAIN / ULTIMATE parent company (top-level owner), not a subsidiary. Example: use "Vox Media" not "Group 9 Media" when Group 9 is owned by Vox. When matching to Allowed parents, prefer the main parent string.
 - If unsure about ownership, use "independent" and parent_name null.
 - Return results in the same order as the input list.
 - Output only a single JSON array. No markdown, no code fence, no explanation.

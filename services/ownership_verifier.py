@@ -119,11 +119,12 @@ def verify_parent_from_web(domain: str, allowed_parents: List[str], max_results_
 CRITICAL:
 - Answer ONLY for the site {domain}. Do NOT confuse it with other sites or brands (e.g. do not mix up parade.com with a different publication).
 - Use ONLY information that explicitly refers to {domain} or its parent in the snippets. If a snippet is about a different domain or company, ignore it.
-- Return direct_parent = the company that directly owns/operates {domain}; ultimate_parent = the top-level parent if different (e.g. subsidiary → parent). If there is no clear chain, set both to the same owner.
+- Return direct_parent = the company that directly owns/operates {domain}; ultimate_parent = the TOP-LEVEL / MAIN parent company (the holding company or group that ultimately owns the brand). Example: for polygon.com, direct might be a division but ultimate_parent must be Vox Media (the main parent), NOT a subsidiary like "Group 9 Media" if that is owned by Vox. Always prefer the highest-level parent in the ownership chain.
+- When both a subsidiary and its parent appear in Allowed parents, prefer matching the PARENT (e.g. Vox Media over Group 9 Media when Group 9 is owned by Vox).
 - Do NOT guess. If evidence is unclear or mixed, set confidence low and only set direct_parent/ultimate_parent when clearly stated for this domain.
 - Output ONLY valid JSON with keys: domain, direct_parent, ultimate_parent, confidence (number 0 to 1).
 
-Allowed parents (use these exact strings when matching evidence to your list):
+Allowed parents (use these exact strings when matching evidence to your list; prefer the main/parent company when multiple apply):
 {allowed_block}
 
 Evidence (use only snippets that clearly refer to {domain}):
