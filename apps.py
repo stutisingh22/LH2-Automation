@@ -1777,8 +1777,10 @@ with tabs[2]:  # INTELLIGENCE
                     from streamlit_iframe_event import st_iframe_event
                 except Exception:
                     st_iframe_event = None
+                # Build sections for display and a plain-text version for regex-based eligibility parsing.
                 if is_html_content(research_full_display):
                     sections = split_html_into_sections(research_full_display)
+                    plain_for_split = html_to_plain_text(research_full_display)
                 else:
                     plain_for_split = research_full_display
                     sections = split_research_into_sections(plain_for_split)
