@@ -702,21 +702,29 @@ The RESEARCH section shows programmatic/core revenue is the primary driver (e.g.
     painpoint_signals_block = _extract_painpoint_signals(research_context, platform_presence_block)
     preference_memory_block = _build_preference_memory_block(query or "")
 
+    _child_focus = comp.get('_child_company_focus')
+    if _child_focus:
+        target_block = f"""== TARGET (brand under parent) ==
+Brand / site: {comp.get('domain','?')} | Parent: {comp.get('publisher_type','?')}
+Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')}
+
+Outreach is to decision-makers at this brand/site. Do not address the parent company as the recipient; keep messaging about this brand. Do not over-explain the parent–brand relationship. Do not sound too overly optimistic."""
+    else:
+        target_block = f"""== TARGET ==
+Domain: {comp.get('domain','?')} | Type: {comp.get('publisher_type','?')} | Content: {comp.get('content_type','?')}
+Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')}"""
+
     system = f"""You are the LH2 Strategic Outreach Advisor  -  a digital media partnership strategist with persistent memory.
 
 Your job: Give decisive, research-backed outreach recommendations. Every response must reference specific data from the context below.
 
-== TARGET ==
-Domain: {comp.get('domain','?')} | Type: {comp.get('publisher_type','?')} | Content: {comp.get('content_type','?')}
-Monthly Visits: {comp.get('monthly_visits','?')} | Research Status: {comp.get('research_status','?')}
+{target_block}
 
 == CONTACT ==
 Name: {ct.get('name','?')} | Role: {ct.get('role','?')} | Email: {ct.get('email','N/A')}
 LinkedIn: {ct.get('linkedin','N/A')} | Location: {ct.get('city','')}, {ct.get('state','')} {ct.get('country','')}
 Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','not_contacted')}
 {recipient_context}
-{f'''== CHILD COMPANY RULE ==
-This target is a child company/brand. Stick to the leadership of THIS child company (the target domain). Prioritize decision-makers at the child; do not default to parent-company leadership. All outreach and strategy must focus on the child's leadership.''' if comp.get('_child_company_focus') else ''}
 
 == SESSION SUMMARY ==
 {summary_block}
