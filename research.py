@@ -1045,6 +1045,117 @@ def _is_search_noise(text):
     return any(lowered.startswith(prefix) for prefix in _SEARCH_NOISE_PREFIXES)
 
 
+def run_social_follower_research(domain, brand):
+    """
+    Find Instagram, Facebook, YouTube follower counts for the brand. We run search ourselves
+    (text_search), send snippets to Claude in one non-streaming create() call, and parse the
+    INSTAGRAM= FACEBOOK= YOUTUBE= line from the response. No tool use — full response guaranteed.
+    """
+    import re
+    out = {"articles_per_day": "—", "instagram": "NA", "facebook": "NA", "youtube": "NA"}
+    if not ANTHROPIC_API_KEY:
+        return out
+    name = (brand or "").strip() or (domain.split(".")[0] if domain else "")
+    if not name:
+        return out
+
+    # 1) Run search ourselves (same as rest of app) — get lots of snippets
+    try:
+        from linkedin_lookup import text_search
+    except Exception:
+        return out
+    snippets = []
+    for query in [
+        f"{name} instagram followers",
+        f"{name} facebook page likes followers",
+        f"{name} youtube channel subscribers",
+        f"{name} {domain} articles per day",
+    ]:
+        try:
+            for r in text_search(query, max_results=8):
+                title = (r.get("title") or "").strip()
+                body = (r.get("body") or "").strip()
+                if title or body:
+                    snippets.append(f"[{query}]\nTitle: {title}\nSnippet: {body[:500]}\n")
+        except Exception:
+            pass
+        time.sleep(0.4)
+    if not snippets:
+        return out
+    context = "\n---\n".join(snippets)[:25000]
+
+    # 2) Single non-streaming Claude call — strict extraction only, no hallucination
+    prompt = f"""Brand: "{name}" (website: {domain}). Below are web search result snippets. Your job is to extract numbers that are EXPLICITLY stated in these snippets only.
+
+Rules (strict — no exceptions):
+- Only output a number for a platform if that exact number (e.g. "94K followers", "1.2M likes") appears in the snippets. Copy the format (94K, 1.5M, 3.4K).
+- If you do NOT see a clear follower/subscriber/like count for a platform in the snippets, output NA for that platform. Do not infer, estimate, or guess.
+- For ARTICLES_DAY only output a value if the snippets explicitly state articles per day; otherwise use "—".
+- Never invent or guess a number. If the snippets do not contain a clear count for a platform, that platform must be NA.
+
+You must reply with exactly one line at the end, nothing else after it:
+INSTAGRAM=<value> FACEBOOK=<value> YOUTUBE=<value> ARTICLES_DAY=<value>
+
+Search results:
+{context}"""
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        with stream_slot():
+            msg = client.messages.create(
+                model=RESEARCH_MODEL,
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        result = ""
+        for block in (msg.content or []):
+            if getattr(block, "type", None) == "text":
+                result += getattr(block, "text", "")
+            elif isinstance(block, dict) and block.get("type") == "text":
+                result += block.get("text", "")
+    except Exception as e:
+        log.warning("run_social_follower_research failed for %s: %s", domain, e)
+        return out
+
+    if not result or not result.strip():
+        return out
+
+    # 3) Parse INSTAGRAM= FACEBOOK= YOUTUBE= ARTICLES_DAY= from response
+    lines = [l.strip() for l in result.split("\n") if l.strip()]
+    found_full_line = False
+    for line in reversed(lines):
+        if "INSTAGRAM=" in line and "FACEBOOK=" in line and "YOUTUBE=" in line:
+            for m in re.finditer(r"(INSTAGRAM|FACEBOOK|YOUTUBE|ARTICLES_DAY)=\s*([^\s|]+)", line, re.I):
+                k, v = m.group(1).upper(), (m.group(2) or "").strip("'\"")
+                if not v or v.upper() == "NA":
+                    continue
+                if k == "INSTAGRAM":
+                    out["instagram"] = v
+                elif k == "FACEBOOK":
+                    out["facebook"] = v
+                elif k == "YOUTUBE":
+                    out["youtube"] = v
+                elif k == "ARTICLES_DAY":
+                    out["articles_per_day"] = v
+            found_full_line = True
+            break
+    # Fallback: scan entire response for any KEY=value (model may split across lines)
+    if not found_full_line:
+        for m in re.finditer(r"(INSTAGRAM|FACEBOOK|YOUTUBE|ARTICLES_DAY)=\s*([^\s|,\n]+)", result, re.I):
+            k, v = m.group(1).upper(), (m.group(2) or "").strip("'\"")
+            if not v or v.upper() == "NA":
+                continue
+            if k == "INSTAGRAM":
+                out["instagram"] = v
+            elif k == "FACEBOOK":
+                out["facebook"] = v
+            elif k == "YOUTUBE":
+                out["youtube"] = v
+            elif k == "ARTICLES_DAY":
+                out["articles_per_day"] = v
+    return out
+
+
 def run_research(domain, context="", progress_callback=None, platform_presence=None):
     """
     Run the full research prompt against Claude.

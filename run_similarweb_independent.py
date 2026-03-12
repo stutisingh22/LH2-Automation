@@ -1,13 +1,22 @@
 """
-Fetch Similarweb AvgMonthVisits for all independent companies and save to
-Company.extra_data["platform_presence_analytics"]["similarweb"]. Data appears
-in Intelligence tab → Platform presence analytics expander. Existing platform
-presence (MSN/Yahoo/NewsBreak) is not changed.
+Fetch AvgMonthVisits from Similarweb Pro API for all companies in the database
+and save to the DB. Stops when the cookie expires — update SIMILARWEB_COOKIES
+in keys.env and re-run.
+
+Input: All companies from the DB (company.domain = domain used for Similarweb).
+Output:
+  - Company.extra_data["platform_presence_analytics"]["similarweb"] (full snapshot)
+  - Company.monthly_visits (integer for UI/outreach)
 
 Usage:
-  Set SIMILARWEB_COOKIES in keys.env, then:
+  Set SIMILARWEB_COOKIES in keys.env (from browser: DevTools → Network →
+  copy as cURL → use the -b cookie string), then:
   python run_similarweb_independent.py
+
+Data appears in Intelligence tab → Platform presence analytics. Existing
+platform presence (MSN/Yahoo/NewsBreak) is not changed.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -20,10 +29,20 @@ from dotenv import load_dotenv
 load_dotenv(_root / "keys.env", override=True)
 load_dotenv(_root / ".env")
 
-cookies = __import__("os").environ.get("SIMILARWEB_COOKIES", "").strip()
+cookies = (os.environ.get("SIMILARWEB_COOKIES") or os.environ.get("SIMWEB_COOKIES") or "").strip()
 if not cookies:
-    print("Add SIMILARWEB_COOKIES to keys.env (from browser: DevTools > Network > copy as cURL > use -b value)")
+    cookie_file = os.environ.get("SIMILARWEB_COOKIES_FILE", str(_root / "similarweb_cookies.txt"))
+    if os.path.exists(cookie_file):
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            cookies = "".join(
+                line for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ).strip()
+if not cookies:
+    print("Add SIMILARWEB_COOKIES to keys.env (or create similarweb_cookies.txt with the cookie string).")
+    print("From browser: DevTools → Network → copy as cURL → use the -b value.")
     sys.exit(1)
+os.environ["SIMILARWEB_COOKIES"] = cookies
 
 from platform_analytics import run_similarweb_for_independent_companies
 

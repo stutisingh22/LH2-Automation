@@ -612,13 +612,15 @@ def get_enrichment_by_request_id(request_id):
 
 
 def update_enrichment_result(request_id, result_json, status="completed"):
-    """Update enrichment by request_id (called from callback handler)."""
+    """Update enrichment by request_id (called from callback handler). Returns True if a row was updated."""
     with db() as s:
         _ensure_enrichment_table(s)
         r = s.query(EnrichmentResult).filter_by(request_id=str(request_id)).first()
         if r:
             r.result_json = result_json
             r.status = status
+            return True
+        return False
 
 
 def update_enrichment_result_by_identifier(identifier, result_json, status="completed"):

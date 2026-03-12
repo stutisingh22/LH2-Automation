@@ -27,8 +27,22 @@ SIMWEB_API_URL = "https://pro.similarweb.com/widgetApi/WebsiteOverview/Engagemen
 SEARCH_RESULTS_PER_SOCIAL = 3
 MIN_SOCIAL_RESULTS_TO_CONFIRM = 2
 
-# USA country code (ISO 3166-1 numeric) for SimilarWeb
-USA_COUNTRY_CODE = "840"
+# Worldwide (999) to match SimilarWeb Pro UI; use "840" for US-only
+SIMWEB_COUNTRY_CODE = "999"
+
+
+def _get_similarweb_date_range_single_month() -> tuple[str, str]:
+    """
+    Return (from_str, to_str) for the last complete month.
+    Format: YYYY|MM|DD as expected by SimilarWeb Pro API (e.g. 2026|02|01 to 2026|02|28).
+    """
+    today = datetime.utcnow()
+    first_of_this_month = today.replace(day=1)
+    end_date = first_of_this_month - timedelta(days=1)  # last day of previous month
+    start_date = end_date.replace(day=1)
+    from_str = start_date.strftime("%Y|%m|01")
+    to_str = end_date.strftime(f"%Y|%m|{end_date.day:02d}")
+    return from_str, to_str
 
 
 def _get_similarweb_date_range() -> tuple[str, str]:
@@ -38,17 +52,14 @@ def _get_similarweb_date_range() -> tuple[str, str]:
     Always uses completed months — never the current partial month.
     """
     today = datetime.utcnow()
-    # End of last completed month
     first_of_this_month = today.replace(day=1)
-    end_date = first_of_this_month - timedelta(days=1)  # last day of previous month
-    # Start = 3 months before end_date's month
+    end_date = first_of_this_month - timedelta(days=1)
     start_month = end_date.month - 2
     start_year = end_date.year
     if start_month <= 0:
         start_month += 12
         start_year -= 1
     start_date = end_date.replace(year=start_year, month=start_month, day=1)
-
     from_str = start_date.strftime("%Y|%m|01")
     to_str = end_date.strftime(f"%Y|%m|{end_date.day:02d}")
     return from_str, to_str
@@ -58,9 +69,9 @@ def _similarweb_monthly_visits(domain: str) -> dict[str, Any]:
     """
     Fetch AvgMonthVisits from Similarweb Pro API using stored cookies.
     Falls back to public page scrape if cookie is missing or expired.
-    Targets USA traffic only (country code 840).
+    Uses worldwide traffic (country 999) by default.
     """
-    cookies = os.getenv("SIMILARWEB_COOKIES", "").strip()
+    cookies = (os.getenv("SIMILARWEB_COOKIES") or os.getenv("SIMWEB_COOKIES") or "").strip()
     if cookies:
         result = _similarweb_pro_fetch(domain, cookies)
         if result.get("visits"):
@@ -72,12 +83,12 @@ def _similarweb_monthly_visits(domain: str) -> dict[str, Any]:
 
 
 def _similarweb_pro_fetch(domain: str, cookies: str) -> dict[str, Any]:
-    """Hit the authenticated SimilarWeb Pro API endpoint."""
-    from_str, to_str = _get_similarweb_date_range()
+    """Hit the authenticated SimilarWeb Pro API endpoint (worldwide, last complete month)."""
+    from_str, to_str = _get_similarweb_date_range_single_month()
 
     params = {
-        "country": USA_COUNTRY_CODE,
-        "iso": "US",
+        "country": SIMWEB_COUNTRY_CODE,
+        "iso": "[object Object]",
         "to": to_str,
         "from": from_str,
         "isWindow": "false",
@@ -91,13 +102,15 @@ def _similarweb_pro_fetch(domain: str, cookies: str) -> dict[str, Any]:
 
     headers = {
         "accept": "application/json",
+        "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "content-type": "application/json; charset=utf-8",
         "referer": "https://pro.similarweb.com/",
         "user-agent": USER_AGENT,
         "x-requested-with": "XMLHttpRequest",
         "Cookie": cookies,
         "x-sw-page": (
-            f"https://pro.similarweb.com/#/digitalsuite/websiteanalysis/"
-            f"overview/website-performance/*/999/3m?webSource=Total&key={domain}"
+            f"https://pro.similarweb.com/#/digitalsuite/websiteanalysis/overview/"
+            f"website-performance/*/999/3m?webSource=Total&key={domain}"
         ),
     }
 
@@ -115,7 +128,7 @@ def _similarweb_pro_fetch(domain: str, cookies: str) -> dict[str, Any]:
                 "visits": visits if visits > 0 else None,
                 "error": None,
                 "date_range": f"{from_str} to {to_str}",
-                "country": "US",
+                "country": "999",
                 "source": "similarweb_pro",
             }
     except requests.exceptions.Timeout:
@@ -638,7 +651,7 @@ def run_similarweb_for_independent_companies(
     """
     import random
     import time
-    from db_ops import get_all_companies, get_company, merge_company_extra_data
+    from db_ops import get_all_companies, get_company, merge_company_extra_data, upsert_company
 
     companies = get_all_companies(exclude_advisor_shadows=True)
     to_process = [
@@ -657,6 +670,7 @@ def run_similarweb_for_independent_companies(
         sw = _similarweb_monthly_visits(domain)
         if sw.get("error") == "cookie_expired":
             return updated, "Similarweb cookie expired. Update SIMILARWEB_COOKIES in keys.env and re-run."
+        visits = sw.get("visits")
         existing = (get_company(cid) or {}).get("extra_data") or {}
         if not isinstance(existing, dict):
             existing = {}
@@ -668,6 +682,8 @@ def run_similarweb_for_independent_companies(
         analytics["status"] = "ok"
         if merge_company_extra_data(cid, {"platform_presence_analytics": analytics}):
             updated += 1
+        if visits is not None:
+            upsert_company(c["domain"], monthly_visits=visits)
         if i < len(to_process) - 1:
             time.sleep(random.uniform(min_delay_sec, max_delay_sec))
     return updated, ""

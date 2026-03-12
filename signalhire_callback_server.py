@@ -59,25 +59,37 @@ def signalhire_callback():
         request.headers.get("Request-Id")
         or request.headers.get("request-id")
         or request.headers.get("X-Request-Id")
+        or request.headers.get("x-request-id")
         or ""
     )
-    log.info("SignalHire callback received (body length=%s, Request-Id=%s)", len(body), request_id_header or "(none)")
+    log.info(
+        "SignalHire callback received (body length=%s). Request-Id header=%s",
+        len(body),
+        request_id_header or "(MISSING — ngrok may strip headers; we will try to update by identifier)",
+    )
     try:
         try:
             data = json.loads(body)
         except Exception as e:
-            log.warning("Callback body not JSON: %s", e)
+            log.warning("Callback body not JSON: %s. Raw start: %s", e, body[:300])
             data = []
         updates = parse_callback_payload(data, request_id_from_header=request_id_header or None)
         if not updates:
-            log.warning("No updates parsed (missing Request-Id header or success result). Raw body: %s", body[:500])
+            log.warning(
+                "No updates parsed. Request-Id header was: %s. Raw body (first 800 chars): %s",
+                request_id_header or "(none)",
+                body[:800],
+            )
         for request_id, identifier, result_json in updates:
             if request_id:
-                update_enrichment_result(request_id, result_json, status="completed")
-                log.info("Updated enrichment request_id=%s", request_id)
+                ok = update_enrichment_result(request_id, result_json, status="completed")
+                if ok:
+                    log.info("Updated enrichment request_id=%s", request_id)
+                else:
+                    log.warning("No DB row found for request_id=%s — check that app and callback use same DATABASE_URL", request_id)
             elif identifier:
                 ok = update_enrichment_result_by_identifier(identifier, result_json, status="completed")
-                log.info("Updated enrichment by identifier (no Request-Id header): identifier=%s ok=%s", identifier[:60], ok)
+                log.info("Updated enrichment by identifier: identifier=%s ok=%s", identifier[:60], ok)
         return "", 200
     except Exception as e:
         log.exception("Callback error: %s", e)

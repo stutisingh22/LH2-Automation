@@ -120,6 +120,7 @@ def request_enrichment(identifier, user_id, callback_url=None):
 
     if use_callback:
         try:
+            log.info("SignalHire request: callbackUrl=%s (verify this matches your ngrok URL)", cb)
             r = requests.post(
                 PERSON_SEARCH_URL,
                 headers={"apikey": SIGNALHIRE_API_KEY, "Content-Type": "application/json"},
@@ -127,10 +128,13 @@ def request_enrichment(identifier, user_id, callback_url=None):
                 timeout=15,
             )
             if r.status_code in (200, 201):
-                req_id = r.json().get("requestId")
+                j = r.json()
+                req_id = j.get("requestId") or j.get("request_id")
                 if req_id is not None:
-                    record_id = save_enrichment_pending(user_id, str(req_id), identifier)
-                    return record_id, str(req_id), "pending"
+                    req_id = str(req_id)
+                    record_id = save_enrichment_pending(user_id, req_id, identifier)
+                    log.info("SignalHire accepted: requestId=%s — wait for callback to %s", req_id, cb)
+                    return record_id, req_id, "pending"
             log.warning("SignalHire request failed: %s %s", r.status_code, r.text[:200])
         except Exception as e:
             log.warning("SignalHire request error: %s", e)
@@ -228,18 +232,23 @@ def parse_callback_payload(body, request_id_from_header=None):
         request_id = (request_id_from_header or "").strip() or None
     else:
         request_id = data.get("requestId") or data.get("request_id") or (request_id_from_header or "").strip() or None
-        results = data.get("results") or data.get("data") or []
+        if request_id is not None:
+            request_id = str(request_id)
+        results = data.get("results") or data.get("data") or data.get("items") or []
     if not isinstance(results, list):
         results = []
     for item in results:
         if not isinstance(item, dict):
             continue
-        status = (item.get("status") or "").lower()
-        candidate = item.get("candidate") or {}
-        identifier = (item.get("item") or "").strip()
-        if status == "success" and candidate:
+        status = (item.get("status") or item.get("result") or "").lower()
+        candidate = item.get("candidate") or item.get("data") or {}
+        identifier = (item.get("item") or item.get("identifier") or item.get("linkedin") or "").strip()
+        # Accept "success", "completed", "ok"
+        if status in ("success", "completed", "ok") and candidate:
             result_json = normalize_candidate_to_result(candidate, identifier)
             out.append((str(request_id) if request_id else None, identifier, result_json))
+        elif status in ("success", "completed", "ok") and request_id:
+            out.append((str(request_id), identifier, {"fullName": "", "emails": [], "phones": [], "source": "SignalHire"}))
     if not out and request_id:
         out.append((str(request_id), "", {"fullName": "", "emails": [], "phones": [], "source": "SignalHire"}))
     return out

@@ -18,10 +18,10 @@ log = logging.getLogger(__name__)
 # CSV path: same directory as this file
 TRACKER_CSV = Path(__file__).resolve().parent / "tracker_sources.csv"
 
-PLATFORMS = ("msn", "yahoo", "newsbreak")
+PLATFORMS = ("msn", "yahoo", "newsbreak", "smartnews")
 
 # For search-based presence: URL must contain this host; at least 2 of 3 results must confirm
-PLATFORM_HOSTS = {"msn": "msn.com", "yahoo": "yahoo.com", "newsbreak": "newsbreak.com"}
+PLATFORM_HOSTS = {"msn": "msn.com", "yahoo": "yahoo.com", "newsbreak": "newsbreak.com", "smartnews": "smartnews.com"}
 SEARCH_RESULTS_PER_PLATFORM = 3
 MIN_RESULTS_TO_CONFIRM = 2  # stricter: at least 2 of 3 results must clearly show presence
 DELAY_BETWEEN_COMPANIES_SEC = (1.0, 2.0)  # rate limit when running for all companies
@@ -93,6 +93,39 @@ def get_presence_for_domain(company_display_string: str, domain_to_platforms: di
     norm = normalize_domain(company_display_string)
     platforms_set = domain_to_platforms.get(norm, set()) if norm else set()
     return {p: (p in platforms_set) for p in PLATFORMS}
+
+
+def load_domain_to_msn_follower_count(csv_path: Path | None = None) -> dict[str, int]:
+    """
+    Build map: normalized Website (from CSV) -> MSN Follower Count (int).
+    Only rows with Type=msn and Status=active are used; Follower Count column.
+    """
+    path = csv_path or TRACKER_CSV
+    out: dict[str, int] = {}
+    if not path.exists():
+        return out
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if _row_key(row, "Type", "type").lower() != "msn":
+                    continue
+                if _row_key(row, "Status", "status").lower() != "active":
+                    continue
+                website = _row_key(row, "Website", "website")
+                domain = normalize_domain(website)
+                if not domain:
+                    continue
+                raw = (row.get("Follower Count") or row.get("follower_count") or "").strip()
+                try:
+                    count = int(raw) if raw else 0
+                except ValueError:
+                    count = 0
+                if count > 0:
+                    out[domain] = count
+    except (OSError, csv.Error):
+        pass
+    return out
 
 
 def _result_confirms_presence(result: dict, platform: str, company_domain: str) -> bool:
