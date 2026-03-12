@@ -1486,20 +1486,9 @@ with tabs[2]:  # INTELLIGENCE
         _fresh_key = f"research_fresh_result_{cache_key}"
         
         # Load research for display. Company is primary so revisit/refresh always shows saved deep research.
-        # For advisor: use same canonical source as Independent — shadow company.extra_data (mirrored on save)
+        # For advisor: show this entity's research (parent or child) from advisor record; shadow is fallback only.
+        # For Independent: company.extra_data.
         research_full_db = None
-        if is_advisor and cid:
-            _shadow = get_company(cid)
-            if _shadow:
-                _se = _shadow.get("extra_data")
-                if isinstance(_se, str) and (_se or "").strip():
-                    try:
-                        _se = json.loads(_se)
-                    except Exception:
-                        _se = {}
-                else:
-                    _se = _se if isinstance(_se, dict) else {}
-                research_full_db = (_se.get("research_full") or "").strip()
         _raw_extra = comp.get("extra_data")
         if isinstance(_raw_extra, str):
             try:
@@ -1509,8 +1498,25 @@ with tabs[2]:  # INTELLIGENCE
         else:
             extra = _raw_extra if isinstance(_raw_extra, dict) else {}
 
-        # Priority 1: company.extra_data (Independent) or shadow.extra_data when already set above (advisor)
-        if not research_full_db:
+        if is_advisor:
+            # This advisor (parent or child) has its own research; use it. Shadow only if advisor has none.
+            _this_advisor_research = (extra.get("research_full") or "").strip()
+            if _this_advisor_research:
+                research_full_db = _this_advisor_research
+            elif cid:
+                _shadow = get_company(cid)
+                if _shadow:
+                    _se = _shadow.get("extra_data")
+                    if isinstance(_se, str) and (_se or "").strip():
+                        try:
+                            _se = json.loads(_se)
+                        except Exception:
+                            _se = {}
+                    else:
+                        _se = _se if isinstance(_se, dict) else {}
+                    research_full_db = (_se.get("research_full") or "").strip()
+        else:
+            # Independent: company.extra_data only
             research_full_db = (extra.get("research_full") or "").strip()
         if research_full_db:
             print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
