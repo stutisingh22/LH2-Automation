@@ -45,17 +45,18 @@ def normalize_linkedin_url(url: str) -> str:
     return urlunparse(cleaned)
 
 
-def text_search(query: str, max_results: int = 10) -> list[dict]:
+def text_search(query: str, max_results: int = 10, backend_prefer: str | None = None) -> list[dict]:
     """
-    Public search helper. Run DuckDuckGo (or fallback backend) text search.
-    Returns list of {title, body, href}. Used by LinkedIn lookup and platform presence (MSN/Yahoo/NewsBreak).
+    Public search helper. Run text search. Returns list of {title, body, href}.
+    backend_prefer: if set (e.g. "bing"), use only that backend; no fallback to others.
     """
-    return _ddg_search(query, max_results)
+    return _ddg_search(query, max_results, backend_prefer=backend_prefer)
 
 
-def _ddg_search(query: str, max_results: int = MAX_RESULTS_PER_QUERY) -> list[dict]:
+def _ddg_search(query: str, max_results: int = MAX_RESULTS_PER_QUERY, backend_prefer: str | None = None) -> list[dict]:
     """
-    Run DuckDuckGo (or fallback backend) text search. Returns list of {title, body, href}.
+    Run text search. Returns list of {title, body, href}.
+    backend_prefer: if set (e.g. "bing"), use only that backend; no fallback.
     """
     try:
         from ddgs import DDGS
@@ -67,7 +68,7 @@ def _ddg_search(query: str, max_results: int = MAX_RESULTS_PER_QUERY) -> list[di
                 "LinkedIn lookup needs ddgs. Install: pip install ddgs"
             ) from e
 
-    backends = ["bing", "duckduckgo", "brave"]
+    backends = [backend_prefer] if backend_prefer else ["bing", "duckduckgo", "brave"]
     last_err = None
     for backend in backends:
         try:

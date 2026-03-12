@@ -40,10 +40,11 @@ from config import (
     ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS,
     GOOGLE_SERVICE_ACCOUNT_JSON,
     SIGNALHIRE_CALLBACK_BASE_URL,
+    normalize_domain,
 )
 from db_ops import (
     create_user, authenticate, get_user, get_all_users,
-    get_company, get_all_companies, search_companies,
+    get_company, get_company_by_domain, get_all_companies, search_companies,
     get_or_create_shadow_company_for_advisor,
     upsert_company, upsert_contact,
     upsert_spoc_contact, get_spoc_contacts_by_spoc, get_spoc_contacts_by_company,
@@ -1690,9 +1691,19 @@ with tabs[2]:  # INTELLIGENCE
 
                 # Platform presence (MSN/Yahoo/NewsBreak) shown before Eligibility Verdict (display-only; does not change prompts or research text)
                 _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
+                # Sync script writes to main companies table by domain; in advisor flow we read advisor extra_data. Fall back to main company by domain so synced data shows.
+                _main_by_domain = get_company_by_domain(comp.get("domain") or "") if (comp.get("domain") or "").strip() else None
+                if _main_by_domain and isinstance(_main_by_domain.get("extra_data"), dict):
+                    _main_ed = _main_by_domain.get("extra_data") or {}
+                    if _main_ed.get("platform_presence") or _main_ed.get("social_from_search"):
+                        _pp_ed = dict(_pp_ed)
+                        if _main_ed.get("platform_presence"):
+                            _pp_ed["platform_presence"] = _main_ed["platform_presence"]
+                        if _main_ed.get("social_from_search"):
+                            _pp_ed["social_from_search"] = _main_ed["social_from_search"]
                 try:
                     from tracker_sources import load_domain_to_platforms, get_presence_for_domain
-                    platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
+                    platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed.get("platform_presence"), dict) else {}
                     if not platform_presence:
                         _tracker_map = load_domain_to_platforms()
                         platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
@@ -1734,7 +1745,55 @@ with tabs[2]:  # INTELLIGENCE
                 if st.session_state.get("platform_presence_analytics_fresh"):
                     platform_presence_analytics = st.session_state.pop("platform_presence_analytics_fresh")
 
-                with st.expander("📊 Platform presence analytics", expanded=False):
+                with st.expander("📊 Platform presence analytics", expanded=True):
+                    # CSV-style table first (Yahoo, MSN, MSN Followers, Newsbreak, Smartnews, Instagram, Facebook, YT)
+                    _social = (_pp_ed.get("social_from_search") or {}) if isinstance(_pp_ed.get("social_from_search"), dict) else {}
+                    _pp_table = {
+                        "Yahoo": "Yes" if platform_presence.get("yahoo") else "No",
+                        "MSN": "Yes" if platform_presence.get("msn") else "No",
+                        "MSN Followers": (_social.get("msn_followers") or "").strip() or "—",
+                        "Newsbreak": "Yes" if platform_presence.get("newsbreak") else "No",
+                        "Smartnews": "Yes" if platform_presence.get("smartnews") else "No",
+                        "Instagram": (_social.get("instagram") or "").strip() or "—",
+                        "Facebook": (_social.get("facebook") or "").strip() or "—",
+                        "YT": (_social.get("yt") or "").strip() or "—",
+                    }
+                    # If DB has no social data, try reading from social_from_search.csv so table still shows data
+                    _from_csv = False
+                    if (_pp_table["MSN Followers"] == "—" and _pp_table["Instagram"] == "—" and _pp_table["Facebook"] == "—" and _pp_table["YT"] == "—"):
+                        _comp_domain = normalize_domain(comp.get("domain") or "")
+                        if _comp_domain:
+                            import csv as _csv
+                            _csv_path = Path(__file__).resolve().parent / "social_from_search.csv"
+                            if _csv_path.exists():
+                                try:
+                                    with open(_csv_path, encoding="utf-8-sig", newline="") as _f:
+                                        for _row in _csv.DictReader(_f):
+                                            _brand = (_row.get("Brand") or "").strip()
+                                            if normalize_domain(_brand) == _comp_domain:
+                                                _pp_table = {
+                                                    "Yahoo": (_row.get("Yahoo") or "").strip() or "No",
+                                                    "MSN": (_row.get("MSN") or "").strip() or "No",
+                                                    "MSN Followers": (_row.get("MSN Followers") or "").strip() or "—",
+                                                    "Newsbreak": (_row.get("Newsbreak") or "").strip() or "No",
+                                                    "Smartnews": (_row.get("Smartnews") or "").strip() or "No",
+                                                    "Instagram": (_row.get("Instagram") or "").strip() or "—",
+                                                    "Facebook": (_row.get("Facebook") or "").strip() or "—",
+                                                    "YT": (_row.get("YT") or "").strip() or "—",
+                                                }
+                                                _from_csv = True
+                                                break
+                                except Exception:
+                                    pass
+                    st.markdown("**Platform presence** (from CSV / sync)")
+                    _df_pp = pd.DataFrame([_pp_table])
+                    st.dataframe(_df_pp, use_container_width=True, hide_index=True)
+                    if _from_csv:
+                        st.caption("Source: social_from_search.csv (run sync_social_from_search_to_db.py to save to DB)")
+                    elif not any(v and str(v).strip() and str(v) not in ("No", "—") for v in _pp_table.values()):
+                        st.caption("No data yet. Run sync_social_from_search_to_db.py after populating social_from_search.csv.")
+
+                    st.markdown("---")
                     pa = platform_presence_analytics if isinstance(platform_presence_analytics, dict) else {}
                     sw = pa.get("similarweb") if isinstance(pa.get("similarweb"), dict) else {}
                     latest_visits = sw.get("latest_monthly_visits")
@@ -1836,6 +1895,23 @@ with tabs[2]:  # INTELLIGENCE
                                 f"Syndication presence ({_syndication_list}) from tracker_sources. LH2 strength; proceed unless multiple other constraints block.</div>"
                                 if _elig_override_proceed else ""
                             )
+                            _social = (_pp_ed.get("social_from_search") or {}) if isinstance(_pp_ed.get("social_from_search"), dict) else {}
+                            _msn_f = _social.get("msn_followers")
+                            _ig = _social.get("instagram")
+                            _fb = _social.get("facebook")
+                            _yt = _social.get("yt")
+                            _social_line = ""
+                            if _msn_f or _ig or _fb or _yt:
+                                _parts = []
+                                if _msn_f:
+                                    _parts.append(f"MSN Followers: {_msn_f}")
+                                if _ig:
+                                    _parts.append(f"IG: {_ig}")
+                                if _fb:
+                                    _parts.append(f"FB: {_fb}")
+                                if _yt:
+                                    _parts.append(f"YT: {_yt}")
+                                _social_line = f"<div style='font-size:11px;color:var(--text-2);margin-top:6px;'>{', '.join(_parts)}</div>"
                             st.markdown(
                                 "<div style='background:var(--accent-bg);border:1px solid #c7d2fe;border-radius:10px;"
                                 "padding:10px 12px;margin:2px 0 10px 0;'>"
@@ -1843,6 +1919,7 @@ with tabs[2]:  # INTELLIGENCE
                                 f"<div style='font-size:12px;color:var(--text-2);'>"
                                 f"MSN {_presence_mark(msn)}&nbsp;&nbsp; Yahoo {_presence_mark(yahoo)}&nbsp;&nbsp; NewsBreak {_presence_mark(newsbreak)}"
                                 "</div>"
+                                + _social_line
                                 + _override_div
                                 + "</div>",
                                 unsafe_allow_html=True,
@@ -3277,9 +3354,27 @@ with tabs[3]:  # STRATEGIST
                                 unsafe_allow_html=True)
                             if content_draft:
                                 with st.expander(f"📄 Read full message" + (f" — {content_draft[:preview_len]}..." if len(content_draft) > preview_len else ""), expanded=False):
-                                    st.markdown(
-                                        f"<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>{(content_draft)}</div>",
-                                        unsafe_allow_html=True)
+                                    if "email" in (step.get("channel") or "").lower():
+                                        subj, bod = parse_email_content(content_draft)
+                                        bod_html = inject_deck_links_into_email_body(
+                                            bod,
+                                            product_key=_product_key_for_strategist,
+                                            step_index=step.get("step"),
+                                            lead_brand=None,
+                                        )
+                                        st.markdown(
+                                            "<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;'>"
+                                            f"<div style='white-space:pre-wrap;'><b>Subject:</b> {subj}</div>"
+                                            "<div style='height:8px;'></div>"
+                                            f"<div style='white-space:normal;'>{bod_html}</div>"
+                                            "</div>",
+                                            unsafe_allow_html=True,
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;white-space:pre-wrap;'>{(content_draft)}</div>",
+                                            unsafe_allow_html=True,
+                                        )
                             if "email" in step.get("channel", "").lower() and step.get("content_draft"):
                                 st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
                                 subj, bod = parse_email_content(step["content_draft"])

@@ -1862,8 +1862,11 @@ def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=No
 
     linkedin_url = ct.get('linkedin', '') or ''
 
+    pk = (product_key or "").strip().lower()
+
     prompt = f"""Generate the full outreach sequence for {ct.get('name','this contact')} at {comp.get('domain','this company')}.
 {sender_line}
+PRODUCT KEY SELECTED: {pk or "accelerate"}
 Contact timezone: {tz_info[1] or 'unknown'}
 Contact LinkedIn URL: {linkedin_url if linkedin_url.strip() else '(not on file — still generate LinkedIn step)'}
 
@@ -1875,6 +1878,13 @@ CONTENT: <full message text>
 == SEQUENCE STRUCTURE ==
 
 Use the PRODUCT FOCUS in the system context: if it is Acquisition (Acquisition then Accelerate), generate the ACQUISITION SEQUENCE (5 steps) below — LinkedIn + Acquisition Emails 1, 2, 3 + Email 4 (pivot to partnership) + Email 5 (optional). Otherwise use the ACCELERATE SEQUENCE (LinkedIn + Emails 1-4 + optional 5).
+
+CRITICAL PRODUCT OVERRIDE:
+- If PRODUCT KEY SELECTED is "acquisition", you MUST generate the ACQUISITION SEQUENCE (not Accelerate).
+- In Acquisition Email 1, include the Intro deck as a LINK in the email body (not an attachment). Do NOT paste a raw URL on its own line.
+  Instead, write a natural sentence like: "I've attached the Intro deck here — Intro deck." (the words "Intro deck" must appear verbatim).
+  IMPORTANT: Do NOT use Markdown link syntax like [Intro deck](https://...). Write plain text only; hyperlinking happens later.
+- Do NOT include any other deck links or attachments in Acquisition Emails 1–3.
 
 Use the DYNAMIC STRATEGY PROFILE for hook priority and channel emphasis.
 
@@ -1944,8 +1954,8 @@ If no LinkedIn URL is on file, note it in the execution notes at the end of the 
 == ACQUISITION SEQUENCE (use when PRODUCT FOCUS is Acquisition — 6 steps total) ==
   CRITICAL — Do NOT attach any deck (not LH2 Accelerate Deck, not any deck) in Steps 2, 3, or 4 (Acquisition Emails 1, 2, 3). Only Step 5 (Email 4 — pivot to partnership) and optionally Step 6 attach LH2 Accelerate Deck + Case Studies.
   Step 1 — LinkedIn (Day 0): Connection note. Hard limit 300 characters. Sender identity + one specific observation about their brand + "Would be great to connect." No acquisition pitch on LinkedIn.
-  Step 2 — Email 1 (Day 1-2): Subject: Regarding Acquisition of [Website Name] || LH2 Holdings. Very short. Sender + LH2 identity + why this brand specifically caught LH2's attention + ask if open to exploring acquisition + process timeline (2 weeks term sheet, 4 weeks due diligence, 6 weeks to close). NO ATTACHMENTS — do not attach any deck.
-  Step 3 — Email 2 (Day 5-7): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Short follow-up. LH2 portfolio context + one sentence why this brand fits. Footer: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." NO ATTACHMENTS.
+  Step 2 — Email 1 (Day 1-2): Subject: Regarding Acquisition of [Website Name] || LH2 Holdings. Very short. Sender + LH2 identity + why this brand specifically caught LH2's attention + ask if open to exploring acquisition + process timeline (2 weeks term sheet, 4 weeks due diligence, 6 weeks to close). NO ATTACHMENTS — do not attach any deck. Include the Intro deck as a LINK in the email body (not an attachment). Do NOT paste a raw URL on its own line.
+  Step 3 — Email 2 (Day 5-7): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Short follow-up. LH2 portfolio context + one sentence why this brand fits. End with something like: "If you're not looking for acquisition — we can help 2-5x your revenue via a revenue partnership." Do not sound like a salesman or treat accelerate as a fallback. NO ATTACHMENTS.
   Step 4 — Email 3 (Day 10-12): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Still acquisition tone. Short follow-up: restate interest, invite reply, keep door open. No pivot yet. NO ATTACHMENTS.
   Step 5 — Email 4 (Day 16-18): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Pivot to partnership. Acknowledge they may not want to sell or may need time. Introduce LH2 Accelerate: zero-cost, zero-equity, revenue share. Condensed Accelerate pitch with workstreams and case studies. ONLY from this step onward: Attachments: LH2 Accelerate Deck + Case Studies deck.
   Step 6 — Email 5 (Day 22-25, OPTIONAL): Subject: Re: Regarding Acquisition of [Website Name] || LH2 Holdings. Partnership close: "Totally understand if this isn't the right time. If partnership (Accelerate) is ever of interest, we're here." No pressure. Attachments optional (Case Studies if not sent in Step 5).

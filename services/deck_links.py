@@ -295,6 +295,13 @@ def inject_deck_links_into_email_body(body_plain, product_key=None, step_index=N
     if not (body_plain or "").strip():
         return ""
 
+    # If the model generated Markdown links like [Intro deck](https://...), strip them to plain text.
+    # We intentionally control hyperlinking via our own phrase->URL injector so output stays consistent.
+    try:
+        body_plain = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", body_plain)
+    except Exception:
+        pass
+
     # Remove redundant footer attachment lines (we use in-text links instead).
     body_plain = _strip_attachment_footer_lines(body_plain)
 
