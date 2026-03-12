@@ -66,7 +66,9 @@ from db_ops import (
 )
 from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
 from notion_sync_advisor import sync_notion_advisor_to_db
-from db_advisor import get_all_advisor_companies, get_advisor_company, search_advisor_companies, get_advisor_parents_with_children, merge_advisor_company_extra_data
+from db_advisor import get_or_create_advisor_company_for_parent, is_advisor_parent_company, search_advisor_companies, merge_advisor_company_extra_data
+from services.ui_data_loader import load_all_companies, load_all_advisor_companies, load_advisor_parents_with_children, load_advisor_company
+from services.cache_registry import invalidate_group
 from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts, get_lh2_knowledge_context
 from ai_engine import (
     get_local_time,
@@ -684,14 +686,15 @@ with st.sidebar:
     _src = st.session_state.get("notion_companies_source", "Independent")
     _aid = st.session_state.get("sel_advisor_company_id")
     if _src == "Media Houses" and _aid:
-        _adv = get_advisor_company(_aid)
+        _adv = load_advisor_company(_aid)
         if _adv:
+            _display_name = (_adv.get("parent_name") or _adv["domain"]) if is_advisor_parent_company(_adv) else _adv["domain"]
+            _subtitle = "Media House (parent)" if is_advisor_parent_company(_adv) else f"Media House · {_adv.get('parent_name','')}"
             st.markdown(
                 f"<div style='background:var(--accent-bg);padding:10px 14px;border-radius:8px;"
                 f"margin-bottom:12px;border:1px solid #c7d2fe;'>"
-                f"<div style='font-size:13px;font-weight:600;'>{_adv['domain']}</div>"
-                f"<div style='font-size:11px;color:var(--text-2);margin-top:2px;'>"
-                f"Media House · {_adv.get('parent_name','')}</div></div>",
+                f"<div style='font-size:13px;font-weight:600;'>{_display_name}</div>"
+                f"<div style='font-size:11px;color:var(--text-2);margin-top:2px;'>{_subtitle}</div></div>",
                 unsafe_allow_html=True)
     elif st.session_state.sel_company and st.session_state.sel_contact:
         _c = get_company(st.session_state.sel_company)
@@ -870,7 +873,7 @@ with tabs[0]:  # DASHBOARD
     # === UI REFACTOR START ===
     st.markdown(lh2_section_header("OVERVIEW"), unsafe_allow_html=True)
     stats = get_pipeline_stats()
-    _companies_count = len(get_all_advisor_companies()) if st.session_state.get("notion_companies_source") == "Media Houses" else len(get_all_companies())
+    _companies_count = len(load_all_advisor_companies()) if st.session_state.get("notion_companies_source") == "Media Houses" else len(load_all_companies())
     kpi_items = [
         (_companies_count, "Companies"),
         (stats.get("outreach_sent", 0), "Active Outreach"),
@@ -946,6 +949,7 @@ with tabs[1]:  # COMPANIES
                     if r.get("error"):
                         st.error(f"Error: {r['error']}")
                     else:
+                        invalidate_group("advisor")
                         st.success(f"Synced {r['companies']} companies from Media Houses DB")
                     st.rerun()
         with cc3_adv:
@@ -964,8 +968,8 @@ with tabs[1]:  # COMPANIES
                 by_parent[p].append(row)
             advisor_groups = [{"parent_name": p, "children": kids} for p, kids in sorted(by_parent.items())]
         else:
-            advisor_groups = get_advisor_parents_with_children()
-            advisor_rows = get_all_advisor_companies()
+            advisor_groups = load_advisor_parents_with_children()
+            advisor_rows = load_all_advisor_companies()
         if not advisor_rows:
             st.markdown(
                 "<div style='text-align:center;padding:80px 0;color:var(--text-3);'>"
@@ -976,14 +980,53 @@ with tabs[1]:  # COMPANIES
             st.markdown(sh(f"{len(advisor_rows)} COMPANIES (by parent)"), unsafe_allow_html=True)
             _shadow_cache = st.session_state.setdefault("_advisor_shadow", {})
             _contacts_cache = st.session_state.setdefault("_advisor_contacts", {})
+            _parent_advisor_cache = st.session_state.setdefault("_parent_advisor_cache", {})
             for grp in advisor_groups:
                 with st.expander(f"**{grp['parent_name']}** — {len(grp['children'])} child(ren)", expanded=False):
+                    # Parent company row: same arrow/flow as children (deep research, strategist, actions)
+                    pname = grp["parent_name"]
+                    if pname not in _parent_advisor_cache:
+                        _parent_advisor_cache[pname] = get_or_create_advisor_company_for_parent(pname)
+                    parent_adv = _parent_advisor_cache.get(pname)
+                    if parent_adv:
+                        parent_id = parent_adv["id"]
+                        is_sel_parent = st.session_state.get("sel_advisor_company_id") == parent_id
+                        if is_sel_parent and parent_id not in _shadow_cache:
+                            _shadow_cache[parent_id] = get_or_create_shadow_company_for_advisor(parent_id)
+                        prow_col1, prow_col2 = st.columns([4, 0.5])
+                        with prow_col1:
+                            st.markdown(
+                                f"<div class='c' style='padding:8px 12px;border-left:2px solid var(--accent);'>"
+                                f"<span style='font-size:13px;font-weight:600;'>{grp['parent_name']}</span> <span style='font-size:11px;color:var(--text-3);'>(parent)</span>"
+                                f"</div>",
+                                unsafe_allow_html=True)
+                        with prow_col2:
+                            if st.button("→", key=f"adv_go_parent_{parent_id}", type="secondary", use_container_width=True, help="Open intelligence / strategist / actions for parent company"):
+                                st.session_state.sel_advisor_company_id = parent_id
+                                parent_shadow_cid, parent_shadow_ctid = get_or_create_shadow_company_for_advisor(parent_id)
+                                if parent_shadow_cid and parent_shadow_ctid:
+                                    st.session_state.sel_company = parent_shadow_cid
+                                    st.session_state.sel_contact = parent_shadow_ctid
+                                    st.session_state.session_id = get_or_create_session(parent_shadow_cid, parent_shadow_ctid, user["id"])
+                                else:
+                                    st.session_state.sel_company = None
+                                    st.session_state.sel_contact = None
+                                    st.session_state.session_id = None
+                                st.session_state.chat_messages = load_messages(st.session_state.session_id) if st.session_state.session_id else []
+                                st.session_state.auto_brief_text = None
+                                st.session_state.pending_plan = None
+                                st.session_state.current_tab = "STRATEGIST"
+                                st.rerun()
                     for ch in grp["children"]:
                         is_sel_adv = st.session_state.get("sel_advisor_company_id") == ch["id"]
                         ch_id = ch["id"]
-                        if ch_id not in _shadow_cache:
+                        if ch_id in _shadow_cache:
+                            shadow_cid, _ = _shadow_cache[ch_id]
+                        elif is_sel_adv:
                             _shadow_cache[ch_id] = get_or_create_shadow_company_for_advisor(ch_id)
-                        shadow_cid, _ = _shadow_cache[ch_id]
+                            shadow_cid, _ = _shadow_cache[ch_id]
+                        else:
+                            shadow_cid = None
                         row_col1, row_col2 = st.columns([4, 0.5])
                         with row_col1:
                             st.markdown(
@@ -992,7 +1035,7 @@ with tabs[1]:  # COMPANIES
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with row_col2:
-                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary" if is_sel_adv else "primary", use_container_width=True):
+                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary", use_container_width=True):
                                 st.session_state.sel_advisor_company_id = ch["id"]
                                 shadow_cid, shadow_ctid = get_or_create_shadow_company_for_advisor(ch["id"])
                                 if shadow_cid and shadow_ctid:
@@ -1008,7 +1051,7 @@ with tabs[1]:  # COMPANIES
                                 st.session_state.pending_plan = None
                                 st.session_state.current_tab = "STRATEGIST"
                                 st.rerun()
-                        # Same as Independent: expander with contacts for this child (shadow company)
+                        # Contacts expander: only load shadow/contacts when this child is selected (avoids N DB calls on every render)
                         if shadow_cid and shadow_cid not in _contacts_cache:
                             _contacts_cache[shadow_cid] = get_contacts(shadow_cid)
                         cts_adv = (_contacts_cache.get(shadow_cid) or []) if shadow_cid else []
@@ -1300,22 +1343,26 @@ with tabs[2]:  # INTELLIGENCE
     is_advisor = (_src == "Media Houses" and aid is not None)
     
     if is_advisor:
-        comp = get_advisor_company(aid)
+        comp = load_advisor_company(aid)
         if not comp:
             st.error("Company not found.")
             comp = None
         else:
             adv_extra = comp.get("extra_data") or {}  # from DB (Supabase or SQLite)
+            _is_parent = is_advisor_parent_company(comp)
+            _display_name = (comp.get("parent_name") or comp.get("domain") or "—") if _is_parent else (comp.get("domain") or comp.get("parent_name") or "—")
+            _research_target = (comp.get("parent_name") or comp.get("domain") or "") if _is_parent else (comp.get("domain") or "")
             comp = {
                 "id": comp["id"],
                 "domain": comp.get("domain", "—"),
-                "name": comp.get("domain") or comp.get("parent_name") or "—",
+                "name": _display_name,
                 "publisher_type": comp.get("parent_name") or "—",
                 "content_type": "—",
                 "monthly_visits": None,
                 "research_status": "—",
                 "notion_page_id": comp.get("notion_page_id"),
                 "extra_data": adv_extra,
+                "research_domain": _research_target,
             }
     elif cid:
         comp = get_company(cid)
@@ -1346,7 +1393,7 @@ with tabs[2]:  # INTELLIGENCE
             ct = _intel_ct
             if ct:
                 if is_advisor and aid:
-                    _fa = get_advisor_company(aid)
+                    _fa = load_advisor_company(aid)
                     if _fa:
                         _adv_ed = _fa.get("extra_data") or {}
                         if isinstance(_adv_ed, str):
@@ -1408,6 +1455,7 @@ with tabs[2]:  # INTELLIGENCE
                     _ro = {"product_key": _pk, "rationale": (_result.get("rationale") or "").strip() or "No rationale.", "updated_at": datetime.utcnow().isoformat()}
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"recommended_offering": _ro})
+                        invalidate_group("advisor")
                     else:
                         merge_company_extra_data(cid, {"recommended_offering": _ro})
                     st.session_state["offering_recommendation_just_saved"] = _ro
@@ -1421,7 +1469,7 @@ with tabs[2]:  # INTELLIGENCE
         # ── Research document: from Notion, from DB, or run deep research; always same edit + AI options ──
         # Re-fetch comp so extra_data (research_full) is fresh after save/run
         if is_advisor and aid:
-            _fresh_adv = get_advisor_company(aid)
+            _fresh_adv = load_advisor_company(aid)
             if _fresh_adv:
                 _ed = _fresh_adv.get("extra_data")
                 if isinstance(_ed, str) and (_ed or "").strip():
@@ -1488,11 +1536,12 @@ with tabs[2]:  # INTELLIGENCE
                         try:
                             from tracker_sources import load_domain_to_platforms, get_presence_for_domain
                             _tracker_map = load_domain_to_platforms()
-                            _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                            _research_target = comp.get("research_domain", comp.get("domain") or "")
+                            _platform_presence = get_presence_for_domain(_research_target, _tracker_map) or {}
                         except Exception:
                             _platform_presence = {}
-                    # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
-                    result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
+                    # LIVE: Execute drive_sync and ai_engine logic (NOT cached). Use research_domain for parent companies (e.g. "Vox Media").
+                    result = run_research(comp.get("research_domain", comp.get("domain", "")), progress_callback=_prog, platform_presence=_platform_presence or None)
                 except Exception as e:
                     err_msg = str(e)
                 
@@ -1528,6 +1577,7 @@ with tabs[2]:  # INTELLIGENCE
                             "research_full_updated_at": datetime.utcnow().isoformat(),
                             "platform_presence_analytics": platform_analytics_snapshot,
                         })
+                        invalidate_group("advisor")
                     else:
                         merge_company_extra_data(cid, {
                             "research_full": result,
@@ -1575,11 +1625,12 @@ with tabs[2]:  # INTELLIGENCE
                             try:
                                 from tracker_sources import load_domain_to_platforms, get_presence_for_domain
                                 _tracker_map = load_domain_to_platforms()
-                                _platform_presence = get_presence_for_domain(comp.get("domain") or "", _tracker_map) or {}
+                                _research_target = comp.get("research_domain", comp.get("domain") or "")
+                                _platform_presence = get_presence_for_domain(_research_target, _tracker_map) or {}
                             except Exception:
                                 _platform_presence = {}
-                        # LIVE: Execute drive_sync and ai_engine logic (NOT cached)
-                        result = run_research(comp.get("domain", ""), progress_callback=_prog, platform_presence=_platform_presence or None)
+                        # LIVE: Execute drive_sync and ai_engine logic (NOT cached). Use research_domain for parent companies.
+                        result = run_research(comp.get("research_domain", comp.get("domain", "")), progress_callback=_prog, platform_presence=_platform_presence or None)
                     except Exception as e:
                         err_msg = str(e)
                     
@@ -1615,6 +1666,7 @@ with tabs[2]:  # INTELLIGENCE
                                 "research_full_updated_at": datetime.utcnow().isoformat(),
                                 "platform_presence_analytics": platform_analytics_snapshot,
                             })
+                            invalidate_group("advisor")
                         else:
                             merge_company_extra_data(cid, {
                                 "research_full": result,
@@ -1655,6 +1707,7 @@ with tabs[2]:  # INTELLIGENCE
                     # Delete from company.extra_data (backward compatibility)
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                        invalidate_group("advisor")
                     else:
                         merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     
@@ -1738,6 +1791,7 @@ with tabs[2]:  # INTELLIGENCE
                         )
                         if is_advisor:
                             merge_advisor_company_extra_data(aid, {"platform_presence_analytics": fresh_analytics})
+                            invalidate_group("advisor")
                         else:
                             merge_company_extra_data(cid, {"platform_presence_analytics": fresh_analytics})
                         st.session_state["platform_presence_analytics_fresh"] = fresh_analytics
@@ -1992,6 +2046,7 @@ with tabs[2]:  # INTELLIGENCE
                 else:
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        invalidate_group("advisor")
                     else:
                         merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
                     _doc_name = comp.get("domain") or comp.get("name", "Company")
@@ -2054,6 +2109,7 @@ with tabs[2]:  # INTELLIGENCE
                                 st.session_state[_fresh_key] = merged
                                 if is_advisor:
                                     merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                    invalidate_group("advisor")
                                 else:
                                     merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 if _intel_sid:
@@ -2258,10 +2314,10 @@ with tabs[3]:  # STRATEGIST
             sid = get_or_create_session(cid, ctid, user["id"])
             st.session_state.session_id = sid
         if is_advisor_strategist:
-            adv_comp = get_advisor_company(_aid_s)
-            comp = {"id": cid, "domain": adv_comp.get("domain", "—"), "name": adv_comp.get("domain") or "—", "publisher_type": adv_comp.get("parent_name") or "—", "content_type": "—", "monthly_visits": None, "research_status": "—", "notion_page_id": adv_comp.get("notion_page_id"), "extra_data": adv_comp.get("extra_data") or {}} if adv_comp else None
+            adv_comp = load_advisor_company(_aid_s)
+            comp = {"id": cid, "domain": adv_comp.get("domain", "—"), "name": adv_comp.get("domain") or adv_comp.get("parent_name") or "—", "publisher_type": adv_comp.get("parent_name") or "—", "content_type": "—", "monthly_visits": None, "research_status": "—", "notion_page_id": adv_comp.get("notion_page_id"), "extra_data": adv_comp.get("extra_data") or {}} if adv_comp else None
             ct = get_contact(ctid)
-            comp["_child_company_focus"] = True
+            comp["_child_company_focus"] = not is_advisor_parent_company(adv_comp) if comp else False
         else:
             comp = get_company(cid)
             ct = get_contact(ctid)
@@ -2452,7 +2508,7 @@ with tabs[3]:  # STRATEGIST
                 st.markdown(sh_small("Contacts from research"), unsafe_allow_html=True)
                 linkedin_results_key = f"linkedin_lookup_{research_cache_key}"
                 if is_advisor_strategist and _aid_s:
-                    _fa = get_advisor_company(_aid_s)
+                    _fa = load_advisor_company(_aid_s)
                     if _fa:
                         comp = {**comp, "extra_data": _fa.get("extra_data") or {}}
                 else:
@@ -2462,6 +2518,7 @@ with tabs[3]:  # STRATEGIST
                 def _persist_linkedin_results(lst):
                     if is_advisor_strategist and _aid_s:
                         merge_advisor_company_extra_data(_aid_s, {"linkedin_lookup_results": lst})
+                        invalidate_group("advisor")
                     else:
                         merge_company_extra_data(cid, {"linkedin_lookup_results": lst})
 
@@ -2528,7 +2585,7 @@ with tabs[3]:  # STRATEGIST
 
                 _saved_list = None
                 if is_advisor_strategist and _aid_s:
-                    _adv = get_advisor_company(_aid_s)
+                    _adv = load_advisor_company(_aid_s)
                     _saved_list = (_adv.get("extra_data") or {}).get("linkedin_lookup_results")
                 else:
                     _saved_list = (comp.get("extra_data") or {}).get("linkedin_lookup_results")
@@ -3531,7 +3588,7 @@ with tabs[4]:  # ACTIONS
             sid = get_or_create_session(cid, ctid, user["id"])
             st.session_state.session_id = sid
         if _src_a == "Media Houses" and _aid_a:
-            adv_a = get_advisor_company(_aid_a) or {}
+            adv_a = load_advisor_company(_aid_a) or {}
             comp = {"domain": adv_a.get("domain", "—"), "name": adv_a.get("domain") or "—", "extra_data": adv_a.get("extra_data") or {}}
         else:
             comp = get_company(cid) or {}
@@ -3813,7 +3870,7 @@ with tabs[7]:  # PIPELINE
     if _src_p == "Media Houses":
         # Media Houses pipeline: expandable parent cards; each child has status change
         st.markdown(lh2_section_header("MEDIA HOUSES PIPELINE"), unsafe_allow_html=True)
-        parents_with_children = get_advisor_parents_with_children()
+        parents_with_children = load_advisor_parents_with_children()
         # Enrich each child once (shadow, spoc, score, status) and count by status for KPI
         pipeline_advisor = {s: [] for s in CONTACT_STATUSES}
         groups_enriched = []
@@ -3859,6 +3916,7 @@ with tabs[7]:  # PIPELINE
                     )
                     if new_status != status:
                         merge_advisor_company_extra_data(ch["id"], {"pipeline_status": new_status})
+                        invalidate_group("advisor")
                         st.rerun()
     else:
         # Independent pipeline (unchanged)

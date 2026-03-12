@@ -19,12 +19,13 @@ import streamlit as st
 from config import normalize_domain
 from db_ops import get_company_by_domain, upsert_company, delete_company_by_domain
 from db_advisor import (
-    get_advisor_company_by_domain, get_advisor_parents_with_children, upsert_advisor_company, delete_advisor_company
+    get_advisor_company_by_domain, upsert_advisor_company, delete_advisor_company
 )
 from notion_sync import create_notion_contact_page, archive_notion_page
 from notion_sync_advisor import create_notion_advisor_page, archive_notion_advisor_page
 from ai_engine import classify_domains_independent_or_media_house, classify_entries_independent_or_media_house
-from services.ui_data_loader import clear_ui_cache
+from services.ui_data_loader import clear_ui_cache, load_advisor_parents_with_children
+from services.cache_registry import invalidate_group
 from services.ownership_verifier import verify_parent_from_web
 
 log = logging.getLogger(__name__)
@@ -110,9 +111,9 @@ def _parse_entries_from_text(text: str) -> List[str]:
 
 
 def get_existing_parent_media_houses() -> List[str]:
-    """Return list of existing parent media house names (display names)."""
+    """Return list of existing parent media house names (display names). Uses cached loader for performance."""
     out = []
-    for group in get_advisor_parents_with_children():
+    for group in load_advisor_parents_with_children():
         p = (group.get("parent_name") or "").strip()
         if p and p != "(No parent)":
             out.append(p)
@@ -373,6 +374,7 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                 result["errors"].append(f"{label}: {e}")
 
     clear_ui_cache()
+    invalidate_group("advisor")
     return result
 
 
@@ -396,6 +398,7 @@ def undo_created(created: List[dict]) -> dict:
         except Exception as e:
             out["errors"].append(str(e))
     clear_ui_cache()
+    invalidate_group("advisor")
     return out
 
 

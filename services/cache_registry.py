@@ -26,6 +26,7 @@ CACHE_GROUPS = {
     "company": [],    # Company profiles and lists
     "contact": [],    # Contact lists and details
     "action": [],     # Action history and timelines
+    "advisor": [],    # Media Houses: advisor companies, parents with children
 }
 
 

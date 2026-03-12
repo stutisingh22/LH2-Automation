@@ -7,6 +7,7 @@ Otherwise uses lh2_advisor.db in the same directory as the main app's SQLite so 
 import json
 import logging
 import os
+import re
 import shutil
 from contextlib import contextmanager
 from sqlalchemy import create_engine, or_, func
@@ -309,14 +310,57 @@ def search_advisor_companies(q):
         ]
 
 
+def _parent_slug(parent_name):
+    """Slug for parent company row domain (unique, no clash with child domains)."""
+    s = (parent_name or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "parent"
+    return s
+
+
+def get_or_create_advisor_company_for_parent(parent_name):
+    """
+    Get or create an advisor_company row representing the parent (media house).
+    Used so the parent can have the same arrow/flow as children (deep research, strategist, actions).
+    Returns advisor company dict with id, domain, parent_name, ... or None.
+    Domain is __parent_<slug> so it does not appear in child lists.
+    """
+    p = (parent_name or "").strip() or "(No parent)"
+    slug = _parent_slug(p)
+    domain = f"__parent_{slug}"
+    AdvisorCompany = _model()
+    with db_advisor() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=domain).first()
+        if row:
+            return _advisor_comp_dict(row)
+        row = AdvisorCompany(
+            domain=domain,
+            parent_name=p,
+            notion_page_id=None,
+        )
+        s.add(row)
+        s.flush()
+        return _advisor_comp_dict(row)
+
+
+def is_advisor_parent_company(advisor_comp):
+    """True if this advisor company dict is a parent (media house) row, not a child."""
+    if not advisor_comp or not isinstance(advisor_comp, dict):
+        return False
+    d = (advisor_comp.get("domain") or "").strip()
+    return d.startswith("__parent_")
+
+
 def get_advisor_parents_with_children():
     """
     Return list of {"parent_name": str, "children": [dict, ...]} for display.
     Each child has id, domain, parent_name, notion_page_id, created_at.
+    Excludes __parent_* rows so they are not listed as children.
     """
     all_rows = get_all_advisor_companies()
     by_parent = {}
     for row in all_rows:
+        if (row.get("domain") or "").strip().startswith("__parent_"):
+            continue
         p = row["parent_name"] or "(No parent)"
         if p not in by_parent:
             by_parent[p] = []

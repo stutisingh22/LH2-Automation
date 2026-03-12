@@ -127,6 +127,41 @@ def load_recent_activity(limit=20):
 register_cache("action", load_recent_activity)
 
 
+# ── Media Houses (Advisor) cached loaders ─────────────────────────
+# Reduces lag: use these instead of direct db_advisor calls in UI.
+
+@st.cache_data(ttl=60)
+def load_all_advisor_companies():
+    """Cached list of all advisor (Media Houses) companies. Invalidate 'advisor' on sync/write."""
+    from db_advisor import get_all_advisor_companies
+    return get_all_advisor_companies()
+
+
+@st.cache_data(ttl=60)
+def load_advisor_parents_with_children():
+    """Cached parent→children groups for Media Houses. Invalidate 'advisor' on sync/write."""
+    from db_advisor import get_advisor_parents_with_children
+    return get_advisor_parents_with_children()
+
+
+@st.cache_data(ttl=60)
+def load_advisor_company(advisor_id):
+    """Cached single advisor company by id. Invalidate 'advisor' after merge_advisor_company_extra_data."""
+    if advisor_id is None:
+        return None
+    from db_advisor import get_advisor_company
+    return get_advisor_company(advisor_id)
+
+
+def _register_advisor_caches():
+    register_cache("advisor", load_all_advisor_companies)
+    register_cache("advisor", load_advisor_parents_with_children)
+    register_cache("advisor", load_advisor_company)
+
+
+_register_advisor_caches()
+
+
 # ── Strategic Research Snapshots (TTL=600s for Sydney-Singapore latency) ──
 
 @st.cache_data(ttl=600)
