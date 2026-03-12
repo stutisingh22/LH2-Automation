@@ -1486,7 +1486,20 @@ with tabs[2]:  # INTELLIGENCE
         _fresh_key = f"research_fresh_result_{cache_key}"
         
         # Load research for display. Company is primary so revisit/refresh always shows saved deep research.
+        # For advisor: use same canonical source as Independent — shadow company.extra_data (mirrored on save)
         research_full_db = None
+        if is_advisor and cid:
+            _shadow = get_company(cid)
+            if _shadow:
+                _se = _shadow.get("extra_data")
+                if isinstance(_se, str) and (_se or "").strip():
+                    try:
+                        _se = json.loads(_se)
+                    except Exception:
+                        _se = {}
+                else:
+                    _se = _se if isinstance(_se, dict) else {}
+                research_full_db = (_se.get("research_full") or "").strip()
         _raw_extra = comp.get("extra_data")
         if isinstance(_raw_extra, str):
             try:
@@ -1496,8 +1509,9 @@ with tabs[2]:  # INTELLIGENCE
         else:
             extra = _raw_extra if isinstance(_raw_extra, dict) else {}
 
-        # Priority 1: company.extra_data (so refresh/revisit same company shows research)
-        research_full_db = (extra.get("research_full") or "").strip()
+        # Priority 1: company.extra_data (Independent) or shadow.extra_data when already set above (advisor)
+        if not research_full_db:
+            research_full_db = (extra.get("research_full") or "").strip()
         if research_full_db:
             print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
 
@@ -1578,6 +1592,13 @@ with tabs[2]:  # INTELLIGENCE
                             "platform_presence_analytics": platform_analytics_snapshot,
                         })
                         invalidate_group("advisor")
+                        # Mirror to shadow company so read path matches Independent (same canonical shape)
+                        if cid:
+                            merge_company_extra_data(cid, {
+                                "research_full": result,
+                                "research_full_updated_at": datetime.utcnow().isoformat(),
+                                "platform_presence_analytics": platform_analytics_snapshot,
+                            })
                     else:
                         merge_company_extra_data(cid, {
                             "research_full": result,
@@ -1667,6 +1688,13 @@ with tabs[2]:  # INTELLIGENCE
                                 "platform_presence_analytics": platform_analytics_snapshot,
                             })
                             invalidate_group("advisor")
+                            # Mirror to shadow company so read path matches Independent (same canonical shape)
+                            if cid:
+                                merge_company_extra_data(cid, {
+                                    "research_full": result,
+                                    "research_full_updated_at": datetime.utcnow().isoformat(),
+                                    "platform_presence_analytics": platform_analytics_snapshot,
+                                })
                         else:
                             merge_company_extra_data(cid, {
                                 "research_full": result,
@@ -1708,6 +1736,8 @@ with tabs[2]:  # INTELLIGENCE
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                         invalidate_group("advisor")
+                        if cid:
+                            merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     
@@ -2047,6 +2077,8 @@ with tabs[2]:  # INTELLIGENCE
                     if is_advisor:
                         merge_advisor_company_extra_data(aid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
                         invalidate_group("advisor")
+                        if cid:
+                            merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         merge_company_extra_data(cid, {"research_full": _research, "research_full_updated_at": datetime.utcnow().isoformat()})
                     _doc_name = comp.get("domain") or comp.get("name", "Company")
@@ -2110,6 +2142,8 @@ with tabs[2]:  # INTELLIGENCE
                                 if is_advisor:
                                     merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                     invalidate_group("advisor")
+                                    if cid:
+                                        merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 if _intel_sid:
