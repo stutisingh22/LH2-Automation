@@ -1056,6 +1056,9 @@ def get_user_actions(uid, limit=50):
                 ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if ct:
                     d["contact_name"] = ct.name
             results.append(d)
@@ -1077,6 +1080,9 @@ def get_all_actions(limit=200):
                 ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if ct:
                     d["contact_name"] = ct.name
             results.append(d)
@@ -1102,7 +1108,8 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
                 if comp:
                     d["company_domain"] = comp.domain
                     ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
-                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if sess.contact_id:
                     ct = s.get(Contact, sess.contact_id)
                     if ct:
@@ -1180,6 +1187,9 @@ def get_overdue_followups(days=3):
                 ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if ct:
                     d["contact_name"] = ct.name
             results.append(d)
@@ -1204,6 +1214,9 @@ def get_todays_scheduled():
                 ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if ct:
                     d["contact_name"] = ct.name
             results.append(d)
@@ -1224,6 +1237,9 @@ def get_recent_activity(limit=20):
                 ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
                 if comp:
                     d["company_domain"] = comp.domain
+                    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+                    if ed and ed.get("source_advisor_company_id") is not None:
+                        d["source_advisor_company_id"] = ed["source_advisor_company_id"]
                 if ct:
                     d["contact_name"] = ct.name
             results.append(d)

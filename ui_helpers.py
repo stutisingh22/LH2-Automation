@@ -448,6 +448,31 @@ def html_to_plain_text(html, max_length=None):
     return text
 
 
+def split_html_into_sections(html):
+    """
+    Split HTML that was produced from research (with <h2>section title</h2> blocks) into
+    [(title, html_body), ...]. Used when we have stored research_display_html so tables survive
+    JSON/JSONB round-trip on the server.
+    """
+    import re
+    if not (html or "").strip():
+        return []
+    text = (html or "").strip()
+    parts = re.split(r"<h2[^>]*>(.*?)</h2>", text, flags=re.I | re.DOTALL)
+    if len(parts) < 2:
+        return [("Research", text)]
+    out = []
+    titles = parts[1::2]
+    bodies = parts[2::2]
+    for i, title in enumerate(titles):
+        body = (bodies[i] if i < len(bodies) else "").strip()
+        title_clean = re.sub(r"<[^>]+>", "", title).strip() or "Section"
+        out.append((title_clean, body))
+    if not out:
+        return [("Research", text)]
+    return out
+
+
 def research_display_to_editor_html(text):
     """
     Convert research_full from DB to HTML for the main (editable) view.

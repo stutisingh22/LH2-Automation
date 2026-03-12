@@ -204,7 +204,7 @@ from signalhire_enrichment import (
 from gmail_service import create_gmail_draft, parse_email_content
 from services.deck_links import inject_deck_links_into_email_body
 from google_auth import get_google_credentials
-from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
+from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 
 inject_css()
 
@@ -403,6 +403,38 @@ for k, d in defaults.items():
         st.session_state[k] = d
 
 
+def _media_house_company_display(media_house_id):
+    """Return display string for Media House: 'Parent · Child' or 'Parent' (no internal codes)."""
+    if not media_house_id:
+        return "?"
+    rec = load_advisor_company(media_house_id)
+    if not rec:
+        return "?"
+    d = (rec.get("domain") or "").strip()
+    p = (rec.get("parent_name") or "").strip()
+    if (d or "").startswith("__parent_"):
+        return p or "Parent"
+    if p and d:
+        return f"{p} · {d}"
+    return d or p or "?"
+
+
+def _session_company_display(sx):
+    """Company display for a session: Parent · Child or Parent, or plain domain for Independent."""
+    aid = sx.get("source_advisor_company_id")
+    if aid is not None:
+        return _media_house_company_display(aid)
+    return sx.get("company_domain") or "?"
+
+
+def _action_company_display(a):
+    """Company display for an action: Parent · Child or Parent, or plain domain for Independent."""
+    aid = a.get("source_advisor_company_id")
+    if aid is not None:
+        return _media_house_company_display(aid)
+    return a.get("company_domain") or "?"
+
+
 def _is_placeholder_contact(ct, comp):
     """Placeholder = no real identity (no email, no LinkedIn, no real name). Plan/strategist run for any SPOC with name or LinkedIn; email required only at Gmail draft/send."""
     if not ct:
@@ -445,6 +477,7 @@ def _render_calendar_event(ax):
     """Render one calendar event card with Edit and Delete."""
     aid = ax["id"]
     sc = ACTION_STATUS_COLORS.get(ax["status"], "gray")
+    comp_display = _action_company_display(ax)
     st.markdown(
         f"<div class='c' style='padding:10px 14px;'>"
         f"<div style='display:flex;justify-content:space-between;'>"
@@ -452,7 +485,7 @@ def _render_calendar_event(ax):
         f"{bdg(ax.get('status','planned'), sc)}</div>"
         f"<div style='font-size:12px;margin-top:4px;'>{(ax.get('description') or '')[:240]}</div>"
         f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>"
-        f"{(ax.get('company_domain') or '')} {('· ' + ax.get('contact_name','')) if ax.get('contact_name') else ''}"
+        f"{comp_display} {('· ' + ax.get('contact_name','')) if ax.get('contact_name') else ''}"
         f"</div></div>",
         unsafe_allow_html=True,
     )
@@ -688,13 +721,17 @@ with st.sidebar:
     if _src == "Media Houses" and _aid:
         _adv = load_advisor_company(_aid)
         if _adv:
-            _display_name = (_adv.get("parent_name") or _adv["domain"]) if is_advisor_parent_company(_adv) else _adv["domain"]
-            _subtitle = "Media House (parent)" if is_advisor_parent_company(_adv) else f"Media House · {_adv.get('parent_name','')}"
+            _display_name = _media_house_company_display(_aid)
+            _contact_line = ""
+            if st.session_state.sel_contact:
+                _ct = get_contact(st.session_state.sel_contact)
+                if _ct and (_ct.get("name") or "").strip() and (_ct.get("name") or "").strip() not in ("—", "?", "Leadership"):
+                    _contact_line = (_ct.get("name") or "").strip()
             st.markdown(
                 f"<div style='background:var(--accent-bg);padding:10px 14px;border-radius:8px;"
                 f"margin-bottom:12px;border:1px solid #c7d2fe;'>"
                 f"<div style='font-size:13px;font-weight:600;'>{_display_name}</div>"
-                f"<div style='font-size:11px;color:var(--text-2);margin-top:2px;'>{_subtitle}</div></div>",
+                f"<div style='font-size:11px;color:var(--text-2);margin-top:2px;'>{_contact_line}</div></div>",
                 unsafe_allow_html=True)
     elif st.session_state.sel_company and st.session_state.sel_contact:
         _c = get_company(st.session_state.sel_company)
@@ -732,7 +769,7 @@ with st.sidebar:
     for sx in sessions[:15]:
         is_active = st.session_state.session_id == sx["id"]
         mc2 = get_message_count(sx["id"])
-        domain = sx.get("company_domain", "?")
+        domain = _session_company_display(sx)
         contact = sx.get("contact_name", "?")
         updated = (sx.get("updated_at") or "")[:10]
         has_memory = sx.get("strategic_summary")
@@ -897,11 +934,10 @@ with tabs[0]:  # DASHBOARD
     for a in overdue[:5]:
         desc = a.get('description', '')
         contact = a.get('contact_name', '?')
-        domain = a.get('company_domain', '?')
-        preview = f"⚠️ Overdue: {contact} at {domain}"
+        preview = f"⚠️ Overdue: {contact} at {_action_company_display(a)}"
         with st.expander(preview, expanded=False):
             st.markdown(f"**Action:** {desc}")
-            st.caption(f"Contact: {contact} | Company: {domain}")
+            st.caption(f"Contact: {contact} | Company: {_action_company_display(a)}")
     if not overdue:
         st.caption("No overdue follow-ups.")
     for a in todays[:5]:
@@ -910,8 +946,8 @@ with tabs[0]:  # DASHBOARD
         preview = f"📅 Today: {contact}"
         with st.expander(preview, expanded=False):
             st.markdown(f"**Action:** {desc}")
-            if a.get('company_domain'):
-                st.caption(f"Contact: {contact} | Company: {a.get('company_domain')}")
+            if a.get('company_domain') or a.get('source_advisor_company_id') is not None:
+                st.caption(f"Contact: {contact} | Company: {_action_company_display(a)}")
     if not todays:
         st.caption("No tasks due today.")
     st.markdown("<div style='margin-bottom:16px;'></div>", unsafe_allow_html=True)
@@ -923,7 +959,7 @@ with tabs[0]:  # DASHBOARD
         st.markdown(
             f"<div class='c' style='padding:10px 16px;'>"
             f"<div style='display:flex;justify-content:space-between;'>"
-            f"<span class='c-l'>{a.get('company_domain','?')} · {a.get('contact_name','?')} · {a['action_type']}</span>"
+            f"<span class='c-l'>{_action_company_display(a)} · {a.get('contact_name','?')} · {a['action_type']}</span>"
             f"{bdg(a['status'],sc)}</div>"
             f"<div style='font-size:12px;margin-top:4px;'>{a['description'][:200]}</div></div>",
             unsafe_allow_html=True)
@@ -1485,9 +1521,8 @@ with tabs[2]:  # INTELLIGENCE
         st.markdown(sh_small("Research document"), unsafe_allow_html=True)
         _fresh_key = f"research_fresh_result_{cache_key}"
         
-        # Load research for display. Company is primary so revisit/refresh always shows saved deep research.
-        # For advisor: show this entity's research (parent or child) from advisor record; shadow is fallback only.
-        # For Independent: company.extra_data.
+        # Load research for display: one entity, one source.
+        # Media Houses: research lives on the selected entity's record (parent or child). Independent: company.extra_data.
         research_full_db = None
         _raw_extra = comp.get("extra_data")
         if isinstance(_raw_extra, str):
@@ -1497,46 +1532,25 @@ with tabs[2]:  # INTELLIGENCE
                 extra = {}
         else:
             extra = _raw_extra if isinstance(_raw_extra, dict) else {}
-
-        if is_advisor:
-            # This advisor (parent or child) has its own research; use it. Shadow only if advisor has none.
-            _this_advisor_research = (extra.get("research_full") or "").strip()
-            if _this_advisor_research:
-                research_full_db = _this_advisor_research
-            elif cid:
-                _shadow = get_company(cid)
-                if _shadow:
-                    _se = _shadow.get("extra_data")
-                    if isinstance(_se, str) and (_se or "").strip():
-                        try:
-                            _se = json.loads(_se)
-                        except Exception:
-                            _se = {}
-                    else:
-                        _se = _se if isinstance(_se, dict) else {}
-                    research_full_db = (_se.get("research_full") or "").strip()
-        else:
-            # Independent: company.extra_data only
-            research_full_db = (extra.get("research_full") or "").strip()
-        if research_full_db:
-            print(f"[DEBUG] Loaded from company.extra_data: {len(research_full_db)} chars")
-
-        # Priority 2: session strategic_summary when company has none (e.g. old data)
+        research_full_db = (extra.get("research_full") or "").strip()
+        # Same-entity fallbacks only: session summary (legacy) or session_state (just-saved, before rerun).
         if not research_full_db and _intel_sid:
             session_summary, _ = get_session_summary(_intel_sid)
             if session_summary and session_summary.strip():
                 research_full_db = session_summary.strip()
-                print(f"[DEBUG] Loaded from sessions.strategic_summary: {len(research_full_db)} chars")
-
-        # Priority 3: session_state for immediate post-save display before next rerun
         if not research_full_db:
             _from_session = (st.session_state.get(_fresh_key) or "").strip()
             if _from_session:
                 research_full_db = _from_session
-                print(f"[DEBUG] Loaded from session_state: {len(research_full_db)} chars")
                 st.session_state.pop(_fresh_key, None)
 
-        research_full_display = research_full_db
+        # On server, JSONB round-trip for advisor_companies can strip newlines in research_full and break table rendering.
+        # When we have a stored HTML copy, use it for display so tables stay intact; keep research_full for edit/export.
+        research_display_html = (extra.get("research_display_html") or "").strip()
+        if is_advisor and research_display_html and is_html_content(research_display_html):
+            research_full_display = research_display_html
+        else:
+            research_full_display = research_full_db
 
         if not research_full_display:
             st.caption("No research yet. Run **deep research** below (same prompt as the Notion research bot). Saves to Command Center only until you click **Save** (DB + Notion + Drive).")
@@ -1592,19 +1606,14 @@ with tabs[2]:  # INTELLIGENCE
 
                     # Also save to company.extra_data for backward compatibility
                     if is_advisor:
+                        _disp_html = research_display_to_editor_html(result) if result else ""
                         merge_advisor_company_extra_data(aid, {
                             "research_full": result,
                             "research_full_updated_at": datetime.utcnow().isoformat(),
                             "platform_presence_analytics": platform_analytics_snapshot,
+                            "research_display_html": _disp_html,
                         })
                         invalidate_group("advisor")
-                        # Mirror to shadow company so read path matches Independent (same canonical shape)
-                        if cid:
-                            merge_company_extra_data(cid, {
-                                "research_full": result,
-                                "research_full_updated_at": datetime.utcnow().isoformat(),
-                                "platform_presence_analytics": platform_analytics_snapshot,
-                            })
                     else:
                         merge_company_extra_data(cid, {
                             "research_full": result,
@@ -1688,19 +1697,14 @@ with tabs[2]:  # INTELLIGENCE
 
                         # Also save to company.extra_data for backward compatibility
                         if is_advisor:
+                            _disp_html = research_display_to_editor_html(result) if result else ""
                             merge_advisor_company_extra_data(aid, {
                                 "research_full": result,
                                 "research_full_updated_at": datetime.utcnow().isoformat(),
                                 "platform_presence_analytics": platform_analytics_snapshot,
+                                "research_display_html": _disp_html,
                             })
                             invalidate_group("advisor")
-                            # Mirror to shadow company so read path matches Independent (same canonical shape)
-                            if cid:
-                                merge_company_extra_data(cid, {
-                                    "research_full": result,
-                                    "research_full_updated_at": datetime.utcnow().isoformat(),
-                                    "platform_presence_analytics": platform_analytics_snapshot,
-                                })
                         else:
                             merge_company_extra_data(cid, {
                                 "research_full": result,
@@ -1740,10 +1744,8 @@ with tabs[2]:  # INTELLIGENCE
                     
                     # Delete from company.extra_data (backward compatibility)
                     if is_advisor:
-                        merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                        merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat(), "research_display_html": ""})
                         invalidate_group("advisor")
-                        if cid:
-                            merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
                     
@@ -1775,8 +1777,11 @@ with tabs[2]:  # INTELLIGENCE
                     from streamlit_iframe_event import st_iframe_event
                 except Exception:
                     st_iframe_event = None
-                plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else research_full_display
-                sections = split_research_into_sections(plain_for_split)
+                if is_html_content(research_full_display):
+                    sections = split_html_into_sections(research_full_display)
+                else:
+                    plain_for_split = research_full_display
+                    sections = split_research_into_sections(plain_for_split)
 
                 # Platform presence (MSN/Yahoo/NewsBreak) shown before Eligibility Verdict (display-only; does not change prompts or research text)
                 _pp_ed = (comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
@@ -2080,16 +2085,22 @@ with tabs[2]:  # INTELLIGENCE
                 if not _research:
                     st.warning("No research to save.")
                 else:
-                    # For advisor (Media Houses), store research in the same canonical text format used for splitting (like Independent),
-                    # and use the HTML/_research only for Drive. This keeps tables intact on reload.
+                    # For advisor (Media Houses), store research_full (markdown) and research_display_html so tables survive server JSONB round-trip.
                     if is_advisor:
-                        _research_for_db = (research_full_display or _research).strip()
-                        if not _research_for_db:
-                            _research_for_db = _research
-                        merge_advisor_company_extra_data(aid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        if research_full_db and is_html_content(research_full_display):
+                            _research_for_db = research_full_db
+                            _display_html = (extra.get("research_display_html") or "").strip() or research_display_to_editor_html(_research_for_db)
+                        else:
+                            _research_for_db = (research_full_display or _research).strip()
+                            if not _research_for_db and research_full_db:
+                                _research_for_db = research_full_db
+                            _display_html = research_display_to_editor_html(_research_for_db) if _research_for_db and not is_html_content(_research_for_db) else (_research_for_db or "")
+                        merge_advisor_company_extra_data(aid, {
+                            "research_full": _research_for_db,
+                            "research_full_updated_at": datetime.utcnow().isoformat(),
+                            "research_display_html": _display_html,
+                        })
                         invalidate_group("advisor")
-                        if cid:
-                            merge_company_extra_data(cid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
                     else:
                         _research_for_db = _research
                         merge_company_extra_data(cid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
@@ -2153,10 +2164,13 @@ with tabs[2]:  # INTELLIGENCE
                             else:
                                 st.session_state[_fresh_key] = merged
                                 if is_advisor:
-                                    merge_advisor_company_extra_data(aid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                    _disp_html = research_display_to_editor_html(merged) if merged else ""
+                                    merge_advisor_company_extra_data(aid, {
+                                        "research_full": merged,
+                                        "research_full_updated_at": datetime.utcnow().isoformat(),
+                                        "research_display_html": _disp_html,
+                                    })
                                     invalidate_group("advisor")
-                                    if cid:
-                                        merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 else:
                                     merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
                                 if _intel_sid:
@@ -4312,7 +4326,7 @@ with tabs[9]:  # HISTORY
         with sh1:
             mt = " · 🧠" if sx.get("strategic_summary") else ""
             st.markdown(
-                f"<div class='c'><div class='c-l'>{sx.get('company_domain','?')}</div>"
+                f"<div class='c'><div class='c-l'>{_session_company_display(sx)}</div>"
                 f"<div class='c-v'>{sx.get('contact_name','?')}{mt}</div></div>",
                 unsafe_allow_html=True)
         with sh2:
@@ -4326,6 +4340,7 @@ with tabs[9]:  # HISTORY
                     st.session_state.sel_company = sx["company_id"]
                     st.session_state.sel_contact = sx["contact_id"]
                     st.session_state.session_id = sx["id"]
+                    st.session_state.sel_advisor_company_id = sx.get("source_advisor_company_id")
                     st.session_state.chat_messages = load_messages(sx["id"])
                     st.session_state.auto_brief_text = None
                     st.session_state.current_tab = "INTELLIGENCE"
