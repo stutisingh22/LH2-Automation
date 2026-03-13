@@ -19,7 +19,8 @@ import streamlit as st
 from config import normalize_domain
 from db_ops import get_company_by_domain, upsert_company, delete_company_by_domain
 from db_advisor import (
-    get_advisor_company_by_domain, upsert_advisor_company, delete_advisor_company
+    get_advisor_company_by_domain, upsert_advisor_company, delete_advisor_company,
+    get_or_create_advisor_company_for_parent, delete_advisor_parent,
 )
 from notion_sync import create_notion_contact_page, archive_notion_page
 from notion_sync_advisor import create_notion_advisor_page, archive_notion_advisor_page
@@ -186,7 +187,13 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
             parent_match = (c.get("parent_match") or "").strip()
             display_parent = parent
 
-            if cl == "media_house":
+            is_parent_company = bool(c.get("is_parent_company"))
+            if is_parent_company and parent:
+                # Entry is the parent media company itself: suggest adding as new parent.
+                display_parent = parent
+                suggested = parent
+                reason = "parent_company (add as new parent)"
+            elif cl == "media_house":
                 # New domain: run full research (web verification) to get operational/ultimate parent, then suggest from existing only.
                 if verify_ownership and max_verify > 0:
                     ver = verify_parent_from_web(d, existing_parents)
@@ -217,6 +224,7 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
             "evidence": evidence_urls,
             "new_parent_candidate": new_parent_candidate,
             "parent_confirmed": suggested,
+            "is_parent_company": False if exists_db else bool(c.get("is_parent_company")),
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents
@@ -269,7 +277,12 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
             parent_match = (c.get("parent_match") or "").strip()
             display_parent = parent
 
-            if cl == "media_house":
+            is_parent_company = bool(c.get("is_parent_company"))
+            if is_parent_company and parent:
+                display_parent = parent
+                suggested = parent
+                reason = "parent_company (add as new parent)"
+            elif cl == "media_house":
                 if verify_ownership and max_verify > 0:
                     ver = verify_parent_from_web(dom, existing_parents)
                     if ver.get("parent_match"):
@@ -299,6 +312,7 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
             "evidence": evidence_urls,
             "new_parent_candidate": new_parent_candidate,
             "parent_confirmed": suggested,
+            "is_parent_company": False if exists_db else bool(c.get("is_parent_company")),
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents
@@ -351,7 +365,8 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                 result["errors"].append(f"{label}: {e}")
         else:
             parent_confirmed = (r.get("parent_confirmed") or "").strip()
-            # Safety: do not write media_house unless parent is explicitly selected and exists
+            is_parent_company = bool(r.get("is_parent_company"))
+            # Safety: do not write media_house unless parent is explicitly selected and exists (or allow_new_parents)
             if not parent_confirmed:
                 result["flagged_for_review"].append(label)
                 continue
@@ -359,16 +374,25 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                 result["flagged_for_review"].append(label)
                 continue
             try:
-                notion_page_id = create_notion_advisor_page(dom, parent_confirmed)
-                advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=notion_page_id)
-                result["added_media_house"].append(label)
-                result["created"].append({
-                    "type": "media_house",
-                    "domain": dom,
-                    "parent_name": parent_confirmed,
-                    "advisor_id": advisor_id,
-                    "notion_page_id": notion_page_id,
-                })
+                if is_parent_company:
+                    # Add as new parent only (no child row); parent row is created so it appears in Media Houses list.
+                    get_or_create_advisor_company_for_parent(parent_confirmed)
+                    result["added_media_house"].append(label)
+                    result["created"].append({
+                        "type": "media_house_parent",
+                        "parent_name": parent_confirmed,
+                    })
+                else:
+                    notion_page_id = create_notion_advisor_page(dom, parent_confirmed)
+                    advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=notion_page_id)
+                    result["added_media_house"].append(label)
+                    result["created"].append({
+                        "type": "media_house",
+                        "domain": dom,
+                        "parent_name": parent_confirmed,
+                        "advisor_id": advisor_id,
+                        "notion_page_id": notion_page_id,
+                    })
             except Exception as e:
                 log.exception("Commit media_house failed for %s: %s", dom, e)
                 result["errors"].append(f"{label}: {e}")
@@ -394,6 +418,9 @@ def undo_created(created: List[dict]) -> dict:
                 delete_advisor_company(item.get("domain"), item.get("parent_name"))
                 if page_id:
                     archive_notion_advisor_page(page_id)
+                out["undone"] += 1
+            elif t == "media_house_parent":
+                delete_advisor_parent(item.get("parent_name"))
                 out["undone"] += 1
         except Exception as e:
             out["errors"].append(str(e))

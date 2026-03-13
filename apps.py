@@ -72,7 +72,9 @@ from services.cache_registry import invalidate_group
 from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts, get_lh2_knowledge_context
 from ai_engine import (
     get_local_time,
-    get_strategist_response_stream, auto_brief,
+    get_strategist_response_stream,
+    get_strategist_chat_response_stream,
+    auto_brief,
     generate_outreach_plan, replan_on_response,
     recommend_offering_for_company,
     maybe_update_summary, extract_episodic_memories,
@@ -3553,7 +3555,8 @@ with tabs[3]:  # STRATEGIST
 
                 # ── Input ──
                 qa = st.session_state.pop("qa", None)
-                user_input = st.chat_input(f"Message strategist as {sender_name}...")
+                contact_display = (ct_ctx.get("name") or "contact").strip() or "contact"
+                user_input = st.chat_input(f"Message strategist as {sender_name}... to {contact_display}")
                 prompt = qa or user_input
 
                 if prompt:
@@ -3570,11 +3573,16 @@ with tabs[3]:  # STRATEGIST
                         save_message(sid, "user", prompt)
                         st.session_state.chat_messages.append({"role": "user", "content": prompt, "created_at": datetime.utcnow().isoformat()})
                         rn = st.session_state.research_cache.get(research_cache_key, [])
+                        if not rn:
+                            extra = comp.get("extra_data") or {}
+                            rn = extra.get("research_notes") or []
+                            if not rn and (extra.get("research_full") or "").strip():
+                                rn = [{"title": "Research Document", "content": extra.get("research_full")}]
                         recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
                         with st.chat_message("assistant"):
                             chunks = []
                             ph = st.empty()
-                            for chunk in get_strategist_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=_product_key_for_strategist, recipient_research=recipient_research_data):
+                            for chunk in get_strategist_chat_response_stream(comp, ct_ctx, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=sender_email, product_key=_product_key_for_strategist, recipient_research=recipient_research_data):
                                 chunks.append(chunk)
                                 ph.markdown("".join(chunks) + "▌")
                             response = "".join(chunks)
@@ -4492,10 +4500,12 @@ with tabs[11]:  # BULK IMPORT
 
     if rows:
         st.markdown("### Review before commit")
-        st.caption("Edit `classification` and (for `media_house`) choose `parent_confirmed`. If you’re unsure, leave parent_confirmed blank and it will be flagged for review (no write).")
+        st.caption("Edit `classification` and (for `media_house`) choose `parent_confirmed`. If you’re unsure, leave parent_confirmed blank to flag for review. If the row is a parent media company (New parent? ✓), enable \"Allow creating new Media House parent names\" and confirm the parent name to add it as a new parent.")
 
         df = pd.DataFrame(rows)
-        parent_options = [""] + list(existing_parents)
+        # Include existing parents + new parent names from rows (e.g. "Vox Media" when is_parent_company so user can add as new parent)
+        new_parent_names = [r.get("parent_name") for r in rows if r.get("is_parent_company") and (r.get("parent_name") or "").strip()]
+        parent_options = [""] + list(existing_parents) + [p for p in sorted(set(new_parent_names)) if (p or "").strip() and (p or "").strip() not in existing_parents]
         edited = st.data_editor(
             df,
             use_container_width=True,
@@ -4507,6 +4517,7 @@ with tabs[11]:  # BULK IMPORT
                 "exists": st.column_config.CheckboxColumn("Exists", disabled=True),
                 "exists_source": st.column_config.TextColumn("Exists source", disabled=True),
                 "classification": st.column_config.SelectboxColumn("Classification", options=["independent", "media_house"]),
+                "is_parent_company": st.column_config.CheckboxColumn("New parent?", disabled=True, help="Media house that is the parent itself; add as new parent (enable 'Allow creating new Media House parent names' and confirm parent)."),
                 "parent_name": st.column_config.TextColumn("AI parent (suggested)", disabled=True),
                 "parent_suggested": st.column_config.TextColumn("DB match (suggested)", disabled=True, help="Suggested from your existing Media House parent names (no hallucination)"),
                 "match_reason": st.column_config.TextColumn("Match reason", disabled=True),

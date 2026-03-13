@@ -342,6 +342,16 @@ def get_or_create_advisor_company_for_parent(parent_name):
         return _advisor_comp_dict(row)
 
 
+def delete_advisor_parent(parent_name) -> bool:
+    """Delete the advisor_company row that represents a parent (media house). Returns True if deleted."""
+    p = (parent_name or "").strip()
+    if not p:
+        return False
+    slug = _parent_slug(p)
+    domain = f"__parent_{slug}"
+    return delete_advisor_company(domain, p)
+
+
 def is_advisor_parent_company(advisor_comp):
     """True if this advisor company dict is a parent (media house) row, not a child."""
     if not advisor_comp or not isinstance(advisor_comp, dict):

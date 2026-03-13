@@ -1226,90 +1226,101 @@ def classify_domains_independent_or_media_house(domains, allowed_parents: list[s
     if allowed:
         # Keep this bounded; if you have a very large list, the deterministic matcher in UI will still protect you.
         allowed_block = "\n\nAllowed parent companies (MUST choose one of these exact strings for parent_match, or null):\n" + "\n".join(f"- {p}" for p in allowed[:250])
-    try:
-        r = create_with_retry(
-            model=AI_MODEL,
-            max_tokens=8000,
-            messages=[{"role": "user", "content": f"""You classify each domain as either independent or owned by a parent company.
+    prompt_content = f"""You classify each domain as either independent or owned by a parent company.
 
 You are a media ownership classifier. For each domain in the input list, determine whether it is independently owned or owned/operated by a parent company.
 
 Definitions:
 - independent: The site operates on its own with no parent company. It is a standalone publisher not owned by a larger media group, holding company, or network.
-- media_house: The site is owned by, operated by, or has been acquired by a larger company. This includes subsidiaries, brands, and properties of media groups (e.g. Hearst, Condé Nast, Vox Media, IAC, Yahoo, News Corp, Dotdash Meredith, Penske Media, G/O Media, BDG, Red Ventures, Arena Group).
+- media_house: (a) The site is owned by, operated by, or has been acquired by a larger company (subsidiaries, brands of groups like Hearst, Condé Nast, Vox Media, etc.), OR (b) The domain is the main site of a company that itself owns multiple media brands (a parent media company) but is not owned by another company — e.g. voxmedia.com is Vox Media's own site; Vox Media owns The Verge, Polygon, etc. Case (b) should be classified as media_house with parent_name = the company name and is_parent_company = true so the user can add it as a new parent.
 
 Rules:
 - Classify based on current ownership, not historical. If a site was independent but has since been acquired, classify as media_house.
-- If the site is one brand within a multi-brand media portfolio, it is media_house — identify the portfolio/parent by name.
-- Only classify as independent if you have reasonable confidence there is no parent. Do not default to independent on uncertainty — if a site operates in a category where consolidation is common (entertainment, news, lifestyle, tech), research your knowledge carefully before deciding.
-- parent_name must be the MAIN / ULTIMATE parent company (the top-level owner or holding company), not a subsidiary or division. Example: for polygon.com use "Vox Media" (the main parent), NOT "Group 9 Media" if Group 9 is owned by Vox. If independent, set parent_name to null.
-- When matching to Allowed parent companies, use the exact string that represents the main parent (e.g. "Vox Media" over a subsidiary name when both exist in the list).
+- If the site is one brand within a multi-brand media portfolio, it is media_house — identify the portfolio/parent by name; set is_parent_company = false.
+- If the domain is the primary site of a parent media company (a company that owns multiple brands but has no parent itself), classify as media_house with parent_name = that company's name and is_parent_company = true.
+- Only classify as independent if you have reasonable confidence there is no parent. Do not default to independent on uncertainty.
+- parent_name must be the MAIN / ULTIMATE parent company. For is_parent_company = true, parent_name is the company's own name (e.g. "Vox Media" for voxmedia.com).
+- When matching to Allowed parent companies, use the exact string for parent_match when applicable; otherwise null.
 - Return results in exactly the same order as the input list.
 
 Output requirements (STRICT):
 - Output only a single JSON array. No markdown, no code fence, no explanation.
-- Each element must have keys: \"domain\", \"classification\", \"parent_name\", \"parent_match\".
+- Each element must have keys: \"domain\", \"classification\", \"parent_name\", \"parent_match\", \"is_parent_company\".
 - classification must be exactly \"independent\" or \"media_house\".
-- parent_name must be null for independent; for media_house it must be a company name string (or empty string only if truly unknown).
-- parent_match must be null for independent. For media_house: if the parent corresponds to an Allowed parent company, set parent_match to the exact allowed string; otherwise parent_match must be null.
+- parent_name: null for independent; for media_house the parent company name (or the company's own name when it is the parent).
+- parent_match: null for independent; for media_house set to exact Allowed parent string when one matches; otherwise null.
+- is_parent_company: true only when the domain is the main site of a company that owns multiple media brands and is not owned by another company; false otherwise.
 - Keep domain values aligned to the input list (same order).
 
 Domains to classify (one per line):
 {domains_list}
 {allowed_block}
 
-Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": "Vox Media"}}]"""}],
-        )
-        text = (r.content[0].text or "").strip()
-        # Extract JSON array (allow markdown code block)
-        if "```" in text:
-            start = text.find("[")
-            end = text.rfind("]") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
-        parsed = json.loads(text)
-        if not isinstance(parsed, list):
+Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null, "is_parent_company": false}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": "Vox Media", "is_parent_company": false}}, {{"domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true}}]"""
+    for attempt in range(2):
+        try:
+            r = create_with_retry(
+                model=AI_MODEL,
+                max_tokens=8000,
+                temperature=0,  # Deterministic: same input → same classification; avoids needing multiple Analyze runs
+                messages=[{"role": "user", "content": prompt_content}],
+            )
+            text = (r.content[0].text or "").strip()
+            # Extract JSON array (allow markdown code block)
+            if "```" in text:
+                start = text.find("[")
+                end = text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                if attempt == 0:
+                    log.warning("classify_domains: model did not return a list, retrying once")
+                    continue
+                return []
+            out = []
+            # Normalized (lowercase, no www) set for matching; keep first occurrence for canonical domain
+            domain_set_norm = {normalize_domain(d) or d.lower().strip(): d for d in domains}
+            domain_set = set(domain_set_norm.keys())
+            allowed_set = set([a.strip() for a in allowed])
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                dom = (item.get("domain") or "").strip()
+                if not dom:
+                    continue
+                norm = normalize_domain(dom) or dom.lower()
+                if norm not in domain_set:
+                    continue
+                # Use canonical form from input list when possible
+                canonical_domain = domain_set_norm.get(norm, dom)
+                cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
+                if cl not in ("independent", "media_house"):
+                    cl = "independent"
+                parent = item.get("parent_name")
+                if parent is not None and not isinstance(parent, str):
+                    parent = str(parent).strip() or None
+                elif parent is not None:
+                    parent = (parent or "").strip() or None
+                pm = item.get("parent_match")
+                if pm is not None and not isinstance(pm, str):
+                    pm = str(pm).strip() or None
+                elif pm is not None:
+                    pm = (pm or "").strip() or None
+                # Safety: only accept parent_match if it exactly matches an allowed string
+                if pm and pm not in allowed_set:
+                    pm = None
+                is_parent = bool(item.get("is_parent_company")) if isinstance(item.get("is_parent_company"), bool) else False
+                out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent, "parent_match": pm, "is_parent_company": is_parent})
+            return out
+        except json.JSONDecodeError as e:
+            log.warning("classify_domains JSON parse failed (attempt %s): %s", attempt + 1, e)
+            if attempt == 0:
+                continue
             return []
-        out = []
-        # Normalized (lowercase, no www) set for matching; keep first occurrence for canonical domain
-        domain_set_norm = {normalize_domain(d) or d.lower().strip(): d for d in domains}
-        domain_set = set(domain_set_norm.keys())
-        allowed_set = set([a.strip() for a in allowed])
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            dom = (item.get("domain") or "").strip()
-            if not dom:
-                continue
-            norm = normalize_domain(dom) or dom.lower()
-            if norm not in domain_set:
-                continue
-            # Use canonical form from input list when possible
-            canonical_domain = domain_set_norm.get(norm, dom)
-            cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
-            if cl not in ("independent", "media_house"):
-                cl = "independent"
-            parent = item.get("parent_name")
-            if parent is not None and not isinstance(parent, str):
-                parent = str(parent).strip() or None
-            elif parent is not None:
-                parent = (parent or "").strip() or None
-            pm = item.get("parent_match")
-            if pm is not None and not isinstance(pm, str):
-                pm = str(pm).strip() or None
-            elif pm is not None:
-                pm = (pm or "").strip() or None
-            # Safety: only accept parent_match if it exactly matches an allowed string
-            if pm and pm not in allowed_set:
-                pm = None
-            out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent, "parent_match": pm})
-        return out
-    except json.JSONDecodeError as e:
-        log.warning("classify_domains JSON parse failed: %s", e)
-        return []
-    except Exception as e:
-        log.error("classify_domains failed: %s", e)
-        return []
+        except Exception as e:
+            log.error("classify_domains failed: %s", e)
+            return []
 
 
 def classify_entries_independent_or_media_house(entries, allowed_parents: list[str] | None = None):
@@ -1329,88 +1340,99 @@ def classify_entries_independent_or_media_house(entries, allowed_parents: list[s
     allowed_block = ""
     if allowed:
         allowed_block = "\n\nAllowed parent companies (MUST choose one of these exact strings for parent_match, or null):\n" + "\n".join(f"- {p}" for p in allowed[:250])
-    try:
-        r = create_with_retry(
-            model=AI_MODEL,
-            max_tokens=10000,
-            messages=[{"role": "user", "content": f"""You classify each entry (domain or publication name) as either independent or owned by a parent company, and you resolve each to its primary website domain.
+    prompt_content = f"""You classify each entry (domain or publication name) as either independent or owned by a parent company, and you resolve each to its primary website domain.
 
 Definitions:
 - **independent**: The publication or site operates on its own. No other company owns, operates, or has acquired it.
-- **media_house**: The publication or site is owned by, operated by, or acquired by another company (the parent). Identify the parent company by name (e.g. Vox Media, Condé Nast, Yahoo).
+- **media_house**: (a) The publication or site is owned by, operated by, or acquired by another company (the parent), OR (b) The entry is the name (or main domain) of a company that itself owns multiple media brands (a parent media company) but is not owned by another company — e.g. "Vox Media", "Condé Nast", "Hearst". Case (b) should be classified as media_house with parent_name = that company's name and is_parent_company = true so the user can add it as a new parent.
 
 For each entry you must return:
-- **domain**: The primary website domain. If the input is already a domain (e.g. techcrunch.com), use it normalized (lowercase, no www or protocol). If the input is a publication name (e.g. TechCrunch, The Verge), resolve it to the main website domain (e.g. techcrunch.com, theverge.com).
+- **domain**: The primary website domain. If the input is already a domain, use it normalized. If the input is a publication or company name, resolve to main website domain (e.g. "Vox Media" → voxmedia.com).
 
 Rules:
-- Classify based on current ownership. Subsidiaries or brands of a parent are media_house.
-- parent_name must be the MAIN / ULTIMATE parent company (top-level owner), not a subsidiary. Example: use "Vox Media" not "Group 9 Media" when Group 9 is owned by Vox. When matching to Allowed parents, prefer the main parent string.
+- Classify based on current ownership. Subsidiaries or brands of a parent are media_house (is_parent_company = false).
+- When the entry is the name of a parent media company (owns multiple brands, not owned by another), classify as media_house with parent_name = that name and is_parent_company = true.
+- parent_name must be the MAIN / ULTIMATE parent. When matching to Allowed parents, use the exact string for parent_match when applicable.
 - If unsure about ownership, use "independent" and parent_name null.
 - Return results in the same order as the input list.
 - Output only a single JSON array. No markdown, no code fence, no explanation.
 
 Output format — a JSON array. Each object must have exactly:
 - "input": the exact string from the list above (echo back unchanged)
-- "domain": the primary website domain, lowercase, no www (e.g. techcrunch.com)
+- "domain": the primary website domain, lowercase, no www
 - "classification": exactly one of: "independent" or "media_house" (lowercase, underscore)
-- "parent_name": null for independent; for media_house, the parent company name (e.g. "Yahoo", "Vox Media"). Use null or empty string only if unknown.
-- "parent_match": null for independent. For media_house: if the parent corresponds to an Allowed parent company, set parent_match to the exact allowed string; otherwise parent_match must be null.
+- "parent_name": null for independent; for media_house the parent company name (or the company's own name when it is the parent); null if unknown.
+- "parent_match": null for independent; for media_house set to exact Allowed parent string when one matches; otherwise null.
+- "is_parent_company": true only when the entry is the name (or main site) of a company that owns multiple media brands and is not owned by another company; false otherwise.
 
 Entries (one per line):
 {entries_list}
 {allowed_block}
 
-Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo", "parent_match": "Yahoo"}}, {{"input": "example.com", "domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null}}]"""}],
-        )
-        text = (r.content[0].text or "").strip()
-        if "```" in text:
-            start = text.find("[")
-            end = text.rfind("]") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
-        parsed = json.loads(text)
-        if not isinstance(parsed, list):
+Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo", "parent_match": "Yahoo", "is_parent_company": false}}, {{"input": "Vox Media", "domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true}}]"""
+    for attempt in range(2):
+        try:
+            r = create_with_retry(
+                model=AI_MODEL,
+                max_tokens=10000,
+                temperature=0,  # Deterministic: same input → same classification; avoids needing multiple Analyze runs
+                messages=[{"role": "user", "content": prompt_content}],
+            )
+            text = (r.content[0].text or "").strip()
+            if "```" in text:
+                start = text.find("[")
+                end = text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                if attempt == 0:
+                    log.warning("classify_entries: model did not return a list, retrying once")
+                    continue
+                return []
+            out = []
+            entry_set = {e.lower().strip() for e in entries}
+            allowed_set = set([a.strip() for a in allowed])
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                inp = (item.get("input") or "").strip()
+                if not inp or inp.lower() not in entry_set:
+                    continue
+                dom = (item.get("domain") or "").strip().lower()
+                # Normalize domain: no www, no path
+                if dom.startswith("www."):
+                    dom = dom[4:].strip()
+                if " " in dom or not dom or "." not in dom:
+                    dom = inp if "." in inp else None
+                if not dom:
+                    continue
+                cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
+                if cl not in ("independent", "media_house"):
+                    cl = "independent"
+                parent = item.get("parent_name")
+                if parent is not None and not isinstance(parent, str):
+                    parent = str(parent).strip() or None
+                elif parent is not None:
+                    parent = (parent or "").strip() or None
+                pm = item.get("parent_match")
+                if pm is not None and not isinstance(pm, str):
+                    pm = str(pm).strip() or None
+                elif pm is not None:
+                    pm = (pm or "").strip() or None
+                if pm and pm not in allowed_set:
+                    pm = None
+                is_parent = bool(item.get("is_parent_company")) if isinstance(item.get("is_parent_company"), bool) else False
+                out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent, "parent_match": pm, "is_parent_company": is_parent})
+            return out
+        except json.JSONDecodeError as e:
+            log.warning("classify_entries JSON parse failed (attempt %s): %s", attempt + 1, e)
+            if attempt == 0:
+                continue
             return []
-        out = []
-        entry_set = {e.lower().strip() for e in entries}
-        allowed_set = set([a.strip() for a in allowed])
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            inp = (item.get("input") or "").strip()
-            if not inp or inp.lower() not in entry_set:
-                continue
-            dom = (item.get("domain") or "").strip().lower()
-            # Normalize domain: no www, no path
-            if dom.startswith("www."):
-                dom = dom[4:].strip()
-            if " " in dom or not dom or "." not in dom:
-                dom = inp if "." in inp else None
-            if not dom:
-                continue
-            cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
-            if cl not in ("independent", "media_house"):
-                cl = "independent"
-            parent = item.get("parent_name")
-            if parent is not None and not isinstance(parent, str):
-                parent = str(parent).strip() or None
-            elif parent is not None:
-                parent = (parent or "").strip() or None
-            pm = item.get("parent_match")
-            if pm is not None and not isinstance(pm, str):
-                pm = str(pm).strip() or None
-            elif pm is not None:
-                pm = (pm or "").strip() or None
-            if pm and pm not in allowed_set:
-                pm = None
-            out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent, "parent_match": pm})
-        return out
-    except json.JSONDecodeError as e:
-        log.warning("classify_entries JSON parse failed: %s", e)
-        return []
-    except Exception as e:
-        log.error("classify_entries failed: %s", e)
-        return []
+        except Exception as e:
+            log.error("classify_entries failed: %s", e)
+            return []
 
 
 # ── Intelligence request (research suggestions / what's missing) ──
@@ -1727,10 +1749,11 @@ def parse_ai_actions(text):
     found = []
     for line in text.split("\n"):
         ll = line.lower().strip()
+        header_match = re.match(r"\s*(email|linkedin)\b", ll or "", re.IGNORECASE)
         if any(k in ll for k in ["send email", "send linkedin", "follow up",
-                                   "schedule call", "send inmail", "action:"]):
+                                   "schedule call", "send inmail", "action:"]) or header_match:
             ch = "Email"
-            if "linkedin" in ll or "inmail" in ll:
+            if "linkedin" in ll or "inmail" in ll or (header_match and header_match.group(1).lower().startswith("linkedin")):
                 ch = "LinkedIn"
             elif "call" in ll:
                 ch = "Phone"
@@ -1788,6 +1811,7 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
 def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
     """
     Streaming version of the strategist. Yields text chunks.
+    Used for Full Plan and other non-chat flows. For the strategist chat box, use get_strategist_chat_response_stream.
     """
     system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research, query=user_msg)
 
@@ -1811,6 +1835,74 @@ def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, resea
                     yield text
     except Exception as e:
         log.error("Strategist stream failed: %s", e)
+        yield f"Error: {e}"
+
+
+def _build_strategist_chat_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, user_msg=None):
+    """
+    Build system prompt for the strategist CHAT only. Reuses the same full context as Full Plan
+    (research, drive, strategy profile, etc.) but with chat-specific instructions: recipient (To) focus,
+    and strictly following any explicit requirements the user states in their message.
+    """
+    contact_name = (ct or {}).get("name") or "this contact"
+    contact_role = (ct or {}).get("role") or ""
+    domain = (comp or {}).get("domain") or "this company"
+    to_line = f"{contact_name}" + (f" ({contact_role})" if contact_role else "") + f" at {domain}"
+
+    chat_prefix = f"""== STRATEGIST CHAT MODE ==
+This is a live chat. Every response is scoped to outreach TO: {to_line}.
+- Read and use the RESEARCH and DRIVE RESEARCH sections below thoroughly — same depth and grounding as for a full outreach plan. Do not summarize or skip; base recommendations and drafts on the full research.
+- If the user's message states explicit requirements (e.g. word limit, tone, what to include or exclude, channel focus, format), you MUST follow them strictly. Then use your judgment for everything else.
+- Be decisive and research-backed. Reference specific data from the context in every response.
+
+"""
+
+    base_system = _build_system_prompt(
+        comp, ct, uid, sid,
+        research_notes=research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        recipient_research=recipient_research,
+        query=user_msg,
+    )
+    return chat_prefix + base_system
+
+
+def get_strategist_chat_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+    """
+    Dedicated streaming handler for the strategist CHAT BOX only. Uses the same research/context
+    as Full Plan but with a chat-specific system prompt (recipient focus, strict user requirements).
+    Use this for the "Message strategist as..." input; use get_strategist_response_stream for Full Plan etc.
+    """
+    system = _build_strategist_chat_system_prompt(
+        comp, ct, uid, sid,
+        research_notes=research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        recipient_research=recipient_research,
+        user_msg=user_msg,
+    )
+
+    relevant = retrieve_relevant_memories(sid, uid, user_msg)
+    if relevant:
+        mem_block = "\n".join([f"- [{m['type']}] {m['text']}" for m in relevant])
+        system += f"\n\n== RECALLED MEMORIES (relevant to this query) ==\n{mem_block}"
+
+    api_msgs = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages[-MAX_CONTEXT_MESSAGES:]
+    ]
+
+    try:
+        with stream_slot():
+            with _ai().messages.stream(
+                model=AI_MODEL, max_tokens=AI_MAX_TOKENS,
+                system=system, messages=api_msgs,
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
+    except Exception as e:
+        log.error("Strategist chat stream failed: %s", e)
         yield f"Error: {e}"
 
 

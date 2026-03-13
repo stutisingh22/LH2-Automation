@@ -26,6 +26,7 @@ from sender_profiles import get_all_sender_profiles
 from ai_engine import (
     get_local_time,
     get_strategist_response_stream,
+    get_strategist_chat_response_stream,
     generate_outreach_plan,
     maybe_update_summary,
     extract_episodic_memories,
@@ -90,6 +91,32 @@ def _extract_email1_from_text(text):
     if "subject:" in raw.lower():
         return raw
     return None
+
+
+def _fallback_actions_from_header(text):
+    """
+    Fallback: if the reply starts with an EMAIL/LINKEDIN style header
+    (e.g. 'EMAIL 2', 'LinkedIn 1'), expose a single Add-to-plan action
+    even when parse_ai_actions() finds nothing.
+    """
+    raw = (text or "") or ""
+    lines = [ln.strip() for ln in raw.split("\n")]
+    header = next((ln for ln in lines if ln), "")
+    if not header:
+        return []
+    # Match headers like "EMAIL 1", "LinkedIn 2", case-insensitive
+    m = re.match(r"(?i)\s*(email|linkedin)\b", header)
+    if not m:
+        return []
+    kind = m.group(1).lower()
+    channel = "Email" if kind.startswith("email") else "LinkedIn"
+    desc = header
+    return [{
+        "type": "Outreach",
+        "channel": channel,
+        "description": desc[:300],
+        "scheduled_at": None,
+    }]
 
 
 def _first_email_from_plan(plan):
@@ -657,9 +684,55 @@ def render():
                     if ts_short:
                         st.markdown(f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>{ts_short}</div>", unsafe_allow_html=True)
 
+            # ── Actions from latest assistant reply — log to Action Plan ──
+            last_assistant = None
+            for m in reversed(st.session_state.chat_messages):
+                if m.get("role") == "assistant":
+                    last_assistant = m
+                    break
+            if last_assistant:
+                content = last_assistant.get("content") or ""
+                detected = parse_ai_actions(content)
+                if not detected:
+                    detected = _fallback_actions_from_header(content)
+                if detected:
+                    st.markdown(sh(f"{len(detected)} ACTION(S) — Add to plan"), unsafe_allow_html=True)
+                    for i, da in enumerate(detected):
+                        dc1, dc2 = st.columns([3, 1])
+                        with dc1:
+                            st.markdown(
+                                f"<div class='c' style='padding:10px;'><b>{da['channel']}</b>: {da['description'][:200]}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        with dc2:
+                            if st.button("Add to plan", key=f"strat_add_{i}"):
+                                uid = user.get("id")
+                                if not uid:
+                                    st.error("Not signed in.")
+                                else:
+                                    action_dict = {
+                                        "action_type": da.get("type", "Outreach"),
+                                        "channel": da.get("channel", "Email"),
+                                        "description": (da.get("description") or "")[:500],
+                                        "status": "planned",
+                                        "scheduled_at": da.get("scheduled_at"),
+                                    }
+                                    log_action(
+                                        sid,
+                                        uid,
+                                        action_dict["action_type"],
+                                        action_dict["channel"],
+                                        action_dict["description"],
+                                        action_dict["status"],
+                                        scheduled_at=action_dict.get("scheduled_at"),
+                                    )
+                                    st.success("Added to plan.")
+                                    st.rerun()
+
             # ── Input ──
             qa = st.session_state.pop("qa", None)
-            user_input = st.chat_input(f"Message strategist as {sender_name}...")
+            contact_display = (ct.get("name") or "contact").strip() or "contact"
+            user_input = st.chat_input(f"Message strategist as {sender_name}... to {contact_display}")
             prompt = qa or user_input
 
             if prompt:
@@ -678,7 +751,7 @@ def render():
                 with st.chat_message("assistant"):
                     chunks = []
                     ph = st.empty()
-                    for chunk in get_strategist_response_stream(comp, ct, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=st.session_state.selected_sender, product_key=st.session_state.selected_product, recipient_research=recipient_research_data):
+                    for chunk in get_strategist_chat_response_stream(comp, ct, st.session_state.chat_messages, prompt, user["id"], sid, rn, sender_email=st.session_state.selected_sender, product_key=st.session_state.selected_product, recipient_research=recipient_research_data):
                         chunks.append(chunk)
                         ph.markdown("".join(chunks) + "▌")
                     response = "".join(chunks)
@@ -731,14 +804,3 @@ def render():
                             st.warning("I couldn't map that target to an existing draft step in the active sequence.")
                 maybe_update_summary(sid, comp, ct)
                 extract_episodic_memories(sid, response, comp)
-                detected = parse_ai_actions(response)
-                if detected:
-                    st.markdown(sh(f"{len(detected)} ACTION(S) DETECTED"), unsafe_allow_html=True)
-                    for i, da in enumerate(detected):
-                        dc1, dc2 = st.columns([3, 1])
-                        with dc1:
-                            st.markdown(f"<div class='c' style='padding:10px;'><b>{da['channel']}</b>: {da['description'][:200]}</div>", unsafe_allow_html=True)
-                        with dc2:
-                            if st.button("Add", key=f"aa_{i}"):
-                                log_action(sid, sender_id, da["type"], da["channel"], da["description"], "planned", scheduled_at=da.get("scheduled_at"))
-                                st.success("Added!")
