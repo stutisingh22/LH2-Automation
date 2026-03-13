@@ -4196,13 +4196,13 @@ with tabs[8]:  # SPOC TRACKING
     _today = datetime.utcnow().date()
     all_comp_spoc = load_all_companies()  # Use cached loader
     
-    # Build SPOC rows with all necessary data
+    # Build SPOC rows with all necessary data.
+    # Include both: (1) contacts that have sub-contacts in spoc_contacts, and (2) contacts that don't
+    # (main contact as SPOC with no one "under" them), so the tab shows all SPOCs, not only those with sub-entries.
     spoc_rows = []
     for cd in all_comp_spoc:
         for ctd in get_contacts(cd["id"]):
             sub = get_spoc_contacts_by_spoc(ctd["id"])
-            if not sub:
-                continue
             sessions = get_sessions_for_company(cd["id"])
             sess = next((s for s in sessions if s.get("contact_id") == ctd["id"]), None)
             actions = get_session_actions(sess["id"]) if sess else []

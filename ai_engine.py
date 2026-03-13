@@ -762,7 +762,7 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
    - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
    - Every claim, number, or reference in the draft must trace back to the provided research brief or context folder. If a data point isn't in the research, don't use it.
    - DATES + PROJECTIONS (STRICT): Never write "projected for [year]" or any forward-looking projection for a year that is in the past relative to today. If you cannot confidently anchor a statement to an explicit dated data point in RESEARCH/DRIVE RESEARCH, omit it. Never invent projections.
-   - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks.
+   - Do not compare the prospect to unnamed or random other companies. Do not fabricate benchmarks. Do not compare with any other publisher no matter what. Focus on the given brand only
    - Platform claims MUST align with PLATFORM PRESENCE above. Do not assume presence or absence when marked unknown.
    - Syndication: Only mention or emphasize syndication for platforms explicitly marked PRESENT in PLATFORM PRESENCE above. If a platform is absent or unknown, do NOT mention it—do not assert the target has NewsBreak, MSN, or Yahoo syndication unless that platform is marked present. When multiple are present, the list there is ordered with LH2's strongest first—lead with the first in that list.
    - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
