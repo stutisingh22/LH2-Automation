@@ -1,6 +1,6 @@
 """
 app_helpers.py — Shared helpers for app shell and pages.
-Used by apps.py and pages/*. No database logic; only orchestration and formatting.
+Used by apps.py. No database logic; only orchestration and formatting.
 """
 
 import re
@@ -18,10 +18,9 @@ from db_ops import (
     update_action,
     delete_action,
 )
-from ai_engine import refine_email_draft
+from integrations import refine_email_draft, create_gmail_draft, parse_email_content
 from config import ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS
 from ui_helpers import bdg, display_full_name
-from gmail_service import create_gmail_draft, parse_email_content
 from services.deck_links import inject_deck_links_into_email_body
 
 
@@ -189,7 +188,7 @@ def render_save_to_gmail(to_email, subject, body, draft_id, product_key=None, st
         disabled = not (subject or body)
         if not has_to_email:
             st.caption("Recipient can be added in Gmail if needed.")
-        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
+        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", width="stretch", disabled=disabled):
             body_html = None
             try:
                 body_html = inject_deck_links_into_email_body(
@@ -278,7 +277,7 @@ def render_ai_refinement(step, seq_id, channel="email"):
         key=f"refine_instruction_{step_id}",
         label_visibility="collapsed",
     )
-    if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", use_container_width=True):
+    if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", width="stretch"):
         if (instruction or "").strip():
             with st.spinner("Refining…"):
                 revised = refine_email_draft(current_text, instruction.strip(), draft_type="linkedin" if is_linkedin else "email")
@@ -306,13 +305,13 @@ def render_ai_refinement(step, seq_id, channel="email"):
     r1, r2 = st.columns(2)
     with r1:
         use_disabled = not revisions_list and version_sel == "Version 1 (Original)"
-        if st.button("Use selected version", key=f"use_version_btn_{step_id}", type="secondary", use_container_width=True, disabled=use_disabled):
+        if st.button("Use selected version", key=f"use_version_btn_{step_id}", type="secondary", width="stretch", disabled=use_disabled):
             if selected_text is not None:
                 text_to_save = (selected_text if isinstance(selected_text, str) else str(selected_text)).strip()
                 if text_to_save:
                     update_action(step_id, content_sent=text_to_save)
             st.rerun()
     with r2:
-        if revisions_list and st.button("Keep both versions", key=f"keep_both_btn_{step_id}", use_container_width=True):
+        if revisions_list and st.button("Keep both versions", key=f"keep_both_btn_{step_id}", width="stretch"):
             update_action(step_id, content_sent=latest_revision)
             st.rerun()

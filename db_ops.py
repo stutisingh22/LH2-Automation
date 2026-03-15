@@ -2,13 +2,14 @@
 db_ops.py — Database engine, session factory, and all CRUD operations
 
 FIX LOG:
-  - SQLite path is now absolute (next to this file) so data persists across restarts
+  - SQLite path is now under sqlite-db/ (project or ~/.lh2_platform/sqlite-db) so data persists and stays in one folder
   - Search does fuzzy matching: strips TLDs and matches partial domain names
 """
 
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
@@ -23,50 +24,11 @@ from config import DATABASE_URL, CONTACT_STATUSES, normalize_domain
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
-    ProcessedGmailMessage, SpocContact, CachedContext,
+    ProcessedGmailMessage, SpocContact, CachedContext, AdvisorCompany,
 )
+from sqlite_db_connection import get_local_db_directory, create_platform_engine
 
 log = logging.getLogger(__name__)
-
-# Absolute path for SQLite — prefer next to this file; fallback to user dir if project dir is read-only
-_DB_DIR = os.path.dirname(os.path.abspath(__file__))
-_SQLITE_PATH = os.path.join(_DB_DIR, "lh2_platform.db")
-_SQLITE_FALLBACK_DIR = os.path.join(os.path.expanduser("~"), ".lh2_platform")
-_SQLITE_FALLBACK_PATH = os.path.join(_SQLITE_FALLBACK_DIR, "lh2_platform.db")
-
-
-def _sqlite_path_writable(db_dir: str, db_path: str) -> bool:
-    """Return True if the given directory and (if existing) file are writable."""
-    if not os.access(db_dir, os.W_OK):
-        return False
-    if os.path.exists(db_path) and not os.access(db_path, os.W_OK):
-        return False
-    return True
-
-
-def _get_writable_sqlite_path():
-    """Return a (db_dir, db_path) where we can create/write the SQLite DB. Prefer project dir; fallback to ~/.lh2_platform."""
-    if _sqlite_path_writable(_DB_DIR, _SQLITE_PATH):
-        return _DB_DIR, _SQLITE_PATH
-    try:
-        os.makedirs(_SQLITE_FALLBACK_DIR, mode=0o700, exist_ok=True)
-        if _sqlite_path_writable(_SQLITE_FALLBACK_DIR, _SQLITE_FALLBACK_PATH):
-            log.info(
-                "Project SQLite path not writable (e.g. sandbox); using fallback: %s",
-                _SQLITE_FALLBACK_PATH,
-            )
-            return _SQLITE_FALLBACK_DIR, _SQLITE_FALLBACK_PATH
-    except OSError as e:
-        log.warning("Could not use fallback SQLite dir %s: %s", _SQLITE_FALLBACK_DIR, e)
-    raise RuntimeError(
-        f"SQLite database path is not writable: {_SQLITE_PATH!r}. "
-        "Fix permissions (e.g. chmod u+w on the file and directory) or use PostgreSQL (set DATABASE_URL in keys.env)."
-    )
-
-
-def get_local_db_directory():
-    """Return the directory used for local SQLite DBs (same as main app). Advisor DB uses this so both DBs stay in one place."""
-    return _get_writable_sqlite_path()[0]
 
 
 # ── Engine + Session Factory ──────────────────────────────────
@@ -75,16 +37,7 @@ _engine = None  # Set by init_db(); use get_engine() for code that needs the eng
 
 
 def _create_sqlite_engine():
-    _db_dir, db_path = _get_writable_sqlite_path()
-    log.info("Using SQLite at %s", db_path)
-    # NullPool: each db() call opens a fresh connection from the file.
-    # This ensures the Streamlit app sees writes made by the callback server
-    # (which runs as a separate process with its own SQLite connection).
-    return create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False},
-        poolclass=NullPool,
-    )
+    return create_platform_engine()
 
 
 @st.cache_resource
@@ -159,7 +112,7 @@ def db():
         if "readonly" in (e.orig.args[0] if e.orig else "").lower() or "readonly" in str(e).lower():
             raise RuntimeError(
                 f"Database is read-only: {e}. "
-                f"If using SQLite, ensure the file and directory are writable: {_SQLITE_PATH!r}. "
+                f"If using SQLite, ensure the file and directory are writable (see sqlite-db/). "
                 "Or use PostgreSQL by setting DATABASE_URL in keys.env and ensuring the server is reachable."
             ) from e
         raise
@@ -381,7 +334,6 @@ def get_or_create_shadow_company_for_advisor(advisor_company_id):
     so Strategist/Actions/Timeline can run the same as for Independent contacts.
     Returns (company_id, contact_id) or (None, None) if advisor company not found.
     """
-    from db_advisor import get_advisor_company
     adv = get_advisor_company(advisor_company_id)
     if not adv:
         return None, None
@@ -1623,7 +1575,7 @@ def save_advisor_conversation(user_id, messages, title=None):
     """Save or update advisor conversation."""
     with db() as s:
         if not title:
-            from ai_engine import summarize_advisor_title
+            from integrations.ai import summarize_advisor_title
             title = summarize_advisor_title(messages)
         
         conv = AdvisorConversation(
@@ -1675,3 +1627,225 @@ def delete_advisor_conversation(conv_id):
             s.commit()
             return True
         return False
+
+
+# ── Advisor companies (NOTION_DATABASE_ID_2); same DB as platform ─────────────────
+
+def _advisor_comp_dict(c):
+    """Turn AdvisorCompany ORM row into dict for API."""
+    out = {
+        "id": c.id,
+        "domain": c.domain,
+        "parent_name": c.parent_name,
+        "notion_page_id": c.notion_page_id,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+    if hasattr(c, "extra_data") and c.extra_data is not None:
+        ed = c.extra_data
+        if isinstance(ed, dict):
+            out["extra_data"] = ed
+        elif isinstance(ed, str) and (ed or "").strip():
+            try:
+                out["extra_data"] = json.loads(ed)
+            except Exception:
+                out["extra_data"] = {}
+        else:
+            out["extra_data"] = {}
+    else:
+        out["extra_data"] = {}
+    return out
+
+
+@contextmanager
+def db_advisor():
+    """Yield session for advisor tables. Same as db() — one DB for platform and advisor."""
+    with db() as session:
+        yield session
+
+
+def upsert_advisor_company(domain, parent_name, notion_page_id=None):
+    """Upsert by (domain, parent_name). Returns row id."""
+    with db() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=domain.strip(), parent_name=(parent_name or "").strip()).first()
+        if row:
+            if notion_page_id is not None:
+                row.notion_page_id = notion_page_id
+            s.flush()
+            return row.id
+        row = AdvisorCompany(
+            domain=domain.strip(),
+            parent_name=(parent_name or "").strip(),
+            notion_page_id=notion_page_id,
+        )
+        s.add(row)
+        s.flush()
+        return row.id
+
+
+def delete_advisor_company(domain, parent_name) -> bool:
+    """Delete an advisor company row by (domain, parent_name). Returns True if deleted."""
+    d = normalize_domain(domain)
+    p = (parent_name or "").strip()
+    if not d or not p:
+        return False
+    with db() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=d.strip(), parent_name=p).first()
+        if not row:
+            row = s.query(AdvisorCompany).filter_by(domain=domain.strip(), parent_name=p).first()
+        if not row:
+            return False
+        s.delete(row)
+        s.flush()
+        return True
+
+
+def bulk_upsert_advisor_companies(companies_list):
+    """Upsert many advisor companies in one transaction. Returns number of companies upserted."""
+    if not companies_list:
+        return 0
+    with db() as s:
+        for data in companies_list:
+            domain = (data.get("domain") or "").strip()
+            parent_name = (data.get("parent_name") or "").strip() or "(No parent)"
+            notion_page_id = data.get("notion_page_id")
+            row = s.query(AdvisorCompany).filter_by(domain=domain, parent_name=parent_name).first()
+            if row:
+                if notion_page_id is not None:
+                    row.notion_page_id = notion_page_id
+            else:
+                s.add(AdvisorCompany(domain=domain, parent_name=parent_name, notion_page_id=notion_page_id))
+        return len(companies_list)
+
+
+def get_advisor_company(advisor_id):
+    """Return a single advisor company by id, or None."""
+    if advisor_id is None:
+        return None
+    with db() as s:
+        c = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
+        return _advisor_comp_dict(c) if c else None
+
+
+def merge_advisor_company_extra_data(advisor_id, patch):
+    """Merge patch dict into advisor company's extra_data."""
+    if not advisor_id or not patch:
+        return
+    with db() as s:
+        row = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
+        if not row:
+            return
+        ed = getattr(row, "extra_data", None)
+        if isinstance(ed, dict):
+            current = ed
+        elif isinstance(ed, str) and (ed or "").strip():
+            try:
+                current = json.loads(ed)
+            except Exception:
+                current = {}
+        else:
+            current = {}
+        row.extra_data = {**(current or {}), **patch}
+        s.flush()
+
+
+def get_advisor_company_by_domain(domain):
+    """Return advisor company dict if one with this domain exists; None otherwise."""
+    norm = normalize_domain(domain)
+    if not norm:
+        return None
+    with db() as s:
+        www = "www." + norm
+        row = (
+            s.query(AdvisorCompany)
+            .filter(
+                or_(
+                    AdvisorCompany.domain == norm,
+                    AdvisorCompany.domain == www,
+                    func.lower(AdvisorCompany.domain) == norm,
+                    func.lower(AdvisorCompany.domain) == www,
+                )
+            )
+            .first()
+        )
+        if row:
+            return _advisor_comp_dict(row)
+        for r in s.query(AdvisorCompany).all():
+            if normalize_domain(r.domain or "") == norm:
+                return _advisor_comp_dict(r)
+    return None
+
+
+def get_all_advisor_companies():
+    """Return all advisor companies as list of dicts."""
+    with db() as s:
+        return [_advisor_comp_dict(c) for c in s.query(AdvisorCompany).order_by(AdvisorCompany.parent_name, AdvisorCompany.domain).all()]
+
+
+def search_advisor_companies(q):
+    """Fuzzy search on domain and parent_name."""
+    with db() as s:
+        q = (q or "").strip()
+        if not q:
+            return get_all_advisor_companies()
+        like = f"%{q}%"
+        return [
+            _advisor_comp_dict(c)
+            for c in s.query(AdvisorCompany)
+            .filter(AdvisorCompany.domain.ilike(like) | AdvisorCompany.parent_name.ilike(like))
+            .order_by(AdvisorCompany.parent_name, AdvisorCompany.domain)
+            .all()
+        ]
+
+
+def _parent_slug(parent_name):
+    """Slug for parent company row domain."""
+    s = (parent_name or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "parent"
+    return s
+
+
+def get_or_create_advisor_company_for_parent(parent_name):
+    """Get or create an advisor_company row representing the parent (media house). Returns advisor company dict or None."""
+    p = (parent_name or "").strip() or "(No parent)"
+    slug = _parent_slug(p)
+    domain = f"__parent_{slug}"
+    with db() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=domain).first()
+        if row:
+            return _advisor_comp_dict(row)
+        row = AdvisorCompany(domain=domain, parent_name=p, notion_page_id=None)
+        s.add(row)
+        s.flush()
+        return _advisor_comp_dict(row)
+
+
+def delete_advisor_parent(parent_name) -> bool:
+    """Delete the advisor_company row that represents a parent (media house)."""
+    p = (parent_name or "").strip()
+    if not p:
+        return False
+    slug = _parent_slug(p)
+    domain = f"__parent_{slug}"
+    return delete_advisor_company(domain, p)
+
+
+def is_advisor_parent_company(advisor_comp):
+    """True if this advisor company dict is a parent (media house) row."""
+    if not advisor_comp or not isinstance(advisor_comp, dict):
+        return False
+    d = (advisor_comp.get("domain") or "").strip()
+    return d.startswith("__parent_")
+
+
+def get_advisor_parents_with_children():
+    """Return list of {"parent_name": str, "children": [dict, ...]}. Excludes __parent_* rows from children."""
+    all_rows = get_all_advisor_companies()
+    by_parent = {}
+    for row in all_rows:
+        if (row.get("domain") or "").strip().startswith("__parent_"):
+            continue
+        p = row["parent_name"] or "(No parent)"
+        if p not in by_parent:
+            by_parent[p] = []
+        by_parent[p].append(row)
+    return [{"parent_name": p, "children": kids} for p, kids in sorted(by_parent.items())]

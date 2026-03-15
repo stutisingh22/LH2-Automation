@@ -1,0 +1,73 @@
+"""
+AI (Claude/Anthropic), research, recipient research. Implementation: .ai_engine, .research, .recipient_research, .anthropic_limiter, .outreach_strategy
+"""
+
+from .anthropic_limiter import create_with_retry, stream_slot
+from .ai_engine import (
+    get_local_time,
+    get_strategist_response_stream,
+    get_strategist_chat_response_stream,
+    auto_brief,
+    generate_outreach_plan,
+    replan_on_response,
+    recommend_offering_for_company,
+    maybe_update_summary,
+    extract_episodic_memories,
+    generate_insight_from_outcome,
+    parse_ai_actions,
+    export_session_csv,
+    intelligence_request,
+    research_person_for_company,
+    summarize_research_to_context,
+    advisor_chat,
+    refine_email_draft,
+    rewrite_sequence_steps_with_research,
+    learn_user_preference,
+    summarize_advisor_title,
+    classify_domains_independent_or_media_house,
+    classify_entries_independent_or_media_house,
+)
+from .research import (
+    fetch_research_from_notion,
+    run_research,
+    research_command_ai,
+    split_research_into_sections,
+    get_next_section_number,
+    format_appended_section,
+)
+from .recipient_research import research_recipient, format_time_ago
+
+__all__ = [
+    "create_with_retry",
+    "stream_slot",
+    "get_local_time",
+    "get_strategist_response_stream",
+    "get_strategist_chat_response_stream",
+    "auto_brief",
+    "generate_outreach_plan",
+    "replan_on_response",
+    "recommend_offering_for_company",
+    "maybe_update_summary",
+    "extract_episodic_memories",
+    "generate_insight_from_outcome",
+    "parse_ai_actions",
+    "export_session_csv",
+    "intelligence_request",
+    "research_person_for_company",
+    "summarize_research_to_context",
+    "advisor_chat",
+    "refine_email_draft",
+    "rewrite_sequence_steps_with_research",
+    "learn_user_preference",
+    "summarize_advisor_title",
+    "classify_domains_independent_or_media_house",
+    "classify_entries_independent_or_media_house",
+    "fetch_research_from_notion",
+    "run_research",
+    "research_command_ai",
+    "split_research_into_sections",
+    "get_next_section_number",
+    "format_appended_section",
+    "research_recipient",
+    "format_time_ago",
+]

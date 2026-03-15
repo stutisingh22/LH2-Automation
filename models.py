@@ -178,11 +178,16 @@ class EnrichmentResult(Base):
 
 
 class AdvisorCompany(Base):
-    """Media Houses / Advisor companies (Notion DB2). Stored in main DB when DATABASE_URL is set (Supabase)."""
+    """
+    Media Houses / Advisor companies (Notion DB2). Stored in main DB when DATABASE_URL is set (Supabase).
+    - domain: title property (child company identifier)
+    - parent_name: select property "media" (parent company)
+    - extra_data: optional JSON for research_full etc.
+    """
     __tablename__ = "advisor_companies"
     id = Column(Integer, primary_key=True, autoincrement=True)
     domain = Column(String(255), nullable=False, index=True)
-    parent_name = Column(String(255), nullable=False, index=True)
+    parent_name = Column(String(255), nullable=False, index=True)  # media = parent company
     notion_page_id = Column(String(64))
     extra_data = Column(JSON)  # research_full, etc., when using main DB
     created_at = Column(DateTime, default=datetime.utcnow)

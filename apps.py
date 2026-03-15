@@ -64,40 +64,51 @@ from db_ops import (
     save_advisor_conversation, get_all_advisor_conversations, get_advisor_conversations, load_advisor_conversation, delete_advisor_conversation,
     get_enrichment_result, get_latest_enrichment_for_user, get_enrichment_by_request_id, get_completed_enrichment_by_identifier,
 )
-from notion_sync import sync_notion_to_db, lookup_lead_in_notion, fetch_notes_for_page, create_notion_contact_page
-from notion_sync_advisor import sync_notion_advisor_to_db
-from db_advisor import get_or_create_advisor_company_for_parent, is_advisor_parent_company, search_advisor_companies, merge_advisor_company_extra_data
+from db_ops import get_or_create_advisor_company_for_parent, is_advisor_parent_company, search_advisor_companies, merge_advisor_company_extra_data
 from services.ui_data_loader import load_all_companies, load_all_advisor_companies, load_advisor_parents_with_children, load_advisor_company
 from services.cache_registry import invalidate_group
-from drive_sync import list_drive_files, create_doc_in_drive, refresh_all_drive_contexts, get_lh2_knowledge_context
-from ai_engine import (
+from services.strategist_add_to_action import render_add_to_action_ui
+from integrations import (
+    sync_notion_to_db,
+    lookup_lead_in_notion,
+    fetch_notes_for_page,
+    create_notion_contact_page,
+    sync_notion_advisor_to_db,
+    list_drive_files,
+    create_doc_in_drive,
+    refresh_all_drive_contexts,
+    get_lh2_knowledge_context,
     get_local_time,
     get_strategist_response_stream,
     get_strategist_chat_response_stream,
     auto_brief,
-    generate_outreach_plan, replan_on_response,
+    generate_outreach_plan,
+    replan_on_response,
     recommend_offering_for_company,
-    maybe_update_summary, extract_episodic_memories,
-    generate_insight_from_outcome, parse_ai_actions, export_session_csv,
-    intelligence_request, research_person_for_company, summarize_research_to_context,
-    advisor_chat, refine_email_draft, rewrite_sequence_steps_with_research,
+    maybe_update_summary,
+    extract_episodic_memories,
+    generate_insight_from_outcome,
+    parse_ai_actions,
+    export_session_csv,
+    intelligence_request,
+    research_person_for_company,
+    summarize_research_to_context,
+    advisor_chat,
+    refine_email_draft,
+    rewrite_sequence_steps_with_research,
     learn_user_preference,
-)
-from product_profiles import get_product_options
-from research import (
     fetch_research_from_notion,
     run_research,
     research_command_ai,
     split_research_into_sections,
     get_next_section_number,
     format_appended_section,
-)
-from platform_analytics import build_platform_analytics_for_domain
-from linkedin_lookup import (
+    build_platform_analytics_for_domain,
     extract_spoc_table_contacts,
     run_linkedin_lookup_for_contacts,
     get_linkedin_url_for_contact,
 )
+from product_profiles import get_product_options
 
 
 def _strip_linkedin_command_prefix(text):
@@ -198,14 +209,15 @@ def _resolve_instruction_targets(prompt: str, steps):
 
 
 from contact_timeline import build_contact_timeline
-from signalhire_enrichment import (
-    get_credits as get_signalhire_credits,
+from integrations import (
+    get_signalhire_credits,
     request_enrichment,
     has_verified_email,
+    create_gmail_draft,
+    parse_email_content,
+    get_google_credentials,
 )
-from gmail_service import create_gmail_draft, parse_email_content
 from services.deck_links import inject_deck_links_into_email_body
-from google_auth import get_google_credentials
 from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 
 inject_css()
@@ -547,7 +559,7 @@ def _render_save_to_gmail(to_email, subject, body, draft_id, product_key=None, s
         disabled = not (subject or body)
         if not has_to_email:
             st.caption("Recipient can be added in Gmail if needed.")
-        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
+        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", width="stretch", disabled=disabled):
             body_html = None
             try:
                 body_html = inject_deck_links_into_email_body(
@@ -641,7 +653,7 @@ def _render_ai_refinement(step, seq_id, channel="email"):
         key=f"refine_instruction_{step_id}",
         label_visibility="collapsed",
     )
-    if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", use_container_width=True):
+    if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", width="stretch"):
         if (instruction or "").strip():
             with st.spinner("Refining…"):
                 revised = refine_email_draft(current_text, instruction.strip(), draft_type="linkedin" if is_linkedin else "email")
@@ -676,14 +688,14 @@ def _render_ai_refinement(step, seq_id, channel="email"):
     r1, r2 = st.columns(2)
     with r1:
         use_disabled = not revisions_list and version_sel == "Version 1 (Original)"
-        if st.button("Use selected version", key=f"use_version_btn_{step_id}", type="secondary", use_container_width=True, disabled=use_disabled):
+        if st.button("Use selected version", key=f"use_version_btn_{step_id}", type="secondary", width="stretch", disabled=use_disabled):
             if selected_text is not None:
                 text_to_save = (selected_text if isinstance(selected_text, str) else str(selected_text)).strip()
                 if text_to_save:
                     update_action(step_id, content_sent=text_to_save)
             st.rerun()
     with r2:
-        if revisions_list and st.button("Keep both versions", key=f"keep_both_btn_{step_id}", use_container_width=True):
+        if revisions_list and st.button("Keep both versions", key=f"keep_both_btn_{step_id}", width="stretch"):
             # Save only the latest as main draft (single draft); keep all versions in dropdown
             update_action(step_id, content_sent=latest_revision)
             st.rerun()
@@ -713,7 +725,7 @@ with st.sidebar:
         "color:var(--accent);padding:4px 0 12px;'>◆ LH2</div>",
         unsafe_allow_html=True)
 
-    if st.button("↻ Refresh knowledge", key="refresh_drive_knowledge", use_container_width=True, help="Rebuild Drive knowledge cache"):
+    if st.button("↻ Refresh knowledge", key="refresh_drive_knowledge", width="stretch", help="Rebuild Drive knowledge cache"):
         with st.spinner("Refreshing knowledge from Drive..."):
             info = refresh_all_drive_contexts()
         st.toast(f"Knowledge refreshed. Company caches cleared: {info.get('cleared_company_caches', 0)}.")
@@ -747,7 +759,7 @@ with st.sidebar:
                 f"{_t['name']} · {_t.get('role','')}</div></div>",
                 unsafe_allow_html=True)
 
-    if st.button("＋ New Session", key="new_sess", use_container_width=True):
+    if st.button("＋ New Session", key="new_sess", width="stretch"):
         st.session_state.sel_company = None
         st.session_state.sel_contact = None
         st.session_state.session_id = None
@@ -805,7 +817,7 @@ with st.sidebar:
         
         # Full width arrow button
         if not is_active:
-            if st.button("→", key=f"sb_{sx['id']}", type="secondary", use_container_width=True):
+            if st.button("→", key=f"sb_{sx['id']}", type="secondary", width="stretch"):
                 st.session_state.sel_company = sx["company_id"]
                 st.session_state.sel_contact = sx["contact_id"]
                 st.session_state.session_id = sx["id"]
@@ -818,7 +830,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{display_full_name(user['username'])} · {user['role']}</div>", unsafe_allow_html=True)
-    if st.button("Sign Out", key="sb_logout", use_container_width=True):
+    if st.button("Sign Out", key="sb_logout", width="stretch"):
         clear_session_user()
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -981,7 +993,7 @@ with tabs[1]:  # COMPANIES
         with cc1:
             sq_adv = st.text_input("Search", placeholder="Search domain or parent...", label_visibility="collapsed", key="csearch_advisor")
         with cc2:
-            if st.button("🔄 Sync Notion (Media Houses)", key="nsync_advisor", use_container_width=True):
+            if st.button("🔄 Sync Notion (Media Houses)", key="nsync_advisor", width="stretch"):
                 with st.spinner("Syncing Media Houses DB..."):
                     r = sync_notion_advisor_to_db()
                     if r.get("error"):
@@ -991,7 +1003,7 @@ with tabs[1]:  # COMPANIES
                         st.success(f"Synced {r['companies']} companies from Media Houses DB")
                     st.rerun()
         with cc3_adv:
-            if st.button("Reset", key="resetsel_advisor", use_container_width=True):
+            if st.button("Reset", key="resetsel_advisor", width="stretch"):
                 st.session_state.sel_advisor_company_id = None
                 st.session_state.current_tab = "COMPANIES"
                 st.rerun()
@@ -1039,7 +1051,7 @@ with tabs[1]:  # COMPANIES
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with prow_col2:
-                            if st.button("→", key=f"adv_go_parent_{parent_id}", type="secondary", use_container_width=True, help="Open intelligence / strategist / actions for parent company"):
+                            if st.button("→", key=f"adv_go_parent_{parent_id}", type="secondary", width="stretch", help="Open intelligence / strategist / actions for parent company"):
                                 st.session_state.sel_advisor_company_id = parent_id
                                 parent_shadow_cid, parent_shadow_ctid = get_or_create_shadow_company_for_advisor(parent_id)
                                 if parent_shadow_cid and parent_shadow_ctid:
@@ -1073,7 +1085,7 @@ with tabs[1]:  # COMPANIES
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with row_col2:
-                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary", use_container_width=True):
+                            if st.button("→", key=f"adv_go_{ch['id']}", type="secondary", width="stretch"):
                                 st.session_state.sel_advisor_company_id = ch["id"]
                                 shadow_cid, shadow_ctid = get_or_create_shadow_company_for_advisor(ch["id"])
                                 if shadow_cid and shadow_ctid:
@@ -1114,12 +1126,12 @@ with tabs[1]:  # COMPANIES
                                             update_contact_status(ct["id"], ns_adv)
                                             st.rerun()
                                     with cols_adv[2]:
-                                        if st.button("→", key=f"adv_go_ct_{ch['id']}_{ct['id']}", use_container_width=True):
+                                        if st.button("→", key=f"adv_go_ct_{ch['id']}_{ct['id']}", width="stretch"):
                                             st.session_state.sel_advisor_company_id = ch["id"]
                                             select_contact(shadow_cid, ct["id"])
                                             st.rerun()
                                     with cols_adv[3]:
-                                        if st.button("📅", key=f"adv_tl_{ch['id']}_{ct['id']}", use_container_width=True, help="View contact timeline"):
+                                        if st.button("📅", key=f"adv_tl_{ch['id']}_{ct['id']}", width="stretch", help="View contact timeline"):
                                             st.session_state.timeline_contact_id = ct["id"]
                                             st.session_state.timeline_company_id = shadow_cid
                                             st.session_state.timeline_contact_name = ct.get("name", "Contact")
@@ -1136,7 +1148,7 @@ with tabs[1]:  # COMPANIES
         with cc1:
             sq = st.text_input("Search", placeholder="Search domain or name...", label_visibility="collapsed", key="csearch")
         with cc2:
-            if st.button("🔄 Sync Notion", key="nsync", use_container_width=True):
+            if st.button("🔄 Sync Notion", key="nsync", width="stretch"):
                 with st.spinner("Syncing..."):
                     r = sync_notion_to_db()
                     if r.get("error"):
@@ -1145,7 +1157,7 @@ with tabs[1]:  # COMPANIES
                         st.success(f"Synced {r['companies']} companies, {r['contacts']} contacts")
                     st.rerun()
         with cc3:
-            if st.button("Reset", key="resetsel", use_container_width=True):
+            if st.button("Reset", key="resetsel", width="stretch"):
                 st.session_state.sel_company = None
                 st.session_state.sel_contact = None
                 st.session_state.session_id = None
@@ -1167,7 +1179,7 @@ with tabs[1]:  # COMPANIES
             with st.expander(f"📅 Contact timeline — {tname}", expanded=True):
                 close_col, _ = st.columns([1, 4])
                 with close_col:
-                    if st.button("Close timeline", key="close_timeline", use_container_width=True):
+                    if st.button("Close timeline", key="close_timeline", width="stretch"):
                         st.session_state.timeline_contact_id = None
                         st.session_state.timeline_company_id = None
                         st.session_state.timeline_contact_name = None
@@ -1222,7 +1234,7 @@ with tabs[1]:  # COMPANIES
         companies = search_companies(sq) if sq else get_all_companies()
 
         # Filter by platform presence (multi-select: show companies with presence on ALL selected platforms)
-        from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+        from integrations import load_domain_to_platforms, get_presence_for_domain
         _tracker_map = load_domain_to_platforms()
 
         _platform_labels = ["MSN", "Yahoo", "NewsBreak"]
@@ -1293,7 +1305,7 @@ with tabs[1]:  # COMPANIES
                         f"<span style='{right_style}'>{right_label}</span></div></div>",
                         unsafe_allow_html=True)
                 with row_arrow:
-                    if st.button("→", key=f"comp_go_{comp['id']}", use_container_width=True, help="Open intelligence/brief for this company"):
+                    if st.button("→", key=f"comp_go_{comp['id']}", width="stretch", help="Open intelligence/brief for this company"):
                         st.session_state.sel_company = comp["id"]
                         st.session_state.sel_contact = None
                         st.session_state.session_id = None
@@ -1322,11 +1334,11 @@ with tabs[1]:  # COMPANIES
                                     update_contact_status(ct["id"], ns)
                                     st.rerun()
                             with cols[2]:
-                                if st.button("→", key=f"go_{ct['id']}", use_container_width=True):
+                                if st.button("→", key=f"go_{ct['id']}", width="stretch"):
                                     select_contact(comp["id"], ct["id"])
                                     st.rerun()
                             with cols[3]:
-                                if st.button("📅", key=f"tl_{ct['id']}", use_container_width=True, help="View contact timeline"):
+                                if st.button("📅", key=f"tl_{ct['id']}", width="stretch", help="View contact timeline"):
                                     st.session_state.timeline_contact_id = ct["id"]
                                     st.session_state.timeline_company_id = comp["id"]
                                     st.session_state.timeline_contact_name = ct.get("name", "Contact")
@@ -1476,7 +1488,7 @@ with tabs[2]:  # INTELLIGENCE
             st.caption(f"Recommended: **{_label}**")
             if _stored_rationale:
                 st.markdown(f"<div style='font-size:12px;color:var(--text-2);margin-bottom:8px;'>{_stored_rationale}</div>", unsafe_allow_html=True)
-        if has_perm("can_use_strategist") and st.button("Get recommendation" if not _stored_key else "Refresh recommendation", key="btn_offering_recommend", use_container_width=False, help="AI suggests MediaOS or Accelerate from company research and Drive context"):
+        if has_perm("can_use_strategist") and st.button("Get recommendation" if not _stored_key else "Refresh recommendation", key="btn_offering_recommend", width="content", help="AI suggests MediaOS or Accelerate from company research and Drive context"):
             try:
                 with st.spinner("Checking research and Drive..."):
                     _research_for_offering = (_extra_offering.get("research_full") or "").strip()
@@ -1570,7 +1582,7 @@ with tabs[2]:  # INTELLIGENCE
                     _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
                     if not _platform_presence:
                         try:
-                            from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                            from integrations import load_domain_to_platforms, get_presence_for_domain
                             _tracker_map = load_domain_to_platforms()
                             _research_target = comp.get("research_domain", comp.get("domain") or "")
                             _platform_presence = get_presence_for_domain(_research_target, _tracker_map) or {}
@@ -1647,7 +1659,7 @@ with tabs[2]:  # INTELLIGENCE
             st.caption("Edit in place (or by section below); **Save** writes to DB and Drive.")
             ref_col1, ref_col2, ref_col3 = st.columns([1, 1, 1])
             with ref_col1:
-                if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", use_container_width=False, help="Re-run with latest prompts and signals; overwrites current research"):
+                if has_perm("can_use_strategist") and st.button("🔬 Re-run deep research", key=f"rerun_res_doc_{cache_key}", width="content", help="Re-run with latest prompts and signals; overwrites current research"):
                     # Deep Research Trigger: NOT cached, always runs live
                     err_msg = None
                     result = None
@@ -1661,7 +1673,7 @@ with tabs[2]:  # INTELLIGENCE
                         _platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed, dict) else {}
                         if not _platform_presence:
                             try:
-                                from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                                from integrations import load_domain_to_platforms, get_presence_for_domain
                                 _tracker_map = load_domain_to_platforms()
                                 _research_target = comp.get("research_domain", comp.get("domain") or "")
                                 _platform_presence = get_presence_for_domain(_research_target, _tracker_map) or {}
@@ -1736,7 +1748,7 @@ with tabs[2]:  # INTELLIGENCE
                     else:
                         st.error("Research failed." + (f" {err_msg}" if err_msg else " Check ANTHROPIC_API_KEY in keys.env and that the model is available."))
             with ref_col2:
-                if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", use_container_width=False, help="Delete deep research (DB + session); Run deep research will be available again"):
+                if st.button("🗑 Delete research", key=f"delete_research_{cache_key}", width="content", help="Delete deep research (DB + session); Run deep research will be available again"):
                     # Delete from sessions.strategic_summary (canonical) — clear all sessions for this company so "researched" goes back to –
                     if cid:
                         for _sess in get_sessions_for_company(cid):
@@ -1800,7 +1812,7 @@ with tabs[2]:  # INTELLIGENCE
                         if _main_ed.get("social_from_search"):
                             _pp_ed["social_from_search"] = _main_ed["social_from_search"]
                 try:
-                    from tracker_sources import load_domain_to_platforms, get_presence_for_domain
+                    from integrations import load_domain_to_platforms, get_presence_for_domain
                     platform_presence = (_pp_ed.get("platform_presence") or {}) if isinstance(_pp_ed.get("platform_presence"), dict) else {}
                     if not platform_presence:
                         _tracker_map = load_domain_to_platforms()
@@ -1828,7 +1840,7 @@ with tabs[2]:  # INTELLIGENCE
 
                 # Dynamic platform analytics expander (Similarweb + presence signals)
                 platform_presence_analytics = (_pp_ed.get("platform_presence_analytics") or {}) if isinstance(_pp_ed, dict) else {}
-                if st.button("🔄 Refresh platform analytics", key=f"refresh_platform_analytics_{cache_key}", use_container_width=False):
+                if st.button("🔄 Refresh platform analytics", key=f"refresh_platform_analytics_{cache_key}", width="content"):
                     with st.spinner("Refreshing platform analytics..."):
                         fresh_analytics = build_platform_analytics_for_domain(
                             comp.get("domain", ""),
@@ -1886,11 +1898,11 @@ with tabs[2]:  # INTELLIGENCE
                                     pass
                     st.markdown("**Platform presence** (from CSV / sync)")
                     _df_pp = pd.DataFrame([_pp_table])
-                    st.dataframe(_df_pp, use_container_width=True, hide_index=True)
+                    st.dataframe(_df_pp, width="stretch", hide_index=True)
                     if _from_csv:
-                        st.caption("Source: social_from_search.csv (run sync_social_from_search_to_db.py to save to DB)")
+                        st.caption("Source: social_from_search.csv (run python standalone/social/sync_social_from_search_to_db.py to save to DB)")
                     elif not any(v and str(v).strip() and str(v) not in ("No", "—") for v in _pp_table.values()):
-                        st.caption("No data yet. Run sync_social_from_search_to_db.py after populating social_from_search.csv.")
+                        st.caption("No data yet. Run python standalone/social/sync_social_from_search_to_db.py after populating social_from_search.csv.")
 
                     st.markdown("---")
                     pa = platform_presence_analytics if isinstance(platform_presence_analytics, dict) else {}
@@ -2053,7 +2065,7 @@ with tabs[2]:  # INTELLIGENCE
                                 clear_ui_cache()
                                 st.rerun()
                             _pending = st.session_state.get(pending_key)
-                            if st.button("Save edit", key=f"research_sec_save_btn_{cache_key}_{i}", type="primary", use_container_width=True):
+                            if st.button("Save edit", key=f"research_sec_save_btn_{cache_key}_{i}", type="primary", width="stretch"):
                                 _to_apply = (_pending or effective_content or section_html or "").strip() or section_html or ""
                                 _new_overrides = dict(st.session_state.get(research_section_edits_key, {}))
                                 _new_overrides[i] = _to_apply
@@ -2084,7 +2096,7 @@ with tabs[2]:  # INTELLIGENCE
                 current_research_text = "\n\n".join(
                     f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
                 ).strip() if section_edits else research_full_display
-            if st.button("💾 Save", key=f"save_research_all_{cache_key}", use_container_width=True, help="Save research to DB and Drive (proper format with tables)"):
+            if st.button("💾 Save", key=f"save_research_all_{cache_key}", width="stretch", help="Save research to DB and Drive (proper format with tables)"):
                 _research = (current_research_text or research_full_display or "").strip()
                 if not _research:
                     st.warning("No research to save.")
@@ -2135,7 +2147,7 @@ with tabs[2]:  # INTELLIGENCE
                     label_visibility="collapsed",
                 )
             with cmd_col2:
-                run_cmd = st.button("Run", key=f"research_cmd_run_{cache_key}", type="primary", use_container_width=True)
+                run_cmd = st.button("Run", key=f"research_cmd_run_{cache_key}", type="primary", width="stretch")
             if run_cmd and (research_cmd or "").strip():
                 with st.spinner("Running command…"):
                     current_for_ai = (html_to_plain_text(current_research_text) if is_html_content(current_research_text) else current_research_text) or research_full_display
@@ -2157,7 +2169,7 @@ with tabs[2]:  # INTELLIGENCE
                     st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_content[:25000]}{'…' if len(cmd_content) > 25000 else ''}</div>", unsafe_allow_html=True)
                     app_col1, app_col2 = st.columns([1, 3])
                     with app_col1:
-                        if st.button("Add to research", key=f"cmd_append_{cache_key}", use_container_width=True, help="Append as next numbered section (8., 9., …) and save to DB"):
+                        if st.button("Add to research", key=f"cmd_append_{cache_key}", width="stretch", help="Append as next numbered section (8., 9., …) and save to DB"):
                             current = (current_research_text or research_full_display or "").strip()
                             plain_current = html_to_plain_text(current) if is_html_content(current) else current
                             next_num = get_next_section_number(plain_current or "")
@@ -2187,7 +2199,7 @@ with tabs[2]:  # INTELLIGENCE
                                 st.toast(f"Added as section {next_num} and saved. Full document updated.")
                                 st.rerun()
                     with app_col2:
-                        if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", use_container_width=True):
+                        if st.button("Dismiss", key=f"cmd_dismiss_{cache_key}", width="stretch"):
                             st.session_state.pop("research_command_result", None)
                             st.session_state.pop("research_command_result_cid", None)
                             st.rerun()
@@ -2296,7 +2308,7 @@ with tabs[2]:  # INTELLIGENCE
                         st.session_state.intel_lookup_lead = None
                         st.session_state.intel_person_brief = None
                         st.rerun()
-            if st.button("Dismiss", key="intel_dismiss_lead", use_container_width=True):
+            if st.button("Dismiss", key="intel_dismiss_lead", width="stretch"):
                 st.session_state.intel_lookup_lead = None
                 st.session_state.intel_person_brief = None
                 st.rerun()
@@ -2351,7 +2363,7 @@ with tabs[2]:  # INTELLIGENCE
                     f"{ct.get('role','')} · {ct.get('email','')} · {lt}</div></div>",
                     unsafe_allow_html=True)
             with ct2:
-                if st.button("Select" if not active else "✓", key=f"sct_{ct['id']}", use_container_width=True):
+                if st.button("Select" if not active else "✓", key=f"sct_{ct['id']}", width="stretch"):
                     select_contact(cid, ct["id"])
                     st.rerun()
 
@@ -2591,7 +2603,7 @@ with tabs[3]:  # STRATEGIST
                     "🔗 Extract contacts & find LinkedIn URLs",
                     key="btn_linkedin_lookup",
                     type="secondary",
-                    use_container_width=True,
+                    width="stretch",
                     help="Parse deep research for people (SPOC/stakeholder tables), then find their LinkedIn profiles via search.",
                 )
                 if do_linkedin_lookup:
@@ -2784,7 +2796,7 @@ with tabs[3]:  # STRATEGIST
                     _editor_key = f"strategist_contacts_editor_{research_cache_key}"
                     _edited_df = st.data_editor(
                         _table_df,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         num_rows="dynamic",
                         key=_editor_key,
@@ -2819,7 +2831,7 @@ with tabs[3]:  # STRATEGIST
                         st.toast("Contacts saved.")
                         st.rerun()
                 else:
-                    st.dataframe(_table_df, use_container_width=True, hide_index=True)
+                    st.dataframe(_table_df, width="stretch", hide_index=True)
                 if not from_extraction and display_list:
                     st.caption("Company contacts (from database). Use \"Extract contacts & find LinkedIn URLs\" above to pull from research.")
                 st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
@@ -2881,7 +2893,7 @@ with tabs[3]:  # STRATEGIST
                             key=add_input_key,
                             label_visibility="collapsed",
                         )
-                        add_btn = st.button("Add to list & find LinkedIn", key=f"linkedin_add_btn_{research_cache_key}", use_container_width=False)
+                        add_btn = st.button("Add to list & find LinkedIn", key=f"linkedin_add_btn_{research_cache_key}", width="content")
                         if add_btn and (add_val or "").strip():
                             raw = (add_val or "").strip()
                             raw_lower = raw.lower()
@@ -2977,7 +2989,7 @@ with tabs[3]:  # STRATEGIST
                                     unsafe_allow_html=True)
                             with row_col2:
                                 if name != "—":
-                                    if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", use_container_width=True, help="Re-run search for this person"):
+                                    if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", width="stretch", help="Re-run search for this person"):
                                         with st.spinner(f"Searching again for {name}…"):
                                             new_url = get_linkedin_url_for_contact(name, r.get("company") or comp.get("domain") or "")
                                         new_list = list(results_list)
@@ -2987,7 +2999,7 @@ with tabs[3]:  # STRATEGIST
                                         st.success("Updated." if new_url else "No new URL found.")
                                         st.rerun()
                             with row_col3:
-                                if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", use_container_width=True):
+                                if name != "—" and st.button("Add to company", key=f"add_contact_{linkedin_results_key}_{i}", width="stretch"):
                                     new_contact_id = upsert_contact(cid, name, role=role or None, linkedin=url or None)
                                     if new_contact_id:
                                         added_key = "strategist_added_for_signalhire"
@@ -3003,7 +3015,7 @@ with tabs[3]:  # STRATEGIST
                                     st.success(f"Added **{name}** to company. Use the block below to get email (SignalHire) for this contact.")
                                     st.rerun()
                             with row_col4:
-                                if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", use_container_width=True, help="Remove from list"):
+                                if st.button("🗑", key=f"del_contact_{linkedin_results_key}_{i}", width="stretch", help="Remove from list"):
                                     new_list = [x for j, x in enumerate(results_list) if j != i]
                                     st.session_state[linkedin_results_key] = new_list
                                     _persist_linkedin_results(new_list)
@@ -3011,7 +3023,7 @@ with tabs[3]:  # STRATEGIST
                                     st.rerun()
                         # SignalHire: callback URL for localhost use ngrok and set SIGNALHIRE_CALLBACK_BASE_URL in keys.env
                         _callback_url = (SIGNALHIRE_CALLBACK_BASE_URL + "/api/signalhire-callback") if (SIGNALHIRE_CALLBACK_BASE_URL and SIGNALHIRE_CALLBACK_BASE_URL.strip().startswith("http")) else None
-                        if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", use_container_width=True, help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
+                        if st.button("📧 Get emails (SignalHire)", key="signalhire_bulk_enrich", width="stretch", help="Enrich all contacts with LinkedIn URLs via SignalHire; results save to the table below and persist when you come back. On localhost: run python standalone/sync/signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL."):
                             _with_url = [(_i, _r) for _i, _r in enumerate(results_list) if (_r.get("linkedin_url") or "").strip() and _linkedin_result_matches_company(_r.get("company"), comp)]
                             if not _with_url:
                                 st.warning("No contacts with LinkedIn URLs in the list.")
@@ -3042,7 +3054,7 @@ with tabs[3]:  # STRATEGIST
                                 _persist_linkedin_results(_new_list)
                                 st.success(f"Enrichment run for {len(_with_url)} contact(s). Refresh in a moment if any are pending (callback).")
                                 st.rerun()
-                        st.caption("On localhost: run `python signalhire_callback_server.py` and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
+                        st.caption("On localhost: run python standalone/sync/signalhire_callback_server.py and set SIGNALHIRE_CALLBACK_BASE_URL to your ngrok URL in keys.env.")
 
                         # ── Added to company: dedicated SignalHire block per contact ──
                         added_key = "strategist_added_for_signalhire"
@@ -3085,7 +3097,7 @@ with tabs[3]:  # STRATEGIST
                                     if _url_d:
                                         if _a.get("enrichment_request_id"):
                                             st.caption("Pending… refresh in a moment.")
-                                        elif st.button("📧 Get email (SignalHire)", key=f"added_signalhire_{cid}_{_a['contact_id']}_{_aidx}", use_container_width=True, help="Fetch email/phone for this contact"):
+                                        elif st.button("📧 Get email (SignalHire)", key=f"added_signalhire_{cid}_{_a['contact_id']}_{_aidx}", width="stretch", help="Fetch email/phone for this contact"):
                                             _rec_id, _req_id, _status = request_enrichment(_url_d, user["id"], callback_url=_callback_url)
                                             if _status == "completed" and _rec_id:
                                                 try:
@@ -3122,12 +3134,12 @@ with tabs[3]:  # STRATEGIST
 
                     clear_col, save_col = st.columns(2)
                     with clear_col:
-                        if st.button("Clear results", key="clear_linkedin_lookup", use_container_width=True):
+                        if st.button("Clear results", key="clear_linkedin_lookup", width="stretch"):
                             st.session_state.pop(linkedin_results_key, None)
                             _persist_linkedin_results([])
                             st.rerun()
                     with save_col:
-                        if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", use_container_width=True, help="Optionally save every contact in the list under the current SPOC (separate from Add to company)."):
+                        if st.button("Save all to DB (under this SPOC)", key="save_all_spoc_contacts", width="stretch", help="Optionally save every contact in the list under the current SPOC (separate from Add to company)."):
                             for r in results_list:
                                 nm = (r.get("name") or "").strip()
                                 if not nm:
@@ -3183,7 +3195,7 @@ with tabs[3]:  # STRATEGIST
                                 f"<div style='font-size:11px;'>{'<a href=\"' + _linkedin + '\" target=\"_blank\">LinkedIn</a>' if _linkedin else '—'}</div></div>",
                                 unsafe_allow_html=True)
                         with _col2:
-                            if _linkedin and st.button("Get email (SignalHire)", key=f"spoc_signalhire_{ctid}_{_idx}_{s.get('id')}", use_container_width=True, help="Fetch email/phone via SignalHire for this saved contact"):
+                            if _linkedin and st.button("Get email (SignalHire)", key=f"spoc_signalhire_{ctid}_{_idx}_{s.get('id')}", width="stretch", help="Fetch email/phone via SignalHire for this saved contact"):
                                 _sname = (s.get("name") or "").strip()
                                 if not _sname:
                                     st.warning("Contact has no name.")
@@ -3324,7 +3336,7 @@ with tabs[3]:  # STRATEGIST
                 research_key = f"recipient_research_{ctid}"
                 research = None
                 try:
-                    from recipient_research import research_recipient, format_time_ago
+                    from integrations import research_recipient, format_time_ago
                     
                     # Initialize or load research
                     if research_key not in st.session_state:
@@ -3428,19 +3440,19 @@ with tabs[3]:  # STRATEGIST
                 st.markdown("---")
                 q1, q2, q3, q4, q5 = st.columns(5)
                 with q1:
-                    if st.button("💬 LinkedIn", key="qa1", use_container_width=True):
+                    if st.button("💬 LinkedIn", key="qa1", width="stretch"):
                         st.session_state.qa = "Draft a LinkedIn connection request for this contact. Under 300 characters. Specific to research."
                 with q2:
-                    if st.button("📧 Email", key="qa2", use_container_width=True):
+                    if st.button("📧 Email", key="qa2", width="stretch"):
                         st.session_state.qa = "Draft the initial outreach email with subject line. Human and direct."
                 with q3:
-                    if st.button("⏰ Timing", key="qa3", use_container_width=True):
+                    if st.button("⏰ Timing", key="qa3", width="stretch"):
                         st.session_state.qa = "What's the optimal day and time for first outreach? Specific: day, time, timezone."
                 with q4:
-                    if st.button("📋 Sequence", key="qa4", use_container_width=True):
+                    if st.button("📋 Sequence", key="qa4", width="stretch"):
                         st.session_state.qa = "Design a 4-touch outreach sequence with timing, channel, and angle per touch."
                 with q5:
-                    if st.button("🎯 Full Plan", key="gen_plan", use_container_width=True):
+                    if st.button("🎯 Full Plan", key="gen_plan", width="stretch"):
                         if _is_placeholder_contact(ct_ctx, comp):
                             st.warning("Select a specific SPOC with a real name and LinkedIn. Current contact looks like a placeholder (e.g. domain as name).")
                         else:
@@ -3512,7 +3524,7 @@ with tabs[3]:  # STRATEGIST
 
                     pc1, pc2 = st.columns(2)
                     with pc1:
-                        if st.button("✅ Add Full Plan to Timeline", key="add_plan", use_container_width=True, type="primary"):
+                        if st.button("✅ Add Full Plan to Timeline", key="add_plan", width="stretch", type="primary"):
                             actions_for_db = []
                             for step in plan:
                                 actions_for_db.append({
@@ -3537,21 +3549,27 @@ with tabs[3]:  # STRATEGIST
                                 data=ics,
                                 file_name=f"lh2_{comp.get('domain','outreach')}_plan.ics",
                                 mime="text/calendar",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         with c2:
-                            if st.button("❌ Discard", key="discard_plan", use_container_width=True):
+                            if st.button("❌ Discard", key="discard_plan", width="stretch"):
                                 st.session_state.pending_plan = None
                                 st.rerun()
 
                 # ── Chat messages ──
-                for m in st.session_state.chat_messages:
+                _sender_id = st.session_state.get("sender_id") or user.get("id")
+                chat_list = st.session_state.chat_messages
+                for idx, m in enumerate(chat_list):
                     ts = (m.get("created_at") or "")
                     ts_short = ts[11:16] if len(ts) > 16 else ""
                     with st.chat_message(m["role"]):
                         st.markdown(m["content"])
                         if ts_short:
                             st.markdown(f"<div style='font-size:10px;color:var(--text-3);margin-top:4px;'>{ts_short}</div>", unsafe_allow_html=True)
+                        # Add to Action: show only on the latest assistant message (directly under the draft)
+                        is_last = idx == len(chat_list) - 1
+                        if is_last and m.get("role") == "assistant" and sid and _sender_id and (m.get("content") or "").strip():
+                            render_add_to_action_ui(sid, _sender_id, chat_list, key_suffix="last")
 
                 # ── Input ──
                 qa = st.session_state.pop("qa", None)
@@ -3587,8 +3605,11 @@ with tabs[3]:  # STRATEGIST
                                 ph.markdown("".join(chunks) + "▌")
                             response = "".join(chunks)
                             ph.markdown(response)
-                        save_message(sid, "assistant", response)
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+                            save_message(sid, "assistant", response)
+                            st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
+                            # Add to Action: show under this draft immediately (no refresh needed)
+                            if sid and _sender_id and (response or "").strip():
+                                render_add_to_action_ui(sid, _sender_id, st.session_state.chat_messages, key_suffix="new")
 
                         # If user asked to edit sequence drafts, apply targeted rewrite directly to stored steps.
                         if _is_sequence_edit_request(prompt):
@@ -4114,7 +4135,7 @@ def render_spoc_row(row, today):
             else:
                 st.markdown(f"<div class='spoc-card-next'>{html_module.escape(next_step_display)}</div>", unsafe_allow_html=True)
         with c_del:
-            if ps and st.button("🗑️", key=f"spoc_del_{ps.get('id')}_{ctd['id']}", help="Delete this SPOC", use_container_width=True):
+            if ps and st.button("🗑️", key=f"spoc_del_{ps.get('id')}_{ctd['id']}", help="Delete this SPOC", width="stretch"):
                 from services.cache_registry import invalidate_group
                 if delete_spoc_contact(ps.get("id")):
                     invalidate_group("spoc")  # Only clear SPOC caches
@@ -4508,7 +4529,7 @@ with tabs[11]:  # BULK IMPORT
         parent_options = [""] + list(existing_parents) + [p for p in sorted(set(new_parent_names)) if (p or "").strip() and (p or "").strip() not in existing_parents]
         edited = st.data_editor(
             df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "do_import": st.column_config.CheckboxColumn("Import", help="Uncheck to skip"),

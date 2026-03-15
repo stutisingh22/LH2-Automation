@@ -14,7 +14,7 @@ from db_ops import (
     get_memory_events,
     get_session_summary,
 )
-from drive_sync import list_drive_files
+from integrations.drive import list_drive_files
 
 
 # Timeline item type labels and display order for sorting by type when ts equal

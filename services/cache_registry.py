@@ -99,21 +99,6 @@ def invalidate_multiple(*group_names):
         invalidate_group(group_name)
 
 
-def get_registered_caches(group_name):
-    """
-    Get list of registered cache functions for a group.
-    
-    Useful for debugging and verification.
-    
-    Args:
-        group_name: Cache group name
-        
-    Returns:
-        List of cached function objects
-    """
-    return CACHE_GROUPS.get(group_name, [])
-
-
 def clear_all_caches():
     """
     Nuclear option: clear ALL registered caches.

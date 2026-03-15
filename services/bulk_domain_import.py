@@ -18,16 +18,21 @@ import streamlit as st
 
 from config import normalize_domain
 from db_ops import get_company_by_domain, upsert_company, delete_company_by_domain
-from db_advisor import (
+from db_ops import (
     get_advisor_company_by_domain, upsert_advisor_company, delete_advisor_company,
     get_or_create_advisor_company_for_parent, delete_advisor_parent,
 )
-from notion_sync import create_notion_contact_page, archive_notion_page
-from notion_sync_advisor import create_notion_advisor_page, archive_notion_advisor_page
-from ai_engine import classify_domains_independent_or_media_house, classify_entries_independent_or_media_house
+from integrations import (
+    create_notion_contact_page,
+    archive_notion_page,
+    create_notion_advisor_page,
+    archive_notion_advisor_page,
+    classify_domains_independent_or_media_house,
+    classify_entries_independent_or_media_house,
+    verify_parent_from_web,
+)
 from services.ui_data_loader import clear_ui_cache, load_advisor_parents_with_children
 from services.cache_registry import invalidate_group
-from services.ownership_verifier import verify_parent_from_web
 
 log = logging.getLogger(__name__)
 
