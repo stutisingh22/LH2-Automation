@@ -6,7 +6,9 @@ assistant message), this module provides an "Add to Action" flow similar to
 "Add Full Plan to Timeline": create a new sequence with this draft, or overwrite
 a specific email/step in an existing sequence.
 
-All UI and logic for this feature lives here so apps.py stays manageable.
+Also adds deck links, portfolio photo HTML, and Save to Gmail for email drafts
+(same behavior as Full Plan) so the latest draft can be viewed with links and
+saved to Gmail with injection applied.
 """
 
 import streamlit as st
@@ -16,9 +18,33 @@ from db_ops import (
     get_active_sequences,
     get_sequence_actions,
     update_action,
+    get_all_users,
 )
+from integrations import parse_email_content, create_gmail_draft
+from services.deck_links import inject_deck_links_into_email_body
 from services.ui_data_loader import clear_ui_cache
-from ui_helpers import get_add_to_action_labels
+from ui_helpers import get_add_to_action_labels, display_full_name
+
+
+def get_cleaned_draft_for_save(draft_content):
+    """
+    Return draft content with headers, footer, platform notes, and content after
+    the signature (e.g. IMPROVEMENTS MADE:) stripped. Use for Save to Gmail,
+    expander display, Add to Action, and Overwrite. Returns full draft text
+    (Subject: ... + body) when subject is present, else body only.
+    """
+    if not (draft_content or "").strip():
+        return draft_content or ""
+    draft_plain = _markdown_to_plain(draft_content)
+    subj, bod = parse_email_content(draft_plain)
+    bod, extracted_subj = _strip_strategist_draft_headers_and_footer(bod or "")
+    if extracted_subj is not None:
+        subj = extracted_subj
+    bod = _strip_platform_note_lines(bod or "")
+    bod = _strip_content_after_signature(bod or "")
+    if (subj or "").strip():
+        return (f"Subject: {subj.strip()}\n\n{bod or ''}").strip()
+    return (bod or "").strip()
 
 
 def get_latest_assistant_draft_content(chat_messages):
@@ -70,11 +96,243 @@ def overwrite_sequence_step(action_id, draft_content):
     return True
 
 
-def render_add_to_action_ui(session_id, sender_id, chat_messages, key_suffix="last"):
+def _strip_strategist_draft_headers_and_footer(body):
+    """
+    Remove from body: (1) leading 'Email N — ...' and 'Subject: ...' lines so expansion
+    doesn't show them; (2) trailing bullet list of deck names (not required footer).
+    Returns (cleaned_body, extracted_subject_or_none). If subject was found in the
+    leading block, second value is that subject; else None (caller keeps existing subject).
+    """
+    import re
+    if not (body or "").strip():
+        return body or "", None
+    lines = (body or "").strip().split("\n")
+    extracted_subject = None
+    start = 0
+    i = 0
+    while i < len(lines):
+        s = (lines[i] or "").strip()
+        if re.match(r"^Email\s+\d+\s*—\s*.+", s, re.IGNORECASE):
+            start = i + 1
+            i += 1
+            continue
+        if s.lower().startswith("subject:") and extracted_subject is None:
+            rest = s.split(":", 1)[-1].strip()
+            if rest:
+                extracted_subject = rest
+            else:
+                for j in range(i + 1, len(lines)):
+                    next_line = (lines[j] or "").strip()
+                    if next_line and not next_line.lower().startswith("subject:"):
+                        extracted_subject = next_line
+                        i = j
+                        break
+            start = i + 1
+            i += 1
+            continue
+        if not s:
+            start = i + 1
+            i += 1
+            continue
+        start = i
+        break
+    body_lines = lines[start:]
+    # Remove trailing footer: bullet lines like "- LH2 Accelerate Deck", "- Case Studies Deck"
+    while body_lines:
+        last = (body_lines[-1] or "").strip()
+        if re.match(r"^-\s+.+", last) and (
+            "deck" in last.lower() or "case study" in last.lower() or "portfolio" in last.lower()
+        ):
+            body_lines.pop()
+            continue
+        break
+    # Remove trailing blank lines after footer
+    while body_lines and not (body_lines[-1] or "").strip():
+        body_lines.pop()
+    return "\n".join(body_lines).strip(), extracted_subject
+
+
+def _strip_platform_note_lines(body):
+    """Remove 'Note: ... portfolio image ... saved to Gmail / deck links ...' so it never appears in the draft."""
+    import re
+    if not (body or "").strip():
+        return body or ""
+    lines = (body or "").split("\n")
+    out = []
+    for line in lines:
+        s = (line or "").strip()
+        if re.match(r"^Note\s*:\s*", s, re.IGNORECASE) and (
+            "automatically appear" in s.lower()
+            or "deck links" in s.lower()
+            or "saved to gmail" in s.lower()
+            or "portfolio numbers image" in s.lower()
+        ):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _strip_content_after_signature(body):
+    """
+    Strip anything after the email sign-off (Best, / Cheers, / Thanks, etc.) and signature lines.
+    Removes meta sections like "IMPROVEMENTS MADE:", "SUMMARY:", numbered lists, etc., so they
+    never appear in the expander, Save to Gmail, or Add to Action/Timeline.
+    """
+    import re
+    if not (body or "").strip():
+        return body or ""
+    lines = (body or "").split("\n")
+    sign_offs = ("best,", "cheers,", "thanks,", "regards,", "sincerely,", "kind regards,")
+    meta_starters = (
+        "improvements made",
+        "improvements:",
+        "summary:",
+        "summary ",
+        "note:",
+        "---",
+    )
+    out = []
+    seen_sign_off = False
+    signature_lines_left = 5
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        s = (line or "").strip()
+        if not seen_sign_off:
+            if s.lower().rstrip(",").strip() in sign_offs or (
+                len(s) < 20
+                and s.lower().startswith(("best", "cheers", "thanks", "regards", "sincerely", "kind regards"))
+                and (s.endswith(",") or not s.endswith("."))
+            ):
+                seen_sign_off = True
+                out.append(line)
+                signature_lines_left = 5
+                i += 1
+                continue
+            out.append(line)
+            i += 1
+            continue
+        # Past sign-off: keep only blank or short signature lines (name, company)
+        if not s:
+            out.append(line)
+            i += 1
+            continue
+        if len(s) >= 60:
+            # Long line after sign-off = likely meta section start; strip from here
+            break
+        s_lower = s.lower()
+        if any(s_lower.startswith(m) for m in meta_starters) or re.match(r"^\d+\.\s", s):
+            break
+        if signature_lines_left > 0:
+            out.append(line)
+            signature_lines_left -= 1
+            i += 1
+            continue
+        # Extra short line after we've used signature allowance — still keep if it looks like name/company
+        if len(s) < 40:
+            out.append(line)
+        i += 1
+    return "\n".join(out).strip()
+
+
+def _markdown_to_plain(text):
+    """Strip Markdown so draft saves as clean plain text (no ** or ### in Gmail)."""
+    import re
+    if not (text or "").strip():
+        return text or ""
+    t = text
+    # Bold: **x** or __x__ -> x
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+    t = re.sub(r"__([^_]+)__", r"\1", t)
+    # Italic: *x* or _x_ -> x (single; avoid breaking **)
+    t = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", t)
+    t = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", t)
+    # Headers: ### x -> x
+    t = re.sub(r"^#{1,6}\s+", "", t, flags=re.MULTILINE)
+    # Horizontal rule
+    t = re.sub(r"^\s*---\s*$", "", t, flags=re.MULTILINE)
+    return t.strip()
+
+
+def _render_save_to_gmail_chat(to_email, subject, body, draft_id, product_key=None, step_index=None, lead_brand=None):
+    """Save to Gmail UI for strategist chat (no app_helpers dependency). Deck links + photo applied."""
+    all_users = get_all_users()
+    if not all_users:
+        return
+    options = []
+    for u in all_users:
+        key = (u.get("email") or "").strip() or (u.get("username") or str(u["id"]))
+        label = (u.get("email") or display_full_name(u.get("username")) or f"User {u['id']}")
+        options.append((key, label))
+    if not options:
+        return
+    st.markdown("<div class='sequence-step-divider' style='margin-top:0;'></div>", unsafe_allow_html=True)
+    st.markdown("**Save to Gmail**", unsafe_allow_html=True)
+    gcol1, gcol2 = st.columns([2, 1])
+    with gcol1:
+        gmail_sel = st.selectbox(
+            "Gmail account",
+            options=[o[0] for o in options],
+            format_func=lambda x: next((o[1] for o in options if o[0] == x), x),
+            index=0,
+            key=f"gmail_account_{draft_id}",
+            label_visibility="collapsed",
+        )
+    with gcol2:
+        has_to_email = bool((to_email or "").strip())
+        disabled = not (subject or body)
+        if not has_to_email:
+            st.caption("Recipient can be added in Gmail if needed.")
+        if st.button("Save to Gmail Drafts", key=f"gmail_save_{draft_id}", type="primary", use_container_width=True, disabled=disabled):
+            body_plain = _markdown_to_plain(body or "")
+            body_html = None
+            try:
+                body_html = inject_deck_links_into_email_body(
+                    body_plain, product_key=product_key, step_index=step_index, lead_brand=lead_brand
+                )
+                if not (body_html or "").strip():
+                    body_html = None
+            except Exception:
+                body_html = None
+            subject_plain = _markdown_to_plain(subject or "")
+            out = create_gmail_draft(
+                gmail_sel, to_email or "", subject_plain, body_plain, body_html=body_html
+            )
+            if out.get("success"):
+                st.success("Draft saved to Gmail.")
+            else:
+                st.error(out.get("error") or "Authentication required.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _draft_parses_as_email(draft_content):
+    """True if draft looks like an email (has Subject: and/or body)."""
+    if not (draft_content or "").strip():
+        return False
+    subj, bod = parse_email_content(draft_content)
+    return bool((subj or "").strip() or (bod or "").strip())
+
+
+def render_add_to_action_ui(
+    session_id,
+    sender_id,
+    chat_messages,
+    key_suffix="last",
+    product_key=None,
+    step_index=5,
+    to_email=None,
+    lead_brand=None,
+    save_to_gmail_fn=None,
+):
     """
     Render "Add to Action" for the Strategist chat: show a button and flow only when
     the latest message is from the assistant (the latest draft). User can either
     create a new sequence with this draft or overwrite a step in an existing sequence.
+
+    When product_key and/or to_email are provided and the draft parses as an email,
+    also shows "Read full message" (with deck links + portfolio photo HTML) and
+    "Save to Gmail". If save_to_gmail_fn is provided (e.g. apps._render_save_to_gmail),
+    that function is used so behavior matches Full Plan exactly; otherwise uses inline UI.
 
     key_suffix: unique suffix for widget keys so the same UI can be rendered in multiple
     places (e.g. in the message loop vs after streaming) without duplicate key errors.
@@ -85,6 +343,77 @@ def render_add_to_action_ui(session_id, sender_id, chat_messages, key_suffix="la
         return
 
     k = key_suffix  # short alias for key suffix
+
+    # Email-only: Read full message (deck links + photo) and Save to Gmail
+    is_email = _draft_parses_as_email(draft_content)
+    if is_email and (product_key or (to_email or "").strip()):
+        # Strip markdown first so "**Subject:**" becomes "Subject:" and parser can find it
+        draft_plain_for_parse = _markdown_to_plain(draft_content)
+        subj, bod = parse_email_content(draft_plain_for_parse)
+        bod, extracted_subj = _strip_strategist_draft_headers_and_footer(bod or "")
+        if extracted_subj is not None:
+            subj = extracted_subj
+        bod = _strip_platform_note_lines(bod or "")
+        bod = _strip_content_after_signature(bod or "")
+        bod_plain = _markdown_to_plain(bod or "")
+
+        # Step selector: Email 1 = step 2 (portfolio image), Email 2–5 = steps 3–6 (deck links)
+        step_options = [
+            labels.get("step_email_1", "Email 1 (opener — portfolio image included)"),
+            labels.get("step_email_2", "Email 2"),
+            labels.get("step_email_3", "Email 3"),
+            labels.get("step_email_4", "Email 4"),
+            labels.get("step_email_5", "Email 5"),
+        ]
+        step_choice = st.selectbox(
+            labels.get("treat_as_step", "Treat as step"),
+            options=list(range(5)),
+            format_func=lambda i: step_options[i],
+            index=0,
+            key=f"strategist_treat_as_step_{k}",
+        )
+        step_index_used = 2 + int(step_choice)  # 2 = Email 1, 3 = Email 2, ...
+
+        try:
+            bod_html = inject_deck_links_into_email_body(
+                bod_plain,
+                product_key=product_key,
+                step_index=step_index_used,
+                lead_brand=lead_brand,
+            )
+        except Exception:
+            bod_html = (bod_plain or "").replace("\n", "<br>\n")
+        with st.expander("📄 Read full message (with deck links)", expanded=False):
+            subj_display = _markdown_to_plain(subj or "") or "(none)"
+            st.markdown(
+                "<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;'>"
+                f"<div style='white-space:pre-wrap;'><b>Subject:</b> {subj_display}</div>"
+                "<div style='height:8px;'></div>"
+                f"<div style='white-space:normal;'>{bod_html}</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        # Use same Save to Gmail as Full Plan when provided (same code path = same image/link behavior)
+        if save_to_gmail_fn is not None:
+            save_to_gmail_fn(
+                to_email or "",
+                subj or "",
+                bod or "",
+                f"strategist_chat_{k}",
+                product_key=product_key,
+                step_index=step_index_used,
+                lead_brand=lead_brand,
+            )
+        else:
+            _render_save_to_gmail_chat(
+                to_email or "",
+                subj or "",
+                bod or "",
+                draft_id=f"strategist_chat_{k}",
+                product_key=product_key,
+                step_index=step_index_used,
+                lead_brand=lead_brand,
+            )
 
     # Session state key for expander open state and choices (suffixed so each call site has its own)
     key_open = f"strategist_add_to_action_open_{k}"
@@ -122,8 +451,9 @@ def render_add_to_action_ui(session_id, sender_id, chat_messages, key_suffix="la
                 key=f"add_to_action_channel_{k}",
             )
             if st.button(labels["confirm_new"], key=f"add_to_action_confirm_new_{k}", type="primary"):
+                cleaned = get_cleaned_draft_for_save(draft_content)
                 ids, seq_id = add_draft_as_new_sequence(
-                    session_id, sender_id, draft_content, channel=channel
+                    session_id, sender_id, cleaned or draft_content, channel=channel
                 )
                 if ids and seq_id:
                     clear_ui_cache()
@@ -172,10 +502,11 @@ def render_add_to_action_ui(session_id, sender_id, chat_messages, key_suffix="la
 
             if st.button(labels["confirm_overwrite"], key=f"add_to_action_confirm_overwrite_{k}", type="primary"):
                 if action_id:
-                    overwrite_sequence_step(action_id, draft_content)
+                    cleaned = get_cleaned_draft_for_save(draft_content)
+                    overwrite_sequence_step(action_id, cleaned or draft_content)
                     # Clear per-step UI state so Actions tab shows the new content
                     st.session_state.pop(f"draft_revisions_list_{action_id}", None)
-                    st.session_state[f"draft_original_{action_id}"] = draft_content.strip()
+                    st.session_state[f"draft_original_{action_id}"] = (cleaned or draft_content).strip()
                     st.session_state.pop(f"refine_version_sel_{action_id}", None)
                     clear_ui_cache()
                     st.session_state[key_open] = False

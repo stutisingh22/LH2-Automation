@@ -682,6 +682,12 @@ def get_add_to_action_labels():
         "success_new": "Created new sequence {seq_id}.",
         "success_overwrite": "Step updated with this draft.",
         "error_generic": "Something went wrong. Try again.",
+        "treat_as_step": "Treat as step",
+        "step_email_1": "Email 1 (opener — portfolio image included)",
+        "step_email_2": "Email 2",
+        "step_email_3": "Email 3",
+        "step_email_4": "Email 4",
+        "step_email_5": "Email 5",
     }
 
 

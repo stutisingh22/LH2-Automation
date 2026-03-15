@@ -3569,7 +3569,17 @@ with tabs[3]:  # STRATEGIST
                         # Add to Action: show only on the latest assistant message (directly under the draft)
                         is_last = idx == len(chat_list) - 1
                         if is_last and m.get("role") == "assistant" and sid and _sender_id and (m.get("content") or "").strip():
-                            render_add_to_action_ui(sid, _sender_id, chat_list, key_suffix="last")
+                            render_add_to_action_ui(
+                                sid,
+                                _sender_id,
+                                chat_list,
+                                key_suffix="last",
+                                product_key=_product_key_for_strategist,
+                                step_index=5,
+                                to_email=(ct_ctx.get("email") or "").strip() or None,
+                                lead_brand=None,
+                                save_to_gmail_fn=_render_save_to_gmail,
+                            )
 
                 # ── Input ──
                 qa = st.session_state.pop("qa", None)
@@ -3609,7 +3619,17 @@ with tabs[3]:  # STRATEGIST
                             st.session_state.chat_messages.append({"role": "assistant", "content": response, "created_at": datetime.utcnow().isoformat()})
                             # Add to Action: show under this draft immediately (no refresh needed)
                             if sid and _sender_id and (response or "").strip():
-                                render_add_to_action_ui(sid, _sender_id, st.session_state.chat_messages, key_suffix="new")
+                                render_add_to_action_ui(
+                                    sid,
+                                    _sender_id,
+                                    st.session_state.chat_messages,
+                                    key_suffix="new",
+                                    product_key=_product_key_for_strategist,
+                                    step_index=5,
+                                    to_email=(ct_ctx.get("email") or "").strip() or None,
+                                    lead_brand=None,
+                                    save_to_gmail_fn=_render_save_to_gmail,
+                                )
 
                         # If user asked to edit sequence drafts, apply targeted rewrite directly to stored steps.
                         if _is_sequence_edit_request(prompt):

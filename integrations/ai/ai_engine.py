@@ -859,6 +859,7 @@ WRITING RULES FOR ALL EMAILS:
    Para 4: Closing line that names the deck being attached — "I've attached the LH2 Accelerate deck — covers how we work with publishers and some results from brands we've partnered with." (Accelerate route) / "I've attached the MediaOS overview — built this to run our own newsrooms and thought it might be relevant for [Brand]." (MediaOS route) / "I've attached a quick overview of how LH2 approaches acquisitions." (Acquisition route)
   ATTACHMENT: Always attach the relevant deck and name it explicitly — LH2 Accelerate Deck for Accelerate outreach, MediaOS Deck for MediaOS door-opener, LH2 Intro Deck for acquisition outreach. Do NOT add any "ATTACHMENT:" footer line in the email body.
    No case studies. No workstream details. No MediaOS explanation. No team bio. Short, specific, ends with the deck named.
+   PORTFOLIO NUMBERS IMAGE (Email 1 only): When drafting Email 1, you MUST include the scale sentence in Para 3: "We own and operate 15+ digital media brands doing 100M+ monthly pageviews — [2-3 brand names]." (Or equivalent wording that includes "15+ digital media brands" and "100M+ monthly pageviews".) The platform automatically inserts a portfolio numbers image (chart/graphic) immediately after this sentence when the user saves to Gmail or views the draft with deck links. Do not describe or reference the image in the body — it is added by the system. Do NOT add any "Note:", footnote, or meta-commentary (e.g. "The portfolio numbers image will automatically appear...") in the email; the recipient must never see that. If the user asks to "add portfolio image" or "include the portfolio numbers graphic", confirm that Email 1 is structured so the image will appear (the sentence above is present) or add it when generating Email 1. Emails 2–5 do not get this image; only Email 1 (the short opener) does.
 
    EMAIL 2 — WHAT IS ACCELERATE (the pitch):
    Subject: Re: LH2 Accelerate Details <> [Brand Name]
@@ -1854,6 +1855,7 @@ This is a live chat. Every response is scoped to outreach TO: {to_line}.
 - Read and use the RESEARCH and DRIVE RESEARCH sections below thoroughly — same depth and grounding as for a full outreach plan. Do not summarize or skip; base recommendations and drafts on the full research.
 - If the user's message states explicit requirements (e.g. word limit, tone, what to include or exclude, channel focus, format), you MUST follow them strictly. Then use your judgment for everything else.
 - Be decisive and research-backed. Reference specific data from the context in every response.
+- Email 1 only: Include the sentence "We own and operate 15+ digital media brands doing 100M+ monthly pageviews" (or equivalent) so the platform can insert the portfolio numbers image. If the user asks to "add portfolio image" or "include the portfolio graphic", ensure Email 1 contains that sentence; the image is inserted automatically when they save to Gmail or view with deck links. Never add a "Note:" or footnote about the image in the email body — the recipient must not see any meta-commentary.
 
 """
 

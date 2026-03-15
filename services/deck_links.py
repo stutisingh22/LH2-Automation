@@ -53,23 +53,34 @@ def _maybe_insert_portfolio_numbers_image(body_plain: str, step_index=None) -> s
     if not img_url:
         return body_plain
 
-    # Find the specific portfolio sentence (we insert immediately after it).
+    # Find the portfolio scale sentence: exact marker first, then fallback for slight wording changes.
+    body = body_plain or ""
     marker = "We own and operate 15+ digital media brands doing 100M+ monthly pageviews"
-    if marker not in (body_plain or ""):
+    body_lower = body.lower()
+    if marker not in body and not ("15+ digital media brands" in body and "100m" in body_lower and "pageview" in body_lower):
         return body_plain
-
-    lines = (body_plain or "").split("\n")
+    lines = body.split("\n")
     out = []
     inserted = False
     for ln in lines:
         out.append(ln)
-        if (not inserted) and marker in ln:
-            # Insert token on its own line; rendering happens after escaping/linking.
+        if inserted:
+            continue
+        # Exact match (original behavior)
+        if marker in ln:
             out.append("")
             out.append(_PORTFOLIO_NUMBERS_IMG_TOKEN)
             out.append("")
             inserted = True
-    return "\n".join(out)
+            continue
+        # Fallback: line has both key phrases (handles "with" vs "doing", "pageviews" vs "pageviews", etc.)
+        ln_lower = (ln or "").lower()
+        if "15+ digital media brands" in (ln or "") and "100m" in ln_lower and "pageview" in ln_lower:
+            out.append("")
+            out.append(_PORTFOLIO_NUMBERS_IMG_TOKEN)
+            out.append("")
+            inserted = True
+    return "\n".join(out) if inserted else body_plain
 
 
 def _maybe_replace_close_with_attachment_sentence(body_plain: str, product_key=None, step_index=None, lead_brand=None) -> str:
@@ -287,6 +298,27 @@ def get_deck_links_for_context(product_key=None, step_index=None, lead_brand=Non
     return unique
 
 
+def _replace_portfolio_image_token(rendered: str, body_plain: str) -> str:
+    """Replace portfolio numbers image token in rendered HTML with <img> tag. Called for both link and no-link paths."""
+    if _PORTFOLIO_NUMBERS_IMG_TOKEN not in (body_plain or ""):
+        return rendered
+    links = _load_links_csv()
+    img_url = _direct_image_url((links.get("Portfolio Numbers") or "").strip())
+    if not img_url:
+        return rendered.replace(html.escape(_PORTFOLIO_NUMBERS_IMG_TOKEN), "").replace(
+            _PORTFOLIO_NUMBERS_IMG_TOKEN, ""
+        )
+    img_html = (
+        '<img src="' + html.escape(img_url, quote=True) + '" '
+        'alt="Portfolio numbers" '
+        'style="max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:8px;margin:8px 0 2px 0;" />'
+    )
+    # Replace both escaped and raw token (in case segment wasn't escaped)
+    out = rendered.replace(html.escape(_PORTFOLIO_NUMBERS_IMG_TOKEN), img_html)
+    out = out.replace(_PORTFOLIO_NUMBERS_IMG_TOKEN, img_html)
+    return out
+
+
 def inject_deck_links_into_email_body(body_plain, product_key=None, step_index=None, lead_brand=None):
     """
     Replace deck/portfolio phrases in body_plain with hyperlinks. Returns HTML body.
@@ -315,7 +347,9 @@ def inject_deck_links_into_email_body(body_plain, product_key=None, step_index=N
 
     pairs = get_deck_links_for_context(product_key, step_index, lead_brand)
     if not pairs:
-        return html.escape(body_plain).replace("\n", "<br>\n")
+        rendered = html.escape(body_plain).replace("\n", "<br>\n")
+        rendered = _replace_portfolio_image_token(rendered, body_plain)
+        return rendered
 
     # Find all phrase matches in original body (case-insensitive); collect (start, end, matched_text, url)
     matches = []
@@ -343,17 +377,5 @@ def inject_deck_links_into_email_body(body_plain, product_key=None, step_index=N
         out.append(html.escape(body_plain[pos:]))
     rendered = "".join(out).replace("\n", "<br>\n")
 
-    # Render the portfolio numbers image token as an <img> tag (URL is HTML-escaped).
-    if _PORTFOLIO_NUMBERS_IMG_TOKEN in (body_plain or ""):
-        links = _load_links_csv()
-        img_url = _direct_image_url((links.get("Portfolio Numbers") or "").strip())
-        if img_url:
-            img_html = (
-                '<img src="' + html.escape(img_url, quote=True) + '" '
-                'alt="Portfolio numbers" '
-                'style="max-width:100%;height:auto;border:1px solid #e5e7eb;border-radius:8px;margin:8px 0 2px 0;" />'
-            )
-            rendered = rendered.replace(html.escape(_PORTFOLIO_NUMBERS_IMG_TOKEN), img_html)
-        else:
-            rendered = rendered.replace(html.escape(_PORTFOLIO_NUMBERS_IMG_TOKEN), "")
+    rendered = _replace_portfolio_image_token(rendered, body_plain)
     return rendered
