@@ -11,6 +11,7 @@ Also adds deck links, portfolio photo HTML, and Save to Gmail for email drafts
 saved to Gmail with injection applied.
 """
 
+import re
 import streamlit as st
 
 from db_ops import (
@@ -61,6 +62,42 @@ def get_latest_assistant_draft_content(chat_messages):
     return content if content else None
 
 
+def parse_multi_email_sequence(draft_content):
+    """
+    If the draft contains multiple emails (e.g. "Email 1 — ...", "Email 2 — ..."),
+    split into a list of steps. Returns list of dicts: {step, email_num, content_draft, description}.
+    step is 2 for Email 1, 3 for Email 2, etc. (for deck_links step_index). Empty list if single or no emails.
+    """
+    if not (draft_content or "").strip():
+        return []
+    text = (draft_content or "").strip()
+    # Match line that starts with optional ** then "Email N —" or "Email N -"
+    pattern = re.compile(r"^(?:\*\*)?\s*Email\s+(\d+)\s*[—\-]\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+    matches = list(pattern.finditer(text))
+    if len(matches) < 2:
+        return []
+    steps = []
+    for i, m in enumerate(matches):
+        email_num = int(m.group(1))
+        if email_num < 1 or email_num > 5:
+            continue
+        # step_index for deck_links: Email 1 = 2, Email 2 = 3, ...
+        step = email_num + 1
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        desc_line = m.group(0).strip()
+        # Strip leading ** if present for description
+        description = re.sub(r"^\*\*\s*|\s*\*\*$", "", desc_line)
+        steps.append({
+            "step": step,
+            "email_num": email_num,
+            "content_draft": block,
+            "description": description,
+        })
+    return steps
+
+
 def add_draft_as_new_sequence(session_id, sender_id, draft_content, channel="Email", description=None):
     """
     Create a new sequence with a single step containing the draft.
@@ -94,6 +131,30 @@ def overwrite_sequence_step(action_id, draft_content):
         draft_original="",
     )
     return True
+
+
+def add_sequence_to_timeline(session_id, sender_id, steps):
+    """
+    Create one sequence with multiple steps (from parse_multi_email_sequence).
+    steps: list of dicts with content_draft, description. Each content_draft is cleaned before save.
+    Returns (list of action ids, sequence_id) or ([], None).
+    """
+    if not steps or not session_id or not sender_id:
+        return [], None
+    actions_list = []
+    for s in steps:
+        cleaned = get_cleaned_draft_for_save(s.get("content_draft") or "")
+        actions_list.append({
+            "action_type": "Outreach",
+            "channel": "Email",
+            "description": s.get("description") or f"Email {s.get('email_num', '?')}",
+            "status": "planned",
+            "content_sent": cleaned or (s.get("content_draft") or "").strip(),
+            "context_note": None,
+        })
+    if not actions_list:
+        return [], None
+    return bulk_log_actions(session_id, sender_id, actions_list)
 
 
 def _strip_strategist_draft_headers_and_footer(body):
@@ -343,11 +404,95 @@ def render_add_to_action_ui(
         return
 
     k = key_suffix  # short alias for key suffix
+    multi_steps = parse_multi_email_sequence(draft_content)
+    has_context = bool(product_key or (to_email or "").strip())
 
-    # Email-only: Read full message (deck links + photo) and Save to Gmail
-    is_email = _draft_parses_as_email(draft_content)
-    if is_email and (product_key or (to_email or "").strip()):
-        # Strip markdown first so "**Subject:**" becomes "Subject:" and parser can find it
+    # Multi-email sequence (3, 4, or 5 emails): render a block per email like Full Plan
+    if len(multi_steps) >= 2 and has_context:
+        st.markdown(
+            "<div style='background:var(--accent-bg);border:1px solid #c7d2fe;border-radius:var(--radius);"
+            "padding:16px;margin-bottom:12px;'>",
+            unsafe_allow_html=True,
+        )
+        for step in multi_steps:
+            with st.container():
+                st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
+                content_draft = (step.get("content_draft") or "").strip()
+                step_num = step.get("step", 2)
+                desc = step.get("description") or f"Email {step.get('email_num', '?')}"
+                preview_len = 80
+                st.markdown(
+                    f"<div class='sequence-step-header'>"
+                    f"<span style='font-size:13px;font-weight:600;'>"
+                    f"📧 Step {step_num}: {desc[:60]}{'...' if len(desc) > 60 else ''}</span></div>"
+                    f"<div class='sequence-step-divider'></div>",
+                    unsafe_allow_html=True,
+                )
+                if content_draft:
+                    draft_plain = _markdown_to_plain(content_draft)
+                    subj, bod = parse_email_content(draft_plain)
+                    bod, extracted_subj = _strip_strategist_draft_headers_and_footer(bod or "")
+                    if extracted_subj is not None:
+                        subj = extracted_subj
+                    bod = _strip_platform_note_lines(bod or "")
+                    bod = _strip_content_after_signature(bod or "")
+                    bod_plain = _markdown_to_plain(bod or "")
+                    try:
+                        bod_html = inject_deck_links_into_email_body(
+                            bod_plain,
+                            product_key=product_key,
+                            step_index=step_num,
+                            lead_brand=lead_brand,
+                        )
+                    except Exception:
+                        bod_html = (bod_plain or "").replace("\n", "<br>\n")
+                    with st.expander(
+                        f"📄 Read full message" + (f" — {content_draft[:preview_len]}..." if len(content_draft) > preview_len else ""),
+                        expanded=False,
+                        key=f"strategist_read_full_{k}_step{step_num}",
+                    ):
+                        subj_display = _markdown_to_plain(subj or "") or "(none)"
+                        st.markdown(
+                            "<div style='font-size:12px;background:#fff;padding:10px 12px;border-radius:6px;border:1px solid #e5e7eb;'>"
+                            f"<div style='white-space:pre-wrap;'><b>Subject:</b> {subj_display}</div>"
+                            "<div style='height:8px;'></div>"
+                            f"<div style='white-space:normal;'>{bod_html}</div>"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    if save_to_gmail_fn is not None:
+                        save_to_gmail_fn(
+                            to_email or "",
+                            subj or "",
+                            bod or "",
+                            f"strategist_chat_{k}_step{step_num}",
+                            product_key=product_key,
+                            step_index=step_num,
+                            lead_brand=lead_brand,
+                        )
+                    else:
+                        _render_save_to_gmail_chat(
+                            to_email or "",
+                            subj or "",
+                            bod or "",
+                            draft_id=f"strategist_chat_{k}_step{step_num}",
+                            product_key=product_key,
+                            step_index=step_num,
+                            lead_brand=lead_brand,
+                        )
+        if st.button("✅ Add full sequence to Timeline", key=f"add_full_seq_{k}", type="primary", use_container_width=True):
+            ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps)
+            if ids and seq_id:
+                clear_ui_cache()
+                st.session_state[f"strategist_add_to_action_open_{k}"] = False
+                st.success(f"Added {len(ids)} emails as sequence {seq_id}.")
+                st.rerun()
+            else:
+                st.error(labels["error_generic"])
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Single-email: Read full message (deck links + photo) and Save to Gmail
+    elif _draft_parses_as_email(draft_content) and has_context:
         draft_plain_for_parse = _markdown_to_plain(draft_content)
         subj, bod = parse_email_content(draft_plain_for_parse)
         bod, extracted_subj = _strip_strategist_draft_headers_and_footer(bod or "")
@@ -357,7 +502,6 @@ def render_add_to_action_ui(
         bod = _strip_content_after_signature(bod or "")
         bod_plain = _markdown_to_plain(bod or "")
 
-        # Step selector: Email 1 = step 2 (portfolio image), Email 2–5 = steps 3–6 (deck links)
         step_options = [
             labels.get("step_email_1", "Email 1 (opener — portfolio image included)"),
             labels.get("step_email_2", "Email 2"),
@@ -372,7 +516,7 @@ def render_add_to_action_ui(
             index=0,
             key=f"strategist_treat_as_step_{k}",
         )
-        step_index_used = 2 + int(step_choice)  # 2 = Email 1, 3 = Email 2, ...
+        step_index_used = 2 + int(step_choice)
 
         try:
             bod_html = inject_deck_links_into_email_body(
@@ -393,7 +537,6 @@ def render_add_to_action_ui(
                 "</div>",
                 unsafe_allow_html=True,
             )
-        # Use same Save to Gmail as Full Plan when provided (same code path = same image/link behavior)
         if save_to_gmail_fn is not None:
             save_to_gmail_fn(
                 to_email or "",
@@ -445,23 +588,34 @@ def render_add_to_action_ui(
         st.session_state[key_mode] = mode
 
         if mode == "new":
-            channel = st.selectbox(
-                labels["channel_label"],
-                options=["Email", "LinkedIn"],
-                key=f"add_to_action_channel_{k}",
-            )
-            if st.button(labels["confirm_new"], key=f"add_to_action_confirm_new_{k}", type="primary"):
-                cleaned = get_cleaned_draft_for_save(draft_content)
-                ids, seq_id = add_draft_as_new_sequence(
-                    session_id, sender_id, cleaned or draft_content, channel=channel
+            if multi_steps:
+                if st.button("Add full sequence to Timeline", key=f"add_full_seq_expander_{k}", type="primary"):
+                    ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps)
+                    if ids and seq_id:
+                        clear_ui_cache()
+                        st.session_state[key_open] = False
+                        st.success(f"Added {len(ids)} emails as sequence {seq_id}.")
+                        st.rerun()
+                    else:
+                        st.error(labels["error_generic"])
+            else:
+                channel = st.selectbox(
+                    labels["channel_label"],
+                    options=["Email", "LinkedIn"],
+                    key=f"add_to_action_channel_{k}",
                 )
-                if ids and seq_id:
-                    clear_ui_cache()
-                    st.session_state[key_open] = False
-                    st.success(labels["success_new"].format(seq_id=seq_id))
-                    st.rerun()
-                else:
-                    st.error(labels["error_generic"])
+                if st.button(labels["confirm_new"], key=f"add_to_action_confirm_new_{k}", type="primary"):
+                    cleaned = get_cleaned_draft_for_save(draft_content)
+                    ids, seq_id = add_draft_as_new_sequence(
+                        session_id, sender_id, cleaned or draft_content, channel=channel
+                    )
+                    if ids and seq_id:
+                        clear_ui_cache()
+                        st.session_state[key_open] = False
+                        st.success(labels["success_new"].format(seq_id=seq_id))
+                        st.rerun()
+                    else:
+                        st.error(labels["error_generic"])
 
         else:
             sequences = get_active_sequences(session_id) if session_id else []
@@ -480,7 +634,6 @@ def render_add_to_action_ui(
             if not seq_id:
                 return
             steps = get_sequence_actions(session_id, seq_id)
-            # Only steps that can sensibly be overwritten (e.g. have a channel)
             step_options = []
             for s in steps:
                 ch = (s.get("channel") or "").strip() or "Step"
@@ -500,13 +653,25 @@ def render_add_to_action_ui(
             action_id = step_ids[chosen_idx] if chosen_idx is not None else None
             st.session_state[key_step] = action_id
 
+            # When we have a multi-email sequence, pick which email's content to use for overwrite
+            content_to_overwrite = draft_content
+            if multi_steps:
+                email_choice = st.selectbox(
+                    "Use which email from the sequence?",
+                    options=list(range(len(multi_steps))),
+                    format_func=lambda i: multi_steps[i].get("description") or f"Email {multi_steps[i].get('email_num', i + 1)}",
+                    key=f"add_to_action_which_email_{k}",
+                )
+                chosen_step = multi_steps[email_choice]
+                content_to_overwrite = get_cleaned_draft_for_save(chosen_step.get("content_draft") or "")
+
             if st.button(labels["confirm_overwrite"], key=f"add_to_action_confirm_overwrite_{k}", type="primary"):
                 if action_id:
-                    cleaned = get_cleaned_draft_for_save(draft_content)
-                    overwrite_sequence_step(action_id, cleaned or draft_content)
-                    # Clear per-step UI state so Actions tab shows the new content
+                    if not multi_steps:
+                        content_to_overwrite = get_cleaned_draft_for_save(draft_content)
+                    overwrite_sequence_step(action_id, content_to_overwrite or draft_content)
                     st.session_state.pop(f"draft_revisions_list_{action_id}", None)
-                    st.session_state[f"draft_original_{action_id}"] = (cleaned or draft_content).strip()
+                    st.session_state[f"draft_original_{action_id}"] = (content_to_overwrite or draft_content).strip()
                     st.session_state.pop(f"refine_version_sel_{action_id}", None)
                     clear_ui_cache()
                     st.session_state[key_open] = False
