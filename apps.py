@@ -1558,10 +1558,10 @@ with tabs[2]:  # INTELLIGENCE
                 research_full_db = _from_session
                 st.session_state.pop(_fresh_key, None)
 
-        # On server, JSONB round-trip for advisor_companies can strip newlines in research_full and break table rendering.
-        # When we have a stored HTML copy, use it for display so tables stay intact; keep research_full for edit/export.
+        # On server, JSONB round-trip can strip newlines in research_full and break table/markdown rendering.
+        # When we have a stored HTML copy (markdown→HTML), use it for display so tables and formatting stay intact.
         research_display_html = (extra.get("research_display_html") or "").strip()
-        if is_advisor and research_display_html and is_html_content(research_display_html):
+        if research_display_html and is_html_content(research_display_html):
             research_full_display = research_display_html
         else:
             research_full_display = research_full_db
@@ -1618,9 +1618,11 @@ with tabs[2]:  # INTELLIGENCE
                             "updated_at": datetime.utcnow().isoformat(),
                         }
 
-                    # Also save to company.extra_data for backward compatibility
+                    # Also save to company.extra_data for backward compatibility.
+                    # Store research_display_html (markdown→HTML) so display keeps proper formatting
+                    # after JSONB round-trip (which can strip newlines and break tables).
+                    _disp_html = research_display_to_editor_html(result) if result else ""
                     if is_advisor:
-                        _disp_html = research_display_to_editor_html(result) if result else ""
                         merge_advisor_company_extra_data(aid, {
                             "research_full": result,
                             "research_full_updated_at": datetime.utcnow().isoformat(),
@@ -1633,6 +1635,7 @@ with tabs[2]:  # INTELLIGENCE
                             "research_full": result,
                             "research_full_updated_at": datetime.utcnow().isoformat(),
                             "platform_presence_analytics": platform_analytics_snapshot,
+                            "research_display_html": _disp_html,
                         })
                     
                     # Clear old caches
@@ -1709,9 +1712,10 @@ with tabs[2]:  # INTELLIGENCE
                                 "updated_at": datetime.utcnow().isoformat(),
                             }
 
-                        # Also save to company.extra_data for backward compatibility
+                        # Also save to company.extra_data for backward compatibility.
+                        # Store research_display_html so display keeps proper markdown/table formatting after DB round-trip.
+                        _disp_html = research_display_to_editor_html(result) if result else ""
                         if is_advisor:
-                            _disp_html = research_display_to_editor_html(result) if result else ""
                             merge_advisor_company_extra_data(aid, {
                                 "research_full": result,
                                 "research_full_updated_at": datetime.utcnow().isoformat(),
@@ -1724,6 +1728,7 @@ with tabs[2]:  # INTELLIGENCE
                                 "research_full": result,
                                 "research_full_updated_at": datetime.utcnow().isoformat(),
                                 "platform_presence_analytics": platform_analytics_snapshot,
+                                "research_display_html": _disp_html,
                             })
                         
                         # Clear old caches
@@ -1761,7 +1766,7 @@ with tabs[2]:  # INTELLIGENCE
                         merge_advisor_company_extra_data(aid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat(), "research_display_html": ""})
                         invalidate_group("advisor")
                     else:
-                        merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat()})
+                        merge_company_extra_data(cid, {"research_full": "", "research_full_updated_at": datetime.utcnow().isoformat(), "research_display_html": ""})
                     
                     st.session_state.pop(_fresh_key, None)
                     
@@ -2119,7 +2124,12 @@ with tabs[2]:  # INTELLIGENCE
                         invalidate_group("advisor")
                     else:
                         _research_for_db = _research
-                        merge_company_extra_data(cid, {"research_full": _research_for_db, "research_full_updated_at": datetime.utcnow().isoformat()})
+                        _display_html = (_research_for_db or "") if is_html_content(_research_for_db or "") else research_display_to_editor_html(_research_for_db or "")
+                        merge_company_extra_data(cid, {
+                            "research_full": _research_for_db,
+                            "research_full_updated_at": datetime.utcnow().isoformat(),
+                            "research_display_html": _display_html,
+                        })
                     _doc_name = comp.get("domain") or comp.get("name", "Company")
                     # Drive gets the same canonical content as the app, converted to HTML with tables
                     _content_for_drive = research_display_to_editor_html(_research_for_db) if _research_for_db and not is_html_content(_research_for_db) else (_research_for_db or _research)
@@ -2166,21 +2176,30 @@ with tabs[2]:  # INTELLIGENCE
                 cmd_content = cmd_result.get("content", cmd_result) if isinstance(cmd_result, dict) else (cmd_result or "")
                 with st.expander(f"{cmd_title} — Add to research or Dismiss", expanded=True):
                     st.caption("Use **Add to research** to append this as the next numbered section (8., 9., …) and save.")
-                    st.markdown(f"<div style='font-size:12px;white-space:pre-wrap;max-height:300px;overflow-y:auto;'>{cmd_content[:25000]}{'…' if len(cmd_content) > 25000 else ''}</div>", unsafe_allow_html=True)
+                    # Render extended research with proper markdown and tables (same as main research view)
+                    _cmd_html = markdown_to_html((cmd_content or "")[:25000] + ("…" if len(cmd_content or "") > 25000 else ""))
+                    st.markdown(f"<div class='research-doc-view' style='font-size:12px;max-height:300px;overflow-y:auto;'>{_cmd_html}</div>", unsafe_allow_html=True)
                     app_col1, app_col2 = st.columns([1, 3])
                     with app_col1:
                         if st.button("Add to research", key=f"cmd_append_{cache_key}", width="stretch", help="Append as next numbered section (8., 9., …) and save to DB"):
                             current = (current_research_text or research_full_display or "").strip()
                             plain_current = html_to_plain_text(current) if is_html_content(current) else current
                             next_num = get_next_section_number(plain_current or "")
-                            new_block = format_appended_section(cmd_content, cmd_title, next_num)
-                            merged = f"{current}\n\n{new_block}" if current else new_block
+                            if is_html_content(current or ""):
+                                # Document is HTML (sectioned with <h2>): append new section as <h2> block so it shows as its own expander
+                                _new_section_html = markdown_to_html(cmd_content or "")
+                                _title_safe = (cmd_title or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                                new_block = f"<h2>{next_num}. {_title_safe}</h2>\n\n{_new_section_html}"
+                                merged = f"{current}\n\n{new_block}" if current else new_block
+                            else:
+                                new_block = format_appended_section(cmd_content, cmd_title, next_num)
+                                merged = f"{current}\n\n{new_block}" if current else new_block
                             if not (merged or "").strip():
                                 st.warning("No content to add.")
                             else:
                                 st.session_state[_fresh_key] = merged
+                                _disp_html = (merged if is_html_content(merged) else research_display_to_editor_html(merged)) if merged else ""
                                 if is_advisor:
-                                    _disp_html = research_display_to_editor_html(merged) if merged else ""
                                     merge_advisor_company_extra_data(aid, {
                                         "research_full": merged,
                                         "research_full_updated_at": datetime.utcnow().isoformat(),
@@ -2188,7 +2207,11 @@ with tabs[2]:  # INTELLIGENCE
                                     })
                                     invalidate_group("advisor")
                                 else:
-                                    merge_company_extra_data(cid, {"research_full": merged, "research_full_updated_at": datetime.utcnow().isoformat()})
+                                    merge_company_extra_data(cid, {
+                                        "research_full": merged,
+                                        "research_full_updated_at": datetime.utcnow().isoformat(),
+                                        "research_display_html": _disp_html,
+                                    })
                                 if _intel_sid:
                                     save_session_summary(_intel_sid, merged, msg_count=0)
                                 clear_ui_cache()
