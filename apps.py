@@ -3609,11 +3609,23 @@ with tabs[3]:  # STRATEGIST
                     with pc1:
                         if st.button("✅ Add Full Plan to Timeline", key="add_plan", width="stretch", type="primary"):
                             actions_for_db = []
+                            # Derive offering label from current command center product key (if any)
+                            _pk = (st.session_state.get("command_center_product_key") or "").strip().lower()
+                            _offering_label = None
+                            if _pk == "accelerate":
+                                _offering_label = "Accelerate"
+                            elif _pk == "mediaos":
+                                _offering_label = "MediaOS"
+                            elif _pk == "acquisition":
+                                _offering_label = "Acquisition"
+
                             for step in plan:
+                                base_desc = f"Step {step['step']}: {step['description']}"
+                                desc = f"{base_desc} — {_offering_label}" if _offering_label else base_desc
                                 actions_for_db.append({
                                     "action_type": "Outreach",
                                     "channel": step["channel"],
-                                    "description": f"Step {step['step']}: {step['description']}",
+                                    "description": desc,
                                     "status": "planned",
                                     "scheduled_at": step.get("scheduled_at"),
                                     "content_sent": step.get("content_draft"),
@@ -3830,11 +3842,22 @@ with tabs[4]:  # ACTIONS
                         st.rerun()
 
             for seq in sequences:
+                # Derive offering label for display from first step description, if present
+                offering_suffix = ""
+                steps_for_seq = seq.get("steps") or []
+                if steps_for_seq:
+                    first_desc = (steps_for_seq[0].get("description") or "").strip()
+                    for _label in ("Accelerate", "MediaOS", "Acquisition"):
+                        token = f" — {_label}"
+                        if first_desc.endswith(token):
+                            offering_suffix = f" — {_label}"
+                            break
+
                 progress = seq["done"] / seq["total"] if seq["total"] else 0
                 st.markdown(
                     f"<div class='c' style='padding:14px 18px;border-left:3px solid var(--accent);'>"
                     f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                    f"<span style='font-size:13px;font-weight:600;'>Sequence {seq['id']}</span>"
+                    f"<span style='font-size:13px;font-weight:600;'>Sequence {seq['id']}{offering_suffix}</span>"
                     f"<span style='font-size:12px;color:var(--text-3);'>{seq['done']}/{seq['total']} done</span></div></div>",
                     unsafe_allow_html=True)
                 st.progress(progress)

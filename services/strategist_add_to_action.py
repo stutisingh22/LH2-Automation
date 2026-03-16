@@ -154,14 +154,18 @@ def parse_multi_email_sequence(draft_content):
     return steps
 
 
-def add_draft_as_new_sequence(session_id, sender_id, draft_content, channel="Email", description=None):
+def add_draft_as_new_sequence(session_id, sender_id, draft_content, channel="Email", description=None, offering_label=None):
     """
     Create a new sequence with a single step containing the draft.
     Returns (list of action ids, sequence_id).
     """
     if not draft_content or not session_id or not sender_id:
         return [], None
-    desc = description or f"Step 1: {channel} draft from strategist"
+    base_desc = description or f"Step 1: {channel} draft from strategist"
+    if offering_label:
+        desc = f"{base_desc} — {offering_label}"
+    else:
+        desc = base_desc
     actions_list = [
         {
             "action_type": "Outreach",
@@ -189,7 +193,7 @@ def overwrite_sequence_step(action_id, draft_content):
     return True
 
 
-def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, channel="Email", description=None, email_num=None):
+def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, channel="Email", description=None, email_num=None, offering_label=None):
     """
     Append a new planned step to an existing sequence, preserving existing steps and
     assigning the next available sequence_step.
@@ -205,11 +209,15 @@ def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, 
         except Exception:
             next_step = (len(steps) or 0) + 1
     if description:
-        desc = description
+        base_desc = description
     elif email_num is not None and (channel or "").lower().startswith("email"):
-        desc = f"Email {email_num} — {channel} draft from Strategist"
+        base_desc = f"Email {email_num} — {channel} draft from Strategist"
     else:
-        desc = f"Step {next_step}: {channel} draft from Strategist"
+        base_desc = f"Step {next_step}: {channel} draft from Strategist"
+    if offering_label:
+        desc = f"{base_desc} — {offering_label}"
+    else:
+        desc = base_desc
     cleaned = get_cleaned_draft_for_save(draft_content)
     content = (cleaned or draft_content or "").strip()
     if not content:
@@ -274,7 +282,7 @@ def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, 
     )
     return action_id
 
-def add_sequence_to_timeline(session_id, sender_id, steps):
+def add_sequence_to_timeline(session_id, sender_id, steps, offering_label=None):
     """
     Create one sequence with multiple steps (from parse_multi_email_sequence).
     steps: list of dicts with content_draft, description. Each content_draft is cleaned before save.
@@ -285,10 +293,15 @@ def add_sequence_to_timeline(session_id, sender_id, steps):
     actions_list = []
     for s in steps:
         cleaned = get_cleaned_draft_for_save(s.get("content_draft") or "")
+        base_desc = s.get("description") or f"Email {s.get('email_num', '?')}"
+        if offering_label:
+            desc = f"{base_desc} — {offering_label}"
+        else:
+            desc = base_desc
         actions_list.append({
             "action_type": "Outreach",
             "channel": "Email",
-            "description": s.get("description") or f"Email {s.get('email_num', '?')}",
+            "description": desc,
             "status": "planned",
             "content_sent": cleaned or (s.get("content_draft") or "").strip(),
             "context_note": None,
@@ -622,7 +635,16 @@ def render_add_to_action_ui(
                             lead_brand=lead_brand,
                         )
         if st.button("✅ Add full sequence to Timeline", key=f"add_full_seq_{k}", type="primary", use_container_width=True):
-            ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps)
+            # Map current command center product key (if available) to human label for sequence suffix
+            _pk = (st.session_state.get("command_center_product_key") or "").strip().lower()
+            _offering_label = None
+            if _pk == "accelerate":
+                _offering_label = "Accelerate"
+            elif _pk == "mediaos":
+                _offering_label = "MediaOS"
+            elif _pk == "acquisition":
+                _offering_label = "Acquisition"
+            ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps, offering_label=_offering_label)
             if ids and seq_id:
                 clear_ui_cache()
                 st.session_state[f"strategist_add_to_action_open_{k}"] = False
@@ -734,7 +756,15 @@ def render_add_to_action_ui(
         if mode == "new":
             if multi_steps:
                 if st.button("Add full sequence to Timeline", key=f"add_full_seq_expander_{k}", type="primary"):
-                    ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps)
+                    _pk2 = (st.session_state.get("command_center_product_key") or "").strip().lower()
+                    _offering_label2 = None
+                    if _pk2 == "accelerate":
+                        _offering_label2 = "Accelerate"
+                    elif _pk2 == "mediaos":
+                        _offering_label2 = "MediaOS"
+                    elif _pk2 == "acquisition":
+                        _offering_label2 = "Acquisition"
+                    ids, seq_id = add_sequence_to_timeline(session_id, sender_id, multi_steps, offering_label=_offering_label2)
                     if ids and seq_id:
                         clear_ui_cache()
                         st.session_state[key_open] = False
@@ -764,8 +794,16 @@ def render_add_to_action_ui(
                     desc = None
                     if email_num is not None and (channel or "").lower().startswith("email"):
                         desc = f"Email {email_num} — {channel} draft from Strategist"
+                    _pk3 = (st.session_state.get("command_center_product_key") or "").strip().lower()
+                    _offering_label3 = None
+                    if _pk3 == "accelerate":
+                        _offering_label3 = "Accelerate"
+                    elif _pk3 == "mediaos":
+                        _offering_label3 = "MediaOS"
+                    elif _pk3 == "acquisition":
+                        _offering_label3 = "Acquisition"
                     ids, seq_id = add_draft_as_new_sequence(
-                        session_id, sender_id, cleaned or draft_content, channel=channel, description=desc
+                        session_id, sender_id, cleaned or draft_content, channel=channel, description=desc, offering_label=_offering_label3
                     )
                     if ids and seq_id:
                         clear_ui_cache()
@@ -857,6 +895,14 @@ def render_add_to_action_ui(
                 desc = None
                 if chosen_email_num is not None and (channel or "").lower().startswith("email"):
                     desc = f"Email {chosen_email_num} — {channel} draft from Strategist"
+                _pk4 = (st.session_state.get("command_center_product_key") or "").strip().lower()
+                _offering_label4 = None
+                if _pk4 == "accelerate":
+                    _offering_label4 = "Accelerate"
+                elif _pk4 == "mediaos":
+                    _offering_label4 = "MediaOS"
+                elif _pk4 == "acquisition":
+                    _offering_label4 = "Acquisition"
                 aid = add_step_to_existing_sequence(
                     session_id,
                     sender_id,
@@ -865,6 +911,7 @@ def render_add_to_action_ui(
                     channel=channel,
                     description=desc,
                     email_num=chosen_email_num,
+                    offering_label=_offering_label4,
                 )
                 if aid:
                     clear_ui_cache()
