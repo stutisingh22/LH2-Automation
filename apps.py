@@ -1039,6 +1039,21 @@ with tabs[1]:  # COMPANIES
                     if pname not in _parent_advisor_cache:
                         _parent_advisor_cache[pname] = get_or_create_advisor_company_for_parent(pname)
                     parent_adv = _parent_advisor_cache.get(pname)
+                    # Determine research presence per-entity (parent vs each child) so "researched"
+                    # reflects only that specific company, not the whole group.
+                    import json as _json  # Local alias to avoid top-level changes
+                    def _has_research_for_row(_row):
+                        """True if this advisor row has its own stored research."""
+                        _ed = _row.get("extra_data") or {}
+                        if isinstance(_ed, str):
+                            try:
+                                _ed = _json.loads(_ed) if (_ed or "").strip() else {}
+                            except Exception:
+                                _ed = {}
+                        return bool((_ed.get("research_full") or "").strip())
+                    parent_has_research = False
+                    if parent_adv:
+                        parent_has_research = _has_research_for_row(parent_adv)
                     if parent_adv:
                         parent_id = parent_adv["id"]
                         is_sel_parent = st.session_state.get("sel_advisor_company_id") == parent_id
@@ -1046,9 +1061,21 @@ with tabs[1]:  # COMPANIES
                             _shadow_cache[parent_id] = get_or_create_shadow_company_for_advisor(parent_id)
                         prow_col1, prow_col2 = st.columns([4, 0.5])
                         with prow_col1:
+                            _parent_right_label = "researched" if parent_has_research else "—"
+                            _parent_right_style = (
+                                "font-size:11px;font-weight:500;color:#166534;"
+                                if parent_has_research
+                                else "font-size:11px;color:var(--text-3);"
+                            )
                             st.markdown(
                                 f"<div class='c' style='padding:8px 12px;border-left:2px solid var(--accent);'>"
-                                f"<span style='font-size:13px;font-weight:600;'>{grp['parent_name']}</span> <span style='font-size:11px;color:var(--text-3);'>(parent)</span>"
+                                f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                                f"<span>"
+                                f"<span style='font-size:13px;font-weight:600;'>{grp['parent_name']}</span> "
+                                f"<span style='font-size:11px;color:var(--text-3);'>(parent)</span>"
+                                f"</span>"
+                                f"<span style='{_parent_right_style}'>{_parent_right_label}</span>"
+                                f"</div>"
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with prow_col2:
@@ -1078,11 +1105,22 @@ with tabs[1]:  # COMPANIES
                             shadow_cid, _ = _shadow_cache[ch_id]
                         else:
                             shadow_cid = None
+                        # Child shows "researched" only when that specific advisor row has research.
+                        _child_has_research = _has_research_for_row(ch)
+                        _child_right_label = "researched" if _child_has_research else "—"
+                        _child_right_style = (
+                            "font-size:11px;font-weight:500;color:#166534;"
+                            if _child_has_research
+                            else "font-size:11px;color:var(--text-3);"
+                        )
                         row_col1, row_col2 = st.columns([4, 0.5])
                         with row_col1:
                             st.markdown(
                                 f"<div class='c' style='padding:8px 12px;'>"
+                                f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
                                 f"<span style='font-size:13px;'>{ch['domain']}</span>"
+                                f"<span style='{_child_right_style}'>{_child_right_label}</span>"
+                                f"</div>"
                                 f"</div>",
                                 unsafe_allow_html=True)
                         with row_col2:
