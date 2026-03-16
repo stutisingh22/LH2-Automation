@@ -218,7 +218,7 @@ from integrations import (
     get_google_credentials,
 )
 from services.deck_links import inject_deck_links_into_email_body
-from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
+from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, split_html_into_canonical_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
 
 inject_css()
 
@@ -1797,7 +1797,14 @@ with tabs[2]:  # INTELLIGENCE
                 except Exception:
                     st_iframe_event = None
                 # Build sections for display and a plain-text version for regex-based eligibility parsing.
-                if is_html_content(research_full_display):
+                # Media Houses: same canonical 4–5 expanders as Independent; when content is HTML, split HTML so tables stay clean.
+                if is_advisor:
+                    plain_for_split = html_to_plain_text(research_full_display) if is_html_content(research_full_display) else (research_full_display or "")
+                    if is_html_content(research_full_display):
+                        sections = split_html_into_canonical_sections(research_full_display)
+                    else:
+                        sections = split_research_into_sections(plain_for_split)
+                elif is_html_content(research_full_display):
                     sections = split_html_into_sections(research_full_display)
                     plain_for_split = html_to_plain_text(research_full_display)
                 else:

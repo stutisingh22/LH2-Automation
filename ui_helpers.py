@@ -448,6 +448,92 @@ def html_to_plain_text(html, max_length=None):
     return text
 
 
+# Canonical 5 section titles and boundary markers for research (matches NOTE_SECTIONS in research.py).
+# Used by split_html_into_canonical_sections so Media Houses get same expanders with HTML (tables) preserved.
+_CANONICAL_SECTION_TITLES = [
+    "0-1: Eligibility & Operating Context",
+    "2: Article Frequency & Execution",
+    "3: Power Mapping & Stakeholders",
+    "4-5: Stakeholder Interpretation & Fit",
+    "6-Final: Outreach & Strategic Wedge",
+]
+# For each of sections 1..4, try these patterns in order; first match wins. Enables flexible matching
+# (e.g. "2. Article Frequency" or "ARTICLE FREQUENCY" inside <h2>) so content lands in the right expander.
+_CANONICAL_SECTION_BOUNDARY_PATTERNS = [
+    ["2. ARTICLE FREQUENCY", "2. Article Frequency", "ARTICLE FREQUENCY & EXECUTION", "Article Frequency & Execution"],
+    ["3. POWER MAPPING", "3. Power Mapping", "POWER MAPPING & STAKEHOLDER", "Power Mapping & Stakeholder"],
+    ["4. INDIVIDUAL STRATEGIC", "4. Individual Strategic", "INDIVIDUAL STRATEGIC INTERPRETATION", "5. FIT ASSESSMENT", "5. Fit Assessment"],
+    ["6. OUTREACH SEQUENCING", "6. Outreach Sequencing", "OUTREACH SEQUENCING", "7. ACCELERATE POSITIONING", "FINAL SECTION: STRATEGIC WEDGE"],
+]
+
+
+def _split_last_section_html_into_extra(html_chunk):
+    """
+    Split the last section's HTML (6-Final chunk) into main part plus extra expanders for 8., 9., ...
+    Same logic as research._split_extra_sections but on HTML so tables are preserved.
+    Returns (main_html, [(title, html_body), ...]).
+    """
+    import re
+    if not (html_chunk or "").strip():
+        return "", []
+    text = (html_chunk or "").strip()
+    # Find starts of extended sections: "8. Title" or "9: Title" at line start (after \n or >)
+    pattern = re.compile(r"(?:^|[\n>])\s*(\d+)[.:]\s+([^<\n]+)", re.MULTILINE | re.IGNORECASE)
+    matches = []
+    for m in pattern.finditer(text):
+        num = int(m.group(1))
+        if num >= 8:
+            title = re.sub(r"<[^>]+>", "", m.group(2)).strip() or f"{num}."
+            # Use start of "N." so body doesn't begin with > or \n
+            content_start = m.start(1)
+            matches.append((content_start, title))
+    if not matches:
+        return text, []
+    matches.sort(key=lambda x: x[0])
+    main_html = text[: matches[0][0]].strip()
+    extra = []
+    for i, (start, title) in enumerate(matches):
+        end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        extra.append((title, body))
+    return main_html, extra
+
+
+def split_html_into_canonical_sections(html):
+    """
+    Split research HTML into the same 5 canonical sections as split_research_into_sections,
+    preserving HTML (and tables). Used for Media Houses so they get clean expanders + clean tables.
+    Includes extended research sections (8., 9., ...) as extra expanders, same as Independent.
+    """
+    import re
+    if not (html or "").strip():
+        return [(t, "") for t in _CANONICAL_SECTION_TITLES]
+    text = (html or "").strip()
+    n = len(text)
+    positions = []
+    for pattern_list in _CANONICAL_SECTION_BOUNDARY_PATTERNS:
+        pos = n
+        for marker in pattern_list:
+            m = re.search(re.escape(marker), text, re.I)
+            if m and m.start() < pos:
+                pos = m.start()
+        positions.append(pos)
+    starts = [0] + positions
+    ends = positions + [n]
+    out = []
+    for i in range(5):
+        chunk = text[starts[i] : ends[i]].strip()
+        out.append((_CANONICAL_SECTION_TITLES[i], chunk))
+    # Extract 8., 9., ... from last section so Media Houses get same extra expanders as Independent
+    if out:
+        last_title, last_chunk = out[-1]
+        main_part, extra_sections = _split_last_section_html_into_extra(last_chunk)
+        if extra_sections:
+            out[-1] = (last_title, main_part)
+            out.extend(extra_sections)
+    return out
+
+
 def split_html_into_sections(html):
     """
     Split HTML that was produced from research (with <h2>section title</h2> blocks) into
