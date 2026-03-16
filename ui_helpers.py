@@ -751,21 +751,25 @@ def timeline_item_html(ts_display, item_type, channel, status, summary, status_c
 # ── Strategist Add to Action (labels for consistency with Add Full Plan to Timeline) ──
 
 def get_add_to_action_labels():
-    """Labels for the Strategist 'Add to Action' flow (new sequence / overwrite step)."""
+    """Labels for the Strategist 'Add to Action' flow (new sequence / append / overwrite step)."""
     return {
         "button": "✅ Add to Action",
         "expander_title": "Add this draft to a sequence",
         "mode_label": "Add as…",
         "new_sequence": "New sequence",
+        "append": "Add as new step in existing sequence",
         "overwrite": "Overwrite in existing sequence",
         "channel_label": "Channel",
         "confirm_new": "Create new sequence",
+        "confirm_append": "Add as new step",
         "confirm_overwrite": "Overwrite this step",
         "select_sequence": "Sequence",
+        "select_sequence_append": "Sequence to add step to",
         "select_step": "Step to overwrite",
         "no_sequences": "No sequences yet. Create one via Full Plan or add this draft as a new sequence above.",
         "no_steps": "No steps in this sequence.",
         "success_new": "Created new sequence {seq_id}.",
+        "success_append": "Added new step to sequence {seq_id}.",
         "success_overwrite": "Step updated with this draft.",
         "error_generic": "Something went wrong. Try again.",
         "treat_as_step": "Treat as step",

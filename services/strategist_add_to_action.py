@@ -20,6 +20,7 @@ from db_ops import (
     get_sequence_actions,
     update_action,
     get_all_users,
+    log_action,
 )
 from integrations import parse_email_content, create_gmail_draft
 from services.deck_links import inject_deck_links_into_email_body
@@ -132,6 +133,41 @@ def overwrite_sequence_step(action_id, draft_content):
     )
     return True
 
+
+def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, channel="Email", description=None):
+    """
+    Append a new planned step to an existing sequence, preserving existing steps and
+    assigning the next available sequence_step.
+    Returns the created action_id, or None on failure.
+    """
+    if not draft_content or not session_id or not sender_id or not seq_id:
+        return None
+    steps = get_sequence_actions(session_id, seq_id) or []
+    next_step = 1
+    if steps:
+        try:
+            next_step = max(int(s.get("sequence_step") or 0) for s in steps) + 1
+        except Exception:
+            next_step = (len(steps) or 0) + 1
+    desc = description or f"Step {next_step}: {channel} draft from Strategist"
+    cleaned = get_cleaned_draft_for_save(draft_content)
+    content = (cleaned or draft_content or "").strip()
+    if not content:
+        return None
+    action_id = log_action(
+        session_id,
+        sender_id,
+        "Outreach",
+        channel,
+        desc,
+        status="planned",
+        content_sent=content,
+        context_note=None,
+        scheduled_at=None,
+        seq_id=seq_id,
+        seq_step=next_step,
+    )
+    return action_id
 
 def add_sequence_to_timeline(session_id, sender_id, steps):
     """
@@ -580,8 +616,8 @@ def render_add_to_action_ui(
             st.rerun()
         mode = st.radio(
             labels["mode_label"],
-            options=["new", "overwrite"],
-            format_func=lambda x: labels["new_sequence"] if x == "new" else labels["overwrite"],
+            options=["new", "append", "overwrite"],
+            format_func=lambda x: labels["new_sequence"] if x == "new" else (labels["append"] if x == "append" else labels["overwrite"]),
             key=f"add_to_action_radio_{k}",
             horizontal=True,
         )
@@ -617,7 +653,57 @@ def render_add_to_action_ui(
                     else:
                         st.error(labels["error_generic"])
 
-        else:
+        elif mode == "append":
+            sequences = get_active_sequences(session_id) if session_id else []
+            if not sequences:
+                st.info(labels["no_sequences"])
+                return
+            seq_options = {f"{s['id']} ({s['total']} steps)": s["id"] for s in sequences}
+            chosen_seq_label = st.selectbox(
+                labels.get("select_sequence_append", labels["select_sequence"]),
+                options=list(seq_options.keys()),
+                key=f"add_to_action_select_seq_append_{k}",
+            )
+            seq_id = seq_options.get(chosen_seq_label) if chosen_seq_label else None
+            st.session_state[key_seq] = seq_id
+
+            if not seq_id:
+                return
+
+            channel = st.selectbox(
+                labels["channel_label"],
+                options=["Email", "LinkedIn"],
+                key=f"add_to_action_channel_append_{k}",
+            )
+
+            content_to_add = draft_content
+            if multi_steps:
+                email_choice = st.selectbox(
+                    "Use which email from the sequence?",
+                    options=list(range(len(multi_steps))),
+                    format_func=lambda i: multi_steps[i].get("description") or f"Email {multi_steps[i].get('email_num', i + 1)}",
+                    key=f"add_to_action_which_email_append_{k}",
+                )
+                chosen_step = multi_steps[email_choice]
+                content_to_add = get_cleaned_draft_for_save(chosen_step.get("content_draft") or "")
+
+            if st.button(labels["confirm_append"], key=f"add_to_action_confirm_append_{k}", type="primary"):
+                aid = add_step_to_existing_sequence(
+                    session_id,
+                    sender_id,
+                    seq_id,
+                    content_to_add or draft_content,
+                    channel=channel,
+                )
+                if aid:
+                    clear_ui_cache()
+                    st.session_state[key_open] = False
+                    st.success(labels["success_append"].format(seq_id=seq_id))
+                    st.rerun()
+                else:
+                    st.error(labels["error_generic"])
+
+        elif mode == "overwrite":
             sequences = get_active_sequences(session_id) if session_id else []
             if not sequences:
                 st.info(labels["no_sequences"])
