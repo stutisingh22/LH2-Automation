@@ -49,6 +49,61 @@ def get_cleaned_draft_for_save(draft_content):
     return (bod or "").strip()
 
 
+def _extract_email_num_from_description(desc):
+    """
+    Try to extract an 'Email N' number from a step description.
+    Returns int or None.
+    """
+    if not desc:
+        return None
+    m = re.search(r"Email\s+(\d+)", str(desc), re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _compute_email_numbers_for_sequence(steps):
+    """
+    For a given list of action dicts (steps in one sequence), compute email numbers
+    purely for display, without changing stored data.
+
+    Strategy:
+    - Consider only steps where channel looks like Email.
+    - Sort those email steps by sequence_step (fallback to id order).
+    - Assign Email 1, Email 2, ... in that sorted order.
+
+    Returns:
+        email_num_by_id: {action_id: email_number}
+    """
+    if not steps:
+        return {}
+    email_steps = []
+    for s in steps:
+        ch = (s.get("channel") or "").lower()
+        if "email" in ch:
+            email_steps.append(s)
+    if not email_steps:
+        return {}
+    # Sort by sequence_step, then id for stability
+    def _key(s):
+        try:
+            return (int(s.get("sequence_step") or 0), str(s.get("id") or ""))
+        except Exception:
+            return (0, str(s.get("id") or ""))
+    email_steps_sorted = sorted(email_steps, key=_key)
+    email_num_by_id = {}
+    n = 1
+    for s in email_steps_sorted:
+        sid = s.get("id")
+        if sid is None:
+            continue
+        email_num_by_id[sid] = n
+        n += 1
+    return email_num_by_id
+
 def get_latest_assistant_draft_content(chat_messages):
     """
     Return the content of the latest assistant message, if any.
@@ -134,7 +189,7 @@ def overwrite_sequence_step(action_id, draft_content):
     return True
 
 
-def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, channel="Email", description=None):
+def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, channel="Email", description=None, email_num=None):
     """
     Append a new planned step to an existing sequence, preserving existing steps and
     assigning the next available sequence_step.
@@ -149,11 +204,61 @@ def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, 
             next_step = max(int(s.get("sequence_step") or 0) for s in steps) + 1
         except Exception:
             next_step = (len(steps) or 0) + 1
-    desc = description or f"Step {next_step}: {channel} draft from Strategist"
+    if description:
+        desc = description
+    elif email_num is not None and (channel or "").lower().startswith("email"):
+        desc = f"Email {email_num} — {channel} draft from Strategist"
+    else:
+        desc = f"Step {next_step}: {channel} draft from Strategist"
     cleaned = get_cleaned_draft_for_save(draft_content)
     content = (cleaned or draft_content or "").strip()
     if not content:
         return None
+
+    # Try to infer a reasonable scheduled_at for the new step when we know its email number
+    scheduled_str = None
+    if email_num is not None:
+        try:
+            # Map existing actions by email number using description prefix "Email N"
+            email_date_by_num = {}
+            for s in steps:
+                desc_existing = s.get("description") or ""
+                num = _extract_email_num_from_description(desc_existing)
+                sched = s.get("scheduled_at")
+                if num is not None and sched:
+                    # scheduled_at from db_ops is isoformat string
+                    email_date_by_num[num] = datetime.fromisoformat(str(sched))
+
+            if email_date_by_num:
+                from datetime import timedelta
+                target = email_num
+                lower_nums = [n for n in email_date_by_num.keys() if n < target]
+                higher_nums = [n for n in email_date_by_num.keys() if n > target]
+                dt = None
+                if lower_nums and higher_nums:
+                    n_lo = max(lower_nums)
+                    n_hi = min(higher_nums)
+                    d_lo = email_date_by_num[n_lo]
+                    d_hi = email_date_by_num[n_hi]
+                    # Midpoint between previous and next emails
+                    delta = d_hi - d_lo
+                    dt = d_lo + delta / 2 if delta.total_seconds() > 0 else d_lo
+                elif lower_nums:
+                    n_lo = max(lower_nums)
+                    d_lo = email_date_by_num[n_lo]
+                    # Place a bit after the previous email
+                    dt = d_lo + timedelta(days=2)
+                elif higher_nums:
+                    n_hi = min(higher_nums)
+                    d_hi = email_date_by_num[n_hi]
+                    # Place a bit before the next email
+                    dt = d_hi - timedelta(days=2)
+
+                if dt:
+                    scheduled_str = dt.isoformat()
+        except Exception:
+            scheduled_str = None
+
     action_id = log_action(
         session_id,
         sender_id,
@@ -163,7 +268,7 @@ def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, 
         status="planned",
         content_sent=content,
         context_note=None,
-        scheduled_at=None,
+        scheduled_at=scheduled_str,
         seq_id=seq_id,
         seq_step=next_step,
     )
@@ -553,6 +658,9 @@ def render_add_to_action_ui(
             key=f"strategist_treat_as_step_{k}",
         )
         step_index_used = 2 + int(step_choice)
+        # Email numbering for Strategist single-email drafts: Email 1..5
+        email_num_used = 1 + int(step_choice)
+        st.session_state[f"strategist_email_num_{k}"] = email_num_used
 
         try:
             bod_html = inject_deck_links_into_email_body(
@@ -640,10 +748,24 @@ def render_add_to_action_ui(
                     options=["Email", "LinkedIn"],
                     key=f"add_to_action_channel_{k}",
                 )
+                # Single-email drafts: always allow choosing Email 1–5 when channel is Email,
+                # even if the "Treat as step" UI above isn't shown (e.g. missing context).
+                email_num = None
+                if (channel or "").lower().startswith("email"):
+                    email_num = st.selectbox(
+                        "Email number",
+                        options=[1, 2, 3, 4, 5],
+                        index=0,
+                        key=f"add_to_action_new_email_num_{k}",
+                    )
+                    st.session_state[f"strategist_email_num_{k}"] = email_num
                 if st.button(labels["confirm_new"], key=f"add_to_action_confirm_new_{k}", type="primary"):
                     cleaned = get_cleaned_draft_for_save(draft_content)
+                    desc = None
+                    if email_num is not None and (channel or "").lower().startswith("email"):
+                        desc = f"Email {email_num} — {channel} draft from Strategist"
                     ids, seq_id = add_draft_as_new_sequence(
-                        session_id, sender_id, cleaned or draft_content, channel=channel
+                        session_id, sender_id, cleaned or draft_content, channel=channel, description=desc
                     )
                     if ids and seq_id:
                         clear_ui_cache()
@@ -658,13 +780,32 @@ def render_add_to_action_ui(
             if not sequences:
                 st.info(labels["no_sequences"])
                 return
-            seq_options = {f"{s['id']} ({s['total']} steps)": s["id"] for s in sequences}
+            # Show existing/missing email numbers for append as well.
+            seq_option_labels = {}
+            for s in sequences:
+                steps = s.get("steps") or []
+                email_num_by_id = _compute_email_numbers_for_sequence(steps)
+                existing_nums = sorted(set(email_num_by_id.values()))
+                if existing_nums:
+                    present_str = ", ".join(str(n) for n in existing_nums)
+                    # Assume standard 1–5 email sequence for display of missing slots.
+                    all_nums = set(range(1, 6))
+                    missing = sorted(all_nums - set(existing_nums))
+                    if missing:
+                        missing_str = ", ".join(str(n) for n in missing)
+                        label = f"{s['id']} ({s['total']} steps) — Emails present: {present_str} · Missing: {missing_str}"
+                    else:
+                        label = f"{s['id']} ({s['total']} steps) — Emails present: {present_str}"
+                else:
+                    label = f"{s['id']} ({s['total']} steps)"
+                seq_option_labels[label] = s["id"]
+
             chosen_seq_label = st.selectbox(
                 labels.get("select_sequence_append", labels["select_sequence"]),
-                options=list(seq_options.keys()),
+                options=list(seq_option_labels.keys()),
                 key=f"add_to_action_select_seq_append_{k}",
             )
-            seq_id = seq_options.get(chosen_seq_label) if chosen_seq_label else None
+            seq_id = seq_option_labels.get(chosen_seq_label) if chosen_seq_label else None
             st.session_state[key_seq] = seq_id
 
             if not seq_id:
@@ -677,6 +818,7 @@ def render_add_to_action_ui(
             )
 
             content_to_add = draft_content
+            chosen_email_num = None
             if multi_steps:
                 email_choice = st.selectbox(
                     "Use which email from the sequence?",
@@ -686,14 +828,43 @@ def render_add_to_action_ui(
                 )
                 chosen_step = multi_steps[email_choice]
                 content_to_add = get_cleaned_draft_for_save(chosen_step.get("content_draft") or "")
+                # Use explicit email_num from parsed multi-email sequence when available
+                chosen_email_num = chosen_step.get("email_num")
+            else:
+                # Single-email: let user pick which Email N to add, preferring missing slots.
+                if (channel or "").lower().startswith("email"):
+                    existing_steps = get_sequence_actions(session_id, seq_id) if session_id and seq_id else []
+                    existing_nums = sorted({
+                        n for n in (
+                            _extract_email_num_from_description((s.get("description") or "")) for s in (existing_steps or [])
+                        )
+                        if n is not None
+                    })
+                    available = [n for n in [1, 2, 3, 4, 5] if n not in set(existing_nums)]
+                    if not available:
+                        available = [1, 2, 3, 4, 5]
+                    chosen_email_num = st.selectbox(
+                        "Add as Email number",
+                        options=available,
+                        index=0,
+                        key=f"add_to_action_append_email_num_{k}",
+                    )
+                    st.session_state[f"strategist_email_num_{k}"] = chosen_email_num
+                else:
+                    chosen_email_num = None
 
             if st.button(labels["confirm_append"], key=f"add_to_action_confirm_append_{k}", type="primary"):
+                desc = None
+                if chosen_email_num is not None and (channel or "").lower().startswith("email"):
+                    desc = f"Email {chosen_email_num} — {channel} draft from Strategist"
                 aid = add_step_to_existing_sequence(
                     session_id,
                     sender_id,
                     seq_id,
                     content_to_add or draft_content,
                     channel=channel,
+                    description=desc,
+                    email_num=chosen_email_num,
                 )
                 if aid:
                     clear_ui_cache()
@@ -708,23 +879,41 @@ def render_add_to_action_ui(
             if not sequences:
                 st.info(labels["no_sequences"])
                 return
-            seq_options = {f"{s['id']} ({s['total']} steps)": s["id"] for s in sequences}
+            # Show which email numbers already exist in each sequence for clarity.
+            seq_option_labels = {}
+            for s in sequences:
+                steps = s.get("steps") or []
+                email_num_by_id = _compute_email_numbers_for_sequence(steps)
+                existing_nums = sorted(set(email_num_by_id.values()))
+                if existing_nums:
+                    emails_str = ", ".join(str(n) for n in existing_nums)
+                    label = f"{s['id']} ({s['total']} steps) — Emails: {emails_str}"
+                else:
+                    label = f"{s['id']} ({s['total']} steps)"
+                seq_option_labels[label] = s["id"]
+
             chosen_seq_label = st.selectbox(
                 labels["select_sequence"],
-                options=list(seq_options.keys()),
+                options=list(seq_option_labels.keys()),
                 key=f"add_to_action_select_seq_{k}",
             )
-            seq_id = seq_options.get(chosen_seq_label) if chosen_seq_label else None
+            seq_id = seq_option_labels.get(chosen_seq_label) if chosen_seq_label else None
             st.session_state[key_seq] = seq_id
 
             if not seq_id:
                 return
             steps = get_sequence_actions(session_id, seq_id)
+            email_num_by_id = _compute_email_numbers_for_sequence(steps)
             step_options = []
             for s in steps:
                 ch = (s.get("channel") or "").strip() or "Step"
                 step_num = s.get("sequence_step") or "?"
-                step_options.append((s["id"], f"Step {step_num}: {ch}"))
+                email_num = email_num_by_id.get(s.get("id"))
+                if email_num is not None:
+                    label = f"Email {email_num} — Step {step_num}: {ch}"
+                else:
+                    label = f"Step {step_num}: {ch}"
+                step_options.append((s["id"], label))
             if not step_options:
                 st.warning(labels["no_steps"])
                 return
