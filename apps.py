@@ -3792,8 +3792,43 @@ with tabs[4]:  # ACTIONS
 
         # ── Active Sequences ──
         sequences = get_active_sequences(sid)
+        # Selection state for bulk delete (per session)
+        sel_mode_key = f"actions_select_mode_{sid}"
+        sel_steps_key = f"actions_selected_step_ids_{sid}"
+        sel_seqs_key = f"actions_selected_sequence_ids_{sid}"
+        if sel_steps_key not in st.session_state:
+            st.session_state[sel_steps_key] = set()
+        if sel_seqs_key not in st.session_state:
+            st.session_state[sel_seqs_key] = set()
+
         if sequences:
             st.markdown(sh(f"ACTIVE SEQUENCES ({len(sequences)})"), unsafe_allow_html=True)
+            # Lightweight selection toolbar: no per-row icons until user opts in.
+            tcol1, tcol2, tcol3 = st.columns([1.5, 1, 1])
+            with tcol1:
+                enable_sel = st.toggle("Select steps", key=sel_mode_key, help="Enable checkboxes to select steps or whole sequences for delete")
+            with tcol2:
+                if enable_sel:
+                    if st.button("Select all steps", key=f"actions_select_all_{sid}", use_container_width=True):
+                        all_ids = []
+                        for _seq in sequences:
+                            all_ids.extend([_s["id"] for _s in _seq["steps"]])
+                        st.session_state[sel_steps_key] = set(all_ids)
+            with tcol3:
+                if enable_sel and st.session_state.get(sel_steps_key):
+                    if st.button("🗑 Delete selected", key=f"actions_delete_sel_{sid}", type="secondary", use_container_width=True):
+                        import time as _time
+                        with st.spinner("Deleting selected actions..."):
+                            for _aid in list(st.session_state[sel_steps_key]):
+                                try:
+                                    delete_action(int(_aid))
+                                except Exception:
+                                    continue
+                            _time.sleep(0.1)
+                        st.session_state[sel_steps_key] = set()
+                        clear_ui_cache()
+                        st.rerun()
+
             for seq in sequences:
                 progress = seq["done"] / seq["total"] if seq["total"] else 0
                 st.markdown(
@@ -3815,73 +3850,97 @@ with tabs[4]:  # ACTIONS
                     with st.expander(step_expander_label, expanded=False):
                         with st.container():
                             st.markdown("<div class='sequence-step-card'></div>", unsafe_allow_html=True)
-                            st.markdown(
-                                f"<div class='sequence-step-header'>"
-                                f"<span>{icon} {ch_icon} <b>Step {step.get('sequence_step','?')}</b>: {step['channel']}{sched}</span>"
-                                f"{bdg(step['status'], sc)}</div>"
-                                f"<div style='font-size:12px;color:var(--text-2);margin-top:2px;'>{step['description'][:200]}</div>"
-                                f"<div class='sequence-step-divider'></div>",
-                                unsafe_allow_html=True)
-                            s1, s2, s3 = st.columns([3, 1.2, 0.8])
-                            with s1:
-                                if step.get("content_sent"):
-                                    ch_lower = (step.get("channel") or "").lower()
-                                    rev_list_key = f"draft_revisions_list_{step['id']}"
-                                    orig_stored_key = f"draft_original_{step['id']}"
-                                    revisions_list = st.session_state.get(rev_list_key) or []
-                                    if not isinstance(revisions_list, list):
-                                        revisions_list = [revisions_list] if revisions_list else []
-                                    if not revisions_list and step.get("draft_revisions"):
-                                        revs = step["draft_revisions"]
-                                        revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
-                                        st.session_state[rev_list_key] = revisions_list
-                                    version_sel = st.session_state.get(f"refine_version_sel_{step['id']}")
-                                    original_for_display = (step.get("draft_original") or "").strip() or st.session_state.get(orig_stored_key) or _display_original_from_content_sent(step.get("content_sent"))
-                                    if revisions_list and version_sel:
-                                        if version_sel == "Version 1 (Original)":
-                                            display_content = original_for_display
+                            if st.session_state.get(sel_mode_key):
+                                sel_col, content_col = st.columns([0.3, 3.7])
+                            else:
+                                sel_col, content_col = None, None
+                            if sel_col is not None:
+                                with sel_col:
+                                    _checked = step["id"] in st.session_state[sel_steps_key]
+                                    new_val = st.checkbox(
+                                        " ",
+                                        value=_checked,
+                                        key=f"act_sel_{step['id']}",
+                                        label_visibility="collapsed",
+                                    )
+                                    if new_val and not _checked:
+                                        st.session_state[sel_steps_key].add(step["id"])
+                                    elif not new_val and _checked:
+                                        st.session_state[sel_steps_key].discard(step["id"])
+                            # Render the main step content either in the right column (when selection is enabled)
+                            # or in a fresh container when selection is off.
+                            if content_col is not None:
+                                content_ctx = content_col
+                            else:
+                                content_ctx = st.container()
+                            with content_ctx:
+                                st.markdown(
+                                    f"<div class='sequence-step-header'>"
+                                    f"<span>{icon} {ch_icon} <b>Step {step.get('sequence_step','?')}</b>: {step['channel']}{sched}</span>"
+                                    f"{bdg(step['status'], sc)}</div>"
+                                    f"<div style='font-size:12px;color:var(--text-2);margin-top:2px;'>{step['description'][:200]}</div>"
+                                    f"<div class='sequence-step-divider'></div>",
+                                    unsafe_allow_html=True)
+                                s1, s2, s3 = st.columns([3, 1.2, 0.8])
+                                with s1:
+                                    if step.get("content_sent"):
+                                        ch_lower = (step.get("channel") or "").lower()
+                                        rev_list_key = f"draft_revisions_list_{step['id']}"
+                                        orig_stored_key = f"draft_original_{step['id']}"
+                                        revisions_list = st.session_state.get(rev_list_key) or []
+                                        if not isinstance(revisions_list, list):
+                                            revisions_list = [revisions_list] if revisions_list else []
+                                        if not revisions_list and step.get("draft_revisions"):
+                                            revs = step["draft_revisions"]
+                                            revisions_list = revs if isinstance(revs, list) else list(revs) if revs else []
+                                            st.session_state[rev_list_key] = revisions_list
+                                        version_sel = st.session_state.get(f"refine_version_sel_{step['id']}")
+                                        original_for_display = (step.get("draft_original") or "").strip() or st.session_state.get(orig_stored_key) or _display_original_from_content_sent(step.get("content_sent"))
+                                        if revisions_list and version_sel:
+                                            if version_sel == "Version 1 (Original)":
+                                                display_content = original_for_display
+                                            else:
+                                                try:
+                                                    m = re.search(r"Version\s+(\d+)", version_sel)
+                                                    v = int(m.group(1)) if m else 2
+                                                    idx = v - 2
+                                                    raw = (revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original_for_display))
+                                                    display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
+                                                except Exception:
+                                                    raw = revisions_list[-1] if revisions_list else original_for_display
+                                                    display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
                                         else:
-                                            try:
-                                                m = re.search(r"Version\s+(\d+)", version_sel)
-                                                v = int(m.group(1)) if m else 2
-                                                idx = v - 2
-                                                raw = (revisions_list[idx] if 0 <= idx < len(revisions_list) else (revisions_list[-1] if revisions_list else original_for_display))
-                                                display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
-                                            except Exception:
-                                                raw = revisions_list[-1] if revisions_list else original_for_display
-                                                display_content = (raw if isinstance(raw, str) else str(raw)) if raw else original_for_display
-                                    else:
-                                        display_content = original_for_display
-                                    read_label = "💬 Read full LinkedIn draft" if "linkedin" in ch_lower else "📧 Read full email"
-                                    with st.expander(read_label, expanded=False):
-                                        st.markdown(
-                                            f"<div style='font-size:12px;background:#f8f9fa;padding:8px 10px;border-radius:6px;border-left:2px solid #4caf50;white-space:pre-wrap;'>{display_content}</div>",
-                                            unsafe_allow_html=True)
-                                if step.get("response_content"):
-                                    resp_content = (step["response_content"] or "").strip()
-                                    with st.expander("💬 Read full response", expanded=False):
-                                        st.markdown(
-                                            f"<div style='font-size:12px;background:#f0f4ff;padding:8px 10px;border-radius:6px;border-left:2px solid #2196f3;white-space:pre-wrap;'>{resp_content}</div>",
-                                            unsafe_allow_html=True)
-                                if step.get("content_sent") and ("email" in (step.get("channel") or "").lower() or "linkedin" in (step.get("channel") or "").lower()):
-                                    _render_ai_refinement(step, seq["id"], step.get("channel", ""))
-                            with s2:
-                                if has_perm("can_log_outcomes"):
-                                    new_s = st.selectbox("Status", ACTION_STATUSES,
-                                        index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
-                                        key=f"seq_{step['id']}", label_visibility="collapsed")
-                                    if new_s != step["status"]:
-                                        update_action(step["id"], status=new_s)
-                                        if new_s in ("replied_positive", "replied_negative"):
+                                            display_content = original_for_display
+                                        read_label = "💬 Read full LinkedIn draft" if "linkedin" in ch_lower else "📧 Read full email"
+                                        with st.expander(read_label, expanded=False):
+                                            st.markdown(
+                                                f"<div style='font-size:12px;background:#f8f9fa;padding:8px 10px;border-radius:6px;border-left:2px solid #4caf50;white-space:pre-wrap;'>{display_content}</div>",
+                                                unsafe_allow_html=True)
+                                    if step.get("response_content"):
+                                        resp_content = (step["response_content"] or "").strip()
+                                        with st.expander("💬 Read full response", expanded=False):
+                                            st.markdown(
+                                                f"<div style='font-size:12px;background:#f0f4ff;padding:8px 10px;border-radius:6px;border-left:2px solid #2196f3;white-space:pre-wrap;'>{resp_content}</div>",
+                                                unsafe_allow_html=True)
+                                    if step.get("content_sent") and ("email" in (step.get("channel") or "").lower() or "linkedin" in (step.get("channel") or "").lower()):
+                                        _render_ai_refinement(step, seq["id"], step.get("channel", ""))
+                                with s2:
+                                    if has_perm("can_log_outcomes"):
+                                        new_s = st.selectbox("Status", ACTION_STATUSES,
+                                            index=ACTION_STATUSES.index(step["status"]) if step["status"] in ACTION_STATUSES else 0,
+                                            key=f"seq_{step['id']}", label_visibility="collapsed")
+                                        if new_s != step["status"]:
+                                            update_action(step["id"], status=new_s)
+                                            if new_s in ("replied_positive", "replied_negative"):
+                                                st.session_state[f"replan_{seq['id']}"] = step["id"]
+                                            st.rerun()
+                                with s3:
+                                    if not is_done and has_perm("can_log_outcomes"):
+                                        resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
+                                        if resp:
+                                            update_action(step["id"], response_content=resp, status="replied_positive")
                                             st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                        st.rerun()
-                            with s3:
-                                if not is_done and has_perm("can_log_outcomes"):
-                                    resp = st.text_input("Response", key=f"resp_{step['id']}", label_visibility="collapsed", placeholder="Log response...")
-                                    if resp:
-                                        update_action(step["id"], response_content=resp, status="replied_positive")
-                                        st.session_state[f"replan_{seq['id']}"] = step["id"]
-                                        st.rerun()
+                                            st.rerun()
                             if "email" in step.get("channel", "").lower() and step.get("content_sent"):
                                 st.markdown("<div class='sequence-step-divider'></div>", unsafe_allow_html=True)
                                 single_draft = _display_original_from_content_sent(step["content_sent"]) if "\n\n---\n\n" in (step.get("content_sent") or "") else (step["content_sent"] or "")
