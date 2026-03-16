@@ -470,6 +470,7 @@ def select_contact(comp_id, ct_id):
     st.session_state.sel_contact = ct_id
     sid = get_or_create_session(comp_id, ct_id, user["id"], 0)
     st.session_state.session_id = sid
+    # Always align Strategist chat with this contact's session.
     st.session_state.chat_messages = load_messages(sid)
     st.session_state.auto_brief_text = None
     st.session_state.pending_plan = None
@@ -2422,9 +2423,18 @@ with tabs[3]:  # STRATEGIST
     elif not has_perm("can_use_strategist"):
         st.warning("Strategist access required.")
     else:
-        if not sid:
+        # Ensure Strategist session/chat are scoped to the current company + SPOC (or company-level).
+        sess = get_session(sid) if sid else None
+        if sess and (sess.get("company_id") != cid or sess.get("contact_id") != ctid):
+            # Switched company or contact: move to the correct shared session and load its messages.
             sid = get_or_create_session(cid, ctid, user["id"])
             st.session_state.session_id = sid
+            st.session_state.chat_messages = load_messages(sid)
+        elif not sid:
+            # First time in Strategist for this company/contact: create session and load its history.
+            sid = get_or_create_session(cid, ctid, user["id"])
+            st.session_state.session_id = sid
+            st.session_state.chat_messages = load_messages(sid)
         if is_advisor_strategist:
             adv_comp = load_advisor_company(_aid_s)
             comp = {"id": cid, "domain": adv_comp.get("domain", "—"), "name": adv_comp.get("domain") or adv_comp.get("parent_name") or "—", "publisher_type": adv_comp.get("parent_name") or "—", "content_type": "—", "monthly_visits": None, "research_status": "—", "notion_page_id": adv_comp.get("notion_page_id"), "extra_data": adv_comp.get("extra_data") or {}} if adv_comp else None
