@@ -1475,9 +1475,14 @@ with tabs[2]:  # INTELLIGENCE
             except Exception:
                 _extra_offering = {}
         _recommended = _extra_offering.get("recommended_offering") or {}
-        if st.session_state.get("offering_recommendation_just_saved_cid") == cid and st.session_state.get("offering_recommendation_just_saved"):
+        _just_saved_entity = st.session_state.get("offering_recommendation_just_saved_entity")
+        if _just_saved_entity == cache_key and st.session_state.get("offering_recommendation_just_saved"):
             _recommended = st.session_state.pop("offering_recommendation_just_saved", _recommended)
-            st.session_state.pop("offering_recommendation_just_saved_cid", None)
+            st.session_state.pop("offering_recommendation_just_saved_entity", None)
+        elif _just_saved_entity is not None:
+            # Switched company: clear stale just_saved so we never show another company's recommendation
+            st.session_state.pop("offering_recommendation_just_saved", None)
+            st.session_state.pop("offering_recommendation_just_saved_entity", None)
         _stored_key = (_recommended.get("product_key") or "").strip().lower()
         if _stored_key not in ("mediaos", "accelerate"):
             _stored_key = None
@@ -1509,7 +1514,7 @@ with tabs[2]:  # INTELLIGENCE
                     else:
                         merge_company_extra_data(cid, {"recommended_offering": _ro})
                     st.session_state["offering_recommendation_just_saved"] = _ro
-                    st.session_state["offering_recommendation_just_saved_cid"] = cid
+                    st.session_state["offering_recommendation_just_saved_entity"] = cache_key
                     st.rerun()
                 else:
                     st.warning(_result.get("rationale", "Could not get a recommendation. Run deep research and ensure Drive has LH2/offerings context."))
