@@ -1046,8 +1046,10 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
         q = s.query(Action).join(Session, Action.session_id == Session.id)
         if company_id:
             q = q.filter(Session.company_id == company_id)
-        if contact_id:
-            q = q.filter(Session.contact_id == contact_id)
+        if contact_id is not None:
+            # Include both contact-specific and company-level (no contact) actions
+            # so SPOC/company actions logged without a specific contact still show up.
+            q = q.filter(or_(Session.contact_id == contact_id, Session.contact_id.is_(None)))
         results = []
         for a in q.order_by(Action.created_at.desc()).limit(limit).all():
             d = _act_dict(a)
