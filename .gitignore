@@ -1,5 +1,6 @@
 keys.env
 token.pickle
 .venv/
+venv/
 __pycache__/
 .sessions/
