@@ -218,7 +218,7 @@ from integrations import (
     get_google_credentials,
 )
 from services.deck_links import inject_deck_links_into_email_body
-from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, split_html_into_canonical_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page
+from ui_helpers import inject_css, bdg, crd, mcard, sh, sh_small, tl_item, alert, fmt_v, has_perm, timeline_item_html, lh2_kpi_cell, lh2_status_cell, lh2_section_header, lh2_pipeline_row, display_full_name, render_research_with_proper_tables, research_display_to_editor_html, split_html_into_sections, split_html_into_canonical_sections, is_html_content, html_to_plain_text, markdown_to_html, wysiwyg_editor_html_page, cool_loading
 
 inject_css()
 
@@ -656,7 +656,7 @@ def _render_ai_refinement(step, seq_id, channel="email"):
     )
     if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", width="stretch"):
         if (instruction or "").strip():
-            with st.spinner("Refining…"):
+            with cool_loading("Refining…"):
                 revised = refine_email_draft(current_text, instruction.strip(), draft_type="linkedin" if is_linkedin else "email")
             if revised:
                 revisions_list = st.session_state.get(rev_list_key) or []
@@ -727,7 +727,7 @@ with st.sidebar:
         unsafe_allow_html=True)
 
     if st.button("↻ Refresh knowledge", key="refresh_drive_knowledge", width="stretch", help="Rebuild Drive knowledge cache"):
-        with st.spinner("Refreshing knowledge from Drive..."):
+        with cool_loading("Refreshing knowledge from Drive..."):
             info = refresh_all_drive_contexts()
         st.toast(f"Knowledge refreshed. Company caches cleared: {info.get('cleared_company_caches', 0)}.")
 
@@ -889,10 +889,10 @@ with header_cols[2]:
         user_email = (user.get("email") or "").strip()
         if user_email:
             if st.button("Connect Gmail", key="connect_gmail_btn", help="Authorize Gmail for Save to Drafts and Sent Sync"):
-                with st.spinner("Opening browser for Gmail compose…"):
+                with cool_loading("Opening browser for Gmail compose…"):
                     c1 = get_google_credentials(user_email, scope_set="gmail_compose")
                 if c1:
-                    with st.spinner("Opening browser for Gmail read (Sent Sync)…"):
+                    with cool_loading("Opening browser for Gmail read (Sent Sync)…"):
                         c2 = get_google_credentials(user_email, scope_set="gmail_read")
                     if c2:
                         st.success("Gmail connected. You can use Save to Gmail and Sent Sync.")
@@ -995,7 +995,7 @@ with tabs[1]:  # COMPANIES
             sq_adv = st.text_input("Search", placeholder="Search domain or parent...", label_visibility="collapsed", key="csearch_advisor")
         with cc2:
             if st.button("🔄 Sync Notion (Media Houses)", key="nsync_advisor", width="stretch"):
-                with st.spinner("Syncing Media Houses DB..."):
+                with cool_loading("Syncing Media Houses DB..."):
                     r = sync_notion_advisor_to_db()
                     if r.get("error"):
                         st.error(f"Error: {r['error']}")
@@ -1188,7 +1188,7 @@ with tabs[1]:  # COMPANIES
             sq = st.text_input("Search", placeholder="Search domain or name...", label_visibility="collapsed", key="csearch")
         with cc2:
             if st.button("🔄 Sync Notion", key="nsync", width="stretch"):
-                with st.spinner("Syncing..."):
+                with cool_loading("Syncing..."):
                     r = sync_notion_to_db()
                     if r.get("error"):
                         st.error(f"Error: {r['error']}")
@@ -1250,7 +1250,7 @@ with tabs[1]:  # COMPANIES
             st.caption("Optional: import company/contact from Notion (sync only). Person and company research is done by Claude only — Notion contact details are not used for research.")
             if st.button("Find in Notion", key="lisync"):
                 if li_url:
-                    with st.spinner("Checking Notion..."):
+                    with cool_loading("Checking Notion..."):
                         lead = lookup_lead_in_notion(li_url)
                     if lead and lead.get("domain"):
                         cid = upsert_company(domain=lead["domain"], name=lead.get("name") or lead["domain"],
@@ -1465,7 +1465,7 @@ with tabs[2]:  # INTELLIGENCE
         rn = []
         if page_id:
             if cache_key not in st.session_state.research_cache:
-                with st.spinner("Loading from Notion..."):
+                with cool_loading("Loading from Notion..."):
                     rn = fetch_research_from_notion(page_id)
                     st.session_state.research_cache[cache_key] = rn
             else:
@@ -1534,7 +1534,7 @@ with tabs[2]:  # INTELLIGENCE
                 st.markdown(f"<div style='font-size:12px;color:var(--text-2);margin-bottom:8px;'>{_stored_rationale}</div>", unsafe_allow_html=True)
         if has_perm("can_use_strategist") and st.button("Get recommendation" if not _stored_key else "Refresh recommendation", key="btn_offering_recommend", width="content", help="AI suggests MediaOS or Accelerate from company research and Drive context"):
             try:
-                with st.spinner("Checking research and Drive..."):
+                with cool_loading("Checking research and Drive..."):
                     _research_for_offering = (_extra_offering.get("research_full") or "").strip()
                     if not _research_for_offering and _intel_sid:
                         _sess_sum, _ = get_session_summary(_intel_sid)
@@ -1542,7 +1542,7 @@ with tabs[2]:  # INTELLIGENCE
                     if not _research_for_offering:
                         _research_for_offering = (st.session_state.get(f"research_fresh_result_{cache_key}") or "").strip()
                     _lh2 = get_lh2_knowledge_context()
-                with st.spinner("Recommending offering..."):
+                with cool_loading("Recommending offering..."):
                     _result = recommend_offering_for_company(_research_for_offering, _lh2, comp.get("domain"))
                 _pk = (_result.get("product_key") or "").strip().lower() if _result else None
                 if _pk in ("mediaos", "accelerate"):
@@ -1897,7 +1897,7 @@ with tabs[2]:  # INTELLIGENCE
                 # Dynamic platform analytics expander (Similarweb + presence signals)
                 platform_presence_analytics = (_pp_ed.get("platform_presence_analytics") or {}) if isinstance(_pp_ed, dict) else {}
                 if st.button("🔄 Refresh platform analytics", key=f"refresh_platform_analytics_{cache_key}", width="content"):
-                    with st.spinner("Refreshing platform analytics..."):
+                    with cool_loading("Refreshing platform analytics..."):
                         fresh_analytics = build_platform_analytics_for_domain(
                             comp.get("domain", ""),
                             platform_presence=platform_presence,
@@ -2210,7 +2210,7 @@ with tabs[2]:  # INTELLIGENCE
             with cmd_col2:
                 run_cmd = st.button("Run", key=f"research_cmd_run_{cache_key}", type="primary", width="stretch")
             if run_cmd and (research_cmd or "").strip():
-                with st.spinner("Running command…"):
+                with cool_loading("Running command…"):
                     current_for_ai = (html_to_plain_text(current_research_text) if is_html_content(current_research_text) else current_research_text) or research_full_display
                     cmd_result = research_command_ai(comp.get("domain", ""), current_for_ai, research_cmd.strip())
                 if cmd_result:
@@ -2296,7 +2296,7 @@ with tabs[2]:  # INTELLIGENCE
                 email_match = re.search(r"[\w.-]+@[\w.-]+\.\w+", raw)
                 if linkedin_match:
                     url = linkedin_match.group(0).strip().rstrip(".,;:)")
-                    with st.spinner("Running AI research on this person..."):
+                    with cool_loading("Running AI research on this person..."):
                         brief = research_person_for_company(comp=comp, research_notes=rn, linkedin_url=url)
                     st.session_state.intel_lookup_lead = {"linkedin": url, "name": "", "email": "", "role": "Contact", "domain": comp.get("domain", "")}
                     st.session_state.intel_person_brief = brief
@@ -2304,7 +2304,7 @@ with tabs[2]:  # INTELLIGENCE
                     st.rerun()
                 elif email_match:
                     em = email_match.group(0).strip()
-                    with st.spinner("Running AI research on this person..."):
+                    with cool_loading("Running AI research on this person..."):
                         brief = research_person_for_company(comp=comp, research_notes=rn, email=em)
                     st.session_state.intel_lookup_lead = {"email": em, "name": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
                     st.session_state.intel_person_brief = brief
@@ -2314,7 +2314,7 @@ with tabs[2]:  # INTELLIGENCE
                     suggestion_phrases = ("missing", "add ", "add a", "expand", "section on", "suggest", "what's missing", "what to add")
                     is_suggestion = any(p in raw.lower() for p in suggestion_phrases)
                     if is_suggestion:
-                        with st.spinner("Asking AI for suggestion..."):
+                        with cool_loading("Asking AI for suggestion..."):
                             suggestion = intelligence_request(comp, rn, raw)
                         st.session_state.intel_suggestion = suggestion
                         st.session_state.intel_suggestion_raw = raw
@@ -2322,7 +2322,7 @@ with tabs[2]:  # INTELLIGENCE
                         st.session_state.intel_person_brief = None
                         st.rerun()
                     else:
-                        with st.spinner("Running AI research on this person..."):
+                        with cool_loading("Running AI research on this person..."):
                             brief = research_person_for_company(comp=comp, research_notes=rn, person_name=raw)
                         st.session_state.intel_lookup_lead = {"name": raw, "email": "", "linkedin": "", "role": "Contact", "domain": comp.get("domain", "")}
                         st.session_state.intel_person_brief = brief
@@ -2692,7 +2692,7 @@ with tabs[3]:  # STRATEGIST
                 if do_linkedin_lookup:
                     rn = st.session_state.research_cache.get(research_cache_key, [])
                     if not rn and comp.get("notion_page_id"):
-                        with st.spinner("Loading research from Notion…"):
+                        with cool_loading("Loading research from Notion…"):
                             rn = fetch_research_from_notion(comp["notion_page_id"])
                             if rn:
                                 st.session_state.research_cache[research_cache_key] = rn
@@ -2709,7 +2709,7 @@ with tabs[3]:  # STRATEGIST
                     ).strip()
                     research_combined = (research_full or research_notes_text or "").strip()
                     company_name = comp.get("domain") or comp.get("name") or "this company"
-                    with st.spinner("Extracting names from SPOC tables…"):
+                    with cool_loading("Extracting names from SPOC tables…"):
                         contacts = extract_spoc_table_contacts("", research_combined, company_name)
                     if not contacts:
                         st.info("No SPOC table found in research. Run deep research in Intelligence to get a SPOC/stakeholder table first.")
@@ -2839,7 +2839,7 @@ with tabs[3]:  # STRATEGIST
                             _name = (_name or "").strip()
                             if not _name:
                                 continue
-                            with st.spinner(f"Finding LinkedIn for {_name}…"):
+                            with cool_loading(f"Finding LinkedIn for {_name}…"):
                                 _url = get_linkedin_url_for_contact(_name, _company)
                             _new_list.append({"name": _name, "role": _role, "company": _company, "linkedin_url": _url or ""})
                         st.session_state[linkedin_results_key] = _new_list
@@ -2988,7 +2988,7 @@ with tabs[3]:  # STRATEGIST
                                 for idx, entry in enumerate(results_list):
                                     entry_name = (entry.get("name") or "").strip()
                                     if name_asked in entry_name or entry_name.lower() == name_asked.lower():
-                                        with st.spinner(f"Re-checking LinkedIn for {entry_name}…"):
+                                        with cool_loading(f"Re-checking LinkedIn for {entry_name}…"):
                                             new_url = get_linkedin_url_for_contact(entry_name, entry.get("company") or default_company)
                                         new_list = list(results_list)
                                         new_list[idx] = {**new_list[idx], "linkedin_url": new_url or ""}
@@ -3033,7 +3033,7 @@ with tabs[3]:  # STRATEGIST
                                         name = (name or "").strip()
                                         if not name:
                                             continue
-                                        with st.spinner(f"Finding LinkedIn for {name}…"):
+                                        with cool_loading(f"Finding LinkedIn for {name}…"):
                                             new_url = get_linkedin_url_for_contact(name, company)
                                         new_list.append({"name": name, "role": role, "company": company, "linkedin_url": new_url or ""})
                                     if new_list != results_list:
@@ -3073,7 +3073,7 @@ with tabs[3]:  # STRATEGIST
                             with row_col2:
                                 if name != "—":
                                     if st.button("Find again", key=f"relookup_{linkedin_results_key}_{i}", width="stretch", help="Re-run search for this person"):
-                                        with st.spinner(f"Searching again for {name}…"):
+                                        with cool_loading(f"Searching again for {name}…"):
                                             new_url = get_linkedin_url_for_contact(name, r.get("company") or comp.get("domain") or "")
                                         new_list = list(results_list)
                                         new_list[i] = {**new_list[i], "linkedin_url": new_url or ""}
@@ -3311,7 +3311,7 @@ with tabs[3]:  # STRATEGIST
                         st.warning("Enter a LinkedIn URL or email above, or select a contact that has one.")
                     else:
                         try:
-                            with st.spinner("Enriching contact..."):
+                            with cool_loading("Enriching contact..."):
                                 record_id, req_id, status = request_enrichment(lookup_identifier, user["id"])
                             if record_id and status == "completed":
                                 st.session_state[enrich_result_key] = record_id
@@ -3425,7 +3425,7 @@ with tabs[3]:  # STRATEGIST
                     if research_key not in st.session_state:
                         # Check if we should auto-load research
                         if db_email:  # Only research if recipient has email
-                            with st.spinner("Researching recipient..."):
+                            with cool_loading("Researching recipient..."):
                                 st.session_state[research_key] = research_recipient(ctid)
                         else:
                             st.session_state[research_key] = None
@@ -3506,14 +3506,14 @@ with tabs[3]:  # STRATEGIST
                         
                         # Refresh button
                         if st.button("🔄 Refresh Research", key="refresh_recipient_research"):
-                            with st.spinner("Researching recipient..."):
+                            with cool_loading("Researching recipient..."):
                                 st.session_state[research_key] = research_recipient(ctid, force_refresh=True)
                                 st.rerun()
                 elif db_email:
                     # Show manual trigger if no research yet
                     st.caption("💡 Recipient research helps personalize your outreach")
                     if st.button("🔍 Research Recipient", key="trigger_recipient_research"):
-                        with st.spinner("Researching recipient..."):
+                        with cool_loading("Researching recipient..."):
                             st.session_state[research_key] = research_recipient(ctid, force_refresh=True)
                             st.rerun()
                 else:
@@ -3539,7 +3539,7 @@ with tabs[3]:  # STRATEGIST
                         if _is_placeholder_contact(ct_ctx, comp):
                             st.warning("Select a specific SPOC with a real name and LinkedIn. Current contact looks like a placeholder (e.g. domain as name).")
                         else:
-                            with st.spinner("Building outreach plan..."):
+                            with cool_loading("Building outreach plan..."):
                                 rn = st.session_state.research_cache.get(research_cache_key, [])
                                 recipient_research_data = st.session_state.get(f"recipient_research_{ctid}")
                                 plan = generate_outreach_plan(comp, ct_ctx, user["id"], sid, sender_name, rn, sender_email=sender_email, product_key=_product_key_for_strategist, recipient_research=recipient_research_data)
@@ -3830,7 +3830,7 @@ with tabs[4]:  # ACTIONS
                 if enable_sel and st.session_state.get(sel_steps_key):
                     if st.button("🗑 Delete selected", key=f"actions_delete_sel_{sid}", type="secondary", use_container_width=True):
                         import time as _time
-                        with st.spinner("Deleting selected actions..."):
+                        with cool_loading("Deleting selected actions..."):
                             for _aid in list(st.session_state[sel_steps_key]):
                                 try:
                                     delete_action(int(_aid))
@@ -3982,7 +3982,7 @@ with tabs[4]:  # ACTIONS
                     trigger_action = next((s for s in seq["steps"] if s["id"] == trigger_id), None)
                     remaining = [s for s in seq["steps"] if s["status"] in ("planned", "scheduled", "drafted")]
                     if trigger_action and remaining:
-                        with st.spinner("AI replanning remaining steps..."):
+                        with cool_loading("AI replanning remaining steps..."):
                             rn = st.session_state.research_cache.get(research_cache_key, [])
                             advice = replan_on_response(
                                 comp, ct, user["id"], sid, trigger_action,
@@ -4638,7 +4638,7 @@ with tabs[10]:  # ADVISOR
     if prompt:
         st.session_state.advisor_messages.append({"role": "user", "content": prompt})
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with cool_loading("Thinking..."):
                 reply = advisor_chat(
                     user["id"],
                     prompt,
@@ -4680,7 +4680,7 @@ with tabs[11]:  # BULK IMPORT
     with c3:
         if st.session_state.get("bulk_import_last_created"):
             if st.button("Undo last commit", key="bulk_import_undo"):
-                with st.spinner("Undoing last commit…"):
+                with cool_loading("Undoing last commit…"):
                     res = undo_created(st.session_state.get("bulk_import_last_created") or [])
                 st.success(f"Undone: {res.get('undone', 0)} item(s)")
                 for e in res.get("errors") or []:
@@ -4688,12 +4688,12 @@ with tabs[11]:  # BULK IMPORT
                 st.session_state.bulk_import_last_created = []
 
     if analyze_file:
-        with st.spinner("Analyzing file (no writes)…"):
+        with cool_loading("Analyzing file (no writes)…"):
             preview = analyze_from_file(uploaded, verify_ownership=verify_ownership)
         st.session_state.bulk_import_preview = preview
 
     if analyze_text:
-        with st.spinner("Analyzing entries (no writes)…"):
+        with cool_loading("Analyzing entries (no writes)…"):
             preview = analyze_from_text(manual_text, verify_ownership=verify_ownership)
         st.session_state.bulk_import_preview = preview
 
@@ -4735,7 +4735,7 @@ with tabs[11]:  # BULK IMPORT
         )
 
         if st.button("Commit reviewed rows", key="bulk_import_commit"):
-            with st.spinner("Committing selected rows…"):
+            with cool_loading("Committing selected rows…"):
                 summary = commit_rows(edited.to_dict(orient="records"), allow_new_parents=allow_new_parents)
             st.session_state.bulk_import_last_created = summary.get("created") or []
 

@@ -20,7 +20,7 @@ from db_ops import (
 )
 from integrations import refine_email_draft, create_gmail_draft, parse_email_content
 from config import ACTION_TYPES, ACTION_CHANNELS, ACTION_STATUSES, ACTION_STATUS_COLORS
-from ui_helpers import bdg, display_full_name
+from ui_helpers import bdg, display_full_name, cool_loading
 from services.deck_links import inject_deck_links_into_email_body
 
 
@@ -279,7 +279,7 @@ def render_ai_refinement(step, seq_id, channel="email"):
     )
     if st.button(f"Refine {draft_label}", key=f"refine_btn_{step_id}", type="primary", width="stretch"):
         if (instruction or "").strip():
-            with st.spinner("Refining…"):
+            with cool_loading("Refining…"):
                 revised = refine_email_draft(current_text, instruction.strip(), draft_type="linkedin" if is_linkedin else "email")
             if revised:
                 revisions_list = st.session_state.get(rev_list_key) or []

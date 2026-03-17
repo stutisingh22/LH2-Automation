@@ -1,12 +1,12 @@
 """
-Bulk Domain Import — CSV/XLSX upload, classify independent vs media house, add to DB + Notion.
+Bulk Domain Import — CSV/XLSX upload, classify independent vs media house, add to DB only.
 
 Flow:
 - Parse file → extract domains (with www trimming / normalization for existence check).
 - If domain already exists (main companies or advisor/media house DB) → flag only.
 - If new: AI classifies independent vs media_house.
-- Independent → add to Notion (Independent DB) + app companies table.
-- Media house → if parent matches existing media house → add as child to Notion (DB2) + advisor_companies; else flag for review.
+- Independent → add to companies table.
+- Media house → if parent matches existing media house → add as child to advisor_companies; else flag for review.
 """
 
 import io
@@ -23,10 +23,6 @@ from db_ops import (
     get_or_create_advisor_company_for_parent, delete_advisor_parent,
 )
 from integrations import (
-    create_notion_contact_page,
-    archive_notion_page,
-    create_notion_advisor_page,
-    archive_notion_advisor_page,
     classify_domains_independent_or_media_house,
     classify_entries_independent_or_media_house,
     verify_parent_from_web,
@@ -326,7 +322,7 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
 
 def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
     """
-    Commit reviewed rows into DBs/Notion. Requires explicit parent_confirmed for media_house rows.
+    Commit reviewed rows into DB only. Requires explicit parent_confirmed for media_house rows.
     Returns summary + created items for undo.
     """
     result = {
@@ -356,14 +352,13 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
 
         if cl == "independent":
             try:
-                notion_page_id = create_notion_contact_page(domain=dom, name=label)
-                company_id = upsert_company(dom, name=label, notion_page_id=notion_page_id)
+                company_id = upsert_company(dom, name=label, notion_page_id=None)
                 result["added_independent"].append(label)
                 result["created"].append({
                     "type": "independent",
                     "domain": dom,
                     "company_id": company_id,
-                    "notion_page_id": notion_page_id,
+                    "notion_page_id": None,
                 })
             except Exception as e:
                 log.exception("Commit independent failed for %s: %s", dom, e)
@@ -388,15 +383,14 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                         "parent_name": parent_confirmed,
                     })
                 else:
-                    notion_page_id = create_notion_advisor_page(dom, parent_confirmed)
-                    advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=notion_page_id)
+                    advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=None)
                     result["added_media_house"].append(label)
                     result["created"].append({
                         "type": "media_house",
                         "domain": dom,
                         "parent_name": parent_confirmed,
                         "advisor_id": advisor_id,
-                        "notion_page_id": notion_page_id,
+                        "notion_page_id": None,
                     })
             except Exception as e:
                 log.exception("Commit media_house failed for %s: %s", dom, e)
@@ -408,21 +402,16 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
 
 
 def undo_created(created: List[dict]) -> dict:
-    """Undo a previous commit: deletes DB rows and archives Notion pages created by this tool."""
+    """Undo a previous commit: deletes DB rows only (no Notion side-effects)."""
     out = {"undone": 0, "errors": []}
     for item in created or []:
         try:
             t = item.get("type")
-            page_id = item.get("notion_page_id")
             if t == "independent":
                 delete_company_by_domain(item.get("domain"))
-                if page_id:
-                    archive_notion_page(page_id)
                 out["undone"] += 1
             elif t == "media_house":
                 delete_advisor_company(item.get("domain"), item.get("parent_name"))
-                if page_id:
-                    archive_notion_advisor_page(page_id)
                 out["undone"] += 1
             elif t == "media_house_parent":
                 delete_advisor_parent(item.get("parent_name"))

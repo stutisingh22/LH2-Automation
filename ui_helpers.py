@@ -5,6 +5,11 @@ Design: Intentional light theme. Clean, calm, professional, enterprise-grade.
 Linear/Stripe/Vercel-inspired. High contrast, minimal color, no SaaS fluff.
 """
 
+from __future__ import annotations
+
+from contextlib import contextmanager
+import html
+import uuid
 import streamlit as st
 from config import ROLE_PERMISSIONS
 
@@ -120,6 +125,84 @@ section[data-testid="stSidebar"][aria-expanded="false"]{transform:translateX(0)!
 .stTextInput>div>div>input:focus,.stTextArea>div>div>textarea:focus{border-color:var(--accent)!important;box-shadow:0 0 0 2px rgba(37,99,235,0.08)!important}
 .stSelectbox>div>div{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:var(--radius)!important}
 .stSelectbox label,.stTextInput label,.stTextArea label{color:var(--text-2)!important;font-weight:500!important;font-size:11px!important}
+
+/* ── LH2 loader overlay ── */
+.lh2-loader-overlay{
+  position:fixed; inset:0;
+  z-index:100000;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(246,248,251,0.72);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.lh2-loader-card{
+  width:min(520px, 92vw);
+  background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,255,255,0.92));
+  border:1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 18px 45px rgba(15,23,42,0.12);
+  border-radius: 14px;
+  padding: 18px 18px 16px 18px;
+}
+.lh2-loader-top{
+  display:flex; align-items:center; gap:12px;
+}
+.lh2-loader-mark{
+  width:40px; height:40px; border-radius:12px;
+  display:grid; place-items:center;
+  background: radial-gradient(120% 120% at 10% 10%, rgba(37,99,235,0.18), rgba(37,99,235,0.06) 45%, rgba(255,255,255,0.0) 70%);
+  border:1px solid rgba(37,99,235,0.18);
+  position:relative;
+  overflow:hidden;
+}
+.lh2-loader-diamond{
+  color: var(--accent);
+  font-size: 18px;
+  transform-origin:center;
+  animation: lh2Diamond 1.1s ease-in-out infinite;
+}
+.lh2-loader-mark::after{
+  content:"";
+  position:absolute; inset:-40%;
+  background: conic-gradient(from 180deg, rgba(37,99,235,0.0), rgba(37,99,235,0.18), rgba(37,99,235,0.0));
+  animation: lh2Orbit 1.2s linear infinite;
+}
+.lh2-loader-texts{flex:1; min-width:0}
+.lh2-loader-title{
+  font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase;
+  color: var(--text-2);
+}
+.lh2-loader-msg{
+  margin-top:2px;
+  font-size:14px; font-weight:600;
+  color: var(--text);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.lh2-loader-bar{
+  margin-top:12px;
+  height:8px;
+  background: rgba(148,163,184,0.25);
+  border-radius: 999px;
+  overflow:hidden;
+  border: 1px solid rgba(226,232,240,0.85);
+}
+.lh2-loader-bar > span{
+  display:block;
+  height:100%;
+  width:40%;
+  background: linear-gradient(90deg, rgba(37,99,235,0.0), rgba(37,99,235,0.75), rgba(37,99,235,0.0));
+  animation: lh2Scan 1.15s ease-in-out infinite;
+}
+@keyframes lh2Orbit{to{transform:rotate(360deg)}}
+@keyframes lh2Diamond{
+  0%{transform:scale(0.96) rotate(0deg)}
+  50%{transform:scale(1.08) rotate(12deg)}
+  100%{transform:scale(0.96) rotate(0deg)}
+}
+@keyframes lh2Scan{
+  0%{transform:translateX(-70%)}
+  50%{transform:translateX(80%)}
+  100%{transform:translateX(170%)}
+}
 
 /* ── Sidebar: intentional light, no pills ── */
 [data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(> div:nth-child(2)){position:relative!important;margin-bottom:4px!important}
@@ -323,6 +406,46 @@ a:hover{text-decoration:underline!important}
 iframe[src^="data:text/html"]{min-height:700px!important;height:75vh!important}
 </style>
 """, unsafe_allow_html=True)
+
+
+def _ensure_css_injected():
+    # `apps.py` already calls `inject_css()` on startup, but helpers may be used elsewhere.
+    if not st.session_state.get("_lh2_css_injected"):
+        inject_css()
+        st.session_state["_lh2_css_injected"] = True
+
+
+@contextmanager
+def cool_loading(message: str = "Loading…"):
+    """
+    Full-screen LH2 loading overlay.
+    Use in UI code in place of `st.spinner` for a more intentional loading experience.
+    """
+    _ensure_css_injected()
+    ph = st.empty()
+    msg = html.escape((message or "Loading…").strip() or "Loading…")
+    _ = uuid.uuid4()  # unique per render; kept to avoid accidental DOM reuse
+    ph.markdown(
+        f"""
+<div class="lh2-loader-overlay" role="status" aria-live="polite">
+  <div class="lh2-loader-card">
+    <div class="lh2-loader-top">
+      <div class="lh2-loader-mark"><div class="lh2-loader-diamond">◆</div></div>
+      <div class="lh2-loader-texts">
+        <div class="lh2-loader-title">LH2 COMMAND CENTER</div>
+        <div class="lh2-loader-msg">{msg}</div>
+      </div>
+    </div>
+    <div class="lh2-loader-bar"><span></span></div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    try:
+        yield
+    finally:
+        ph.empty()
 
 
 # ── Markdown tables → proper HTML (no separator row) ─────────
