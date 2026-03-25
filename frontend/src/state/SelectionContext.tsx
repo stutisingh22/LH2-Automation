@@ -85,14 +85,13 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   }, [searchParams])
 
   useEffect(() => {
-    if (location.pathname !== '/intelligence') return
     const cur = new URLSearchParams(location.search)
     const expected = workspaceParamsFromSelection(selection)
     if (workspaceKeysEqual(cur, expected)) return
     const next = new URLSearchParams(location.search)
     applyWorkspaceToSearchParams(next, selection)
     setSearchParams(next, { replace: true })
-  }, [selection, location.pathname, location.search, setSearchParams])
+  }, [selection, location.search, setSearchParams])
 
   useEffect(() => {
     sessionStorage.setItem(KEY, JSON.stringify(selection))

@@ -1,7 +1,6 @@
 import type { SelectionState } from '../state/SelectionContext'
 
 export const WORKSPACE_QUERY_KEYS = [
-  'source',
   'sel_source',
   'sel_company',
   'sel_advisor',
@@ -18,12 +17,14 @@ function parseNum(v: string | null): number | null {
 }
 
 export function workspaceParamsPresent(sp: URLSearchParams): boolean {
-  return WORKSPACE_QUERY_KEYS.some((k) => sp.has(k))
+  // Only treat the URL as representing a selected workspace when an actual scoped id is present.
+  // `sel_source` alone is not enough, otherwise it can overwrite an in-memory selection with null ids.
+  return sp.has('sel_company') || sp.has('sel_advisor') || sp.has('sel_contact') || sp.has('sel_session')
 }
 
 export function workspaceFromSearchParams(sp: URLSearchParams): SelectionState | null {
   if (!workspaceParamsPresent(sp)) return null
-  const sourceParam = sp.get('sel_source') ?? sp.get('source')
+  const sourceParam = sp.get('sel_source')
   return {
     source: sourceParam === 'media' ? 'media' : 'independent',
     companyId: parseNum(sp.get('sel_company')),

@@ -137,7 +137,8 @@ export default function CompaniesPage() {
   useLayoutEffect(() => {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1)
     const limit = clampPageSize(parseInt(searchParams.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
-    const source: 'independent' | 'media' = searchParams.get('source') === 'media' ? 'media' : 'independent'
+    const sourceInUrl = searchParams.get('sel_source') ?? searchParams.get('source')
+    const source: 'independent' | 'media' = sourceInUrl === 'media' ? 'media' : 'independent'
     const qParam = searchParams.get('q') ?? ''
     setListPage(page)
     setPageSize(limit)
@@ -154,16 +155,15 @@ export default function CompaniesPage() {
   }, [crmSource, dq])
 
   useEffect(() => {
-    const sourceInUrl = searchParams.get('source')
-    if (sourceInUrl && sourceInUrl !== crmSource) return
-    const p = new URLSearchParams()
-    p.set('source', crmSource)
+    const hasScopedSel =
+      searchParams.has('sel_company') || searchParams.has('sel_advisor') || searchParams.has('sel_contact') || searchParams.has('sel_session')
+    const p = new URLSearchParams(searchParams)
+    if (!hasScopedSel) p.set('source', crmSource)
+    else p.delete('source')
     p.set('page', String(listPage))
     p.set('limit', String(pageSize))
     if (dq.trim()) p.set('q', dq.trim())
-    for (const [k, v] of new URLSearchParams(searchParams).entries()) {
-      if (k.startsWith('sel_')) p.set(k, v)
-    }
+    else p.delete('q')
     if (companiesUrlParamsEqual(p, new URLSearchParams(searchParams))) return
     setSearchParams(p, { replace: true })
   }, [crmSource, listPage, pageSize, dq, searchParams, setSearchParams])

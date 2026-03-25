@@ -455,7 +455,8 @@ export default function DashboardPage() {
     const qParam = searchParams.get('q') ?? ''
     const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1)
     const limit = clampPageSize(parseInt(searchParams.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
-    const source: 'independent' | 'media' = searchParams.get('source') === 'media' ? 'media' : 'independent'
+    const sourceInUrl = searchParams.get('sel_source') ?? searchParams.get('source')
+    const source: 'independent' | 'media' = sourceInUrl === 'media' ? 'media' : 'independent'
     const offer: 'indication' | 'general_acq' =
       searchParams.get('offer') === 'general_acq' ? 'general_acq' : 'indication'
     const kpi = parseKpiParam(searchParams.get('kpi'))
@@ -507,28 +508,47 @@ export default function DashboardPage() {
   }, [searchParams, todayDisplay])
 
   useEffect(() => {
-    const sourceInUrl = searchParams.get('source')
-    if (sourceInUrl && sourceInUrl !== crmSource) return
-    const p = new URLSearchParams()
-    p.set('source', crmSource)
+    const hasScopedSel =
+      searchParams.has('sel_company') || searchParams.has('sel_advisor') || searchParams.has('sel_contact') || searchParams.has('sel_session')
+    const p = new URLSearchParams(searchParams)
+    if (!hasScopedSel) p.set('source', crmSource)
+    else p.delete('source')
     p.set('page', String(listPage))
     if (debouncedSearch) p.set('q', debouncedSearch)
+    else p.delete('q')
     if (pageSize !== DEFAULT_PAGE_SIZE) p.set('limit', String(pageSize))
+    else p.delete('limit')
+
     if (offerTab === 'general_acq') p.set('offer', 'general_acq')
+    else p.delete('offer')
+
     if (activeKpiKey !== 'total') p.set('kpi', activeKpiKey)
+    else p.delete('kpi')
+
     if (dueNeedsUrlParam(activeKpiKey, dueDisplayFilters, todayDisplay)) {
       p.set('due', dueDisplayFilters.join('|'))
+    } else {
+      p.delete('due')
     }
-    if (crmSource === 'independent' && selectedGroup?.company_id) {
-      p.set('company', String(selectedGroup.company_id))
-    }
+
+    if (crmSource === 'independent' && selectedGroup?.company_id) p.set('company', String(selectedGroup.company_id))
+    else p.delete('company')
+
     if (crmSource === 'media') {
       if (expandedMediaHouseKey) p.set('expand', expandedMediaHouseKey)
+      else p.delete('expand')
       if (selectedMediaBrand?.brand.advisor_company_id != null) {
         p.set('brand', String(selectedMediaBrand.brand.advisor_company_id))
+      } else {
+        p.delete('brand')
       }
+    } else {
+      p.delete('expand')
+      p.delete('brand')
     }
+
     if (detailTab === 'campaign') p.set('detail', 'campaign')
+    else p.delete('detail')
 
     if (dashboardUrlParamsEqual(p, new URLSearchParams(searchParams))) return
     setSearchParams(p, { replace: true })
