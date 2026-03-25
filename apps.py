@@ -830,7 +830,7 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{display_full_name(user['username'])} · {user['role']}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:11px;color:var(--text-3);'>{display_full_name(user['username']) if user else ''} · {user['role'] if user else ''}</div>", unsafe_allow_html=True)
     if st.button("Sign Out", key="sb_logout", width="stretch"):
         clear_session_user()
         for k in list(st.session_state.keys()):
