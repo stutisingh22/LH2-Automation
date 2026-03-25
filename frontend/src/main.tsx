@@ -7,19 +7,22 @@ import { AuthProvider } from './context/AuthContext'
 import { MetaProvider } from './state/MetaContext'
 import { SelectionProvider } from './state/SelectionContext'
 import { IntelligenceCacheProvider } from './state/IntelligenceCacheContext'
+import { ApiLoadingProvider } from './context/ApiLoadingContext'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <AuthProvider>
-        <MetaProvider>
-          <SelectionProvider>
-            <IntelligenceCacheProvider>
-              <App />
-            </IntelligenceCacheProvider>
-          </SelectionProvider>
-        </MetaProvider>
-      </AuthProvider>
+      <ApiLoadingProvider>
+        <AuthProvider>
+          <MetaProvider>
+            <SelectionProvider>
+              <IntelligenceCacheProvider>
+                <App />
+              </IntelligenceCacheProvider>
+            </SelectionProvider>
+          </MetaProvider>
+        </AuthProvider>
+      </ApiLoadingProvider>
     </BrowserRouter>
   </StrictMode>,
 )

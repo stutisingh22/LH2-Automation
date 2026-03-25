@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch, getToken, streamStrategist, type ChatMessage, type Contact, type User } from '../api/client'
+import { apiLoadingBegin, apiLoadingEnd } from '../api/loadingBus'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
 import { MarkdownLazy } from '../ui/MarkdownLazy'
@@ -58,16 +59,19 @@ export default function StrategistPage() {
 
   const boardKey = (r: ContactsBoardRow) => `${(r.name || '').trim().toLowerCase()}|${(r.linkedin_url || '').trim()}`
 
-  const loadWorkspace = useCallback(async () => {
+  const loadWorkspace = useCallback(async (opts?: { silent?: boolean }) => {
     if (!cid) {
       setWs(null)
       return
     }
-    const data = await apiFetch<Workspace>(`/api/companies/${cid}/workspace`)
+    const data = await apiFetch<Workspace>(
+      `/api/companies/${cid}/workspace`,
+      opts?.silent === true ? { silent: true } : {},
+    )
     setWs(data)
   }, [cid])
 
-  const loadContactsBoard = useCallback(async () => {
+  const loadContactsBoard = useCallback(async (opts?: { silent?: boolean }) => {
     if (!cid) return
     const q = new URLSearchParams({ company_id: String(cid) })
     if (selection.source === 'media' && selection.advisorCompanyId != null) {
@@ -75,6 +79,7 @@ export default function StrategistPage() {
     }
     const r = await apiFetch<{ rows: ContactsBoardRow[]; from_extraction: boolean }>(
       `/api/strategist/contacts-board?${q}`,
+      opts?.silent === true ? { silent: true } : {},
     )
     setBoardRows(r.rows || [])
     setFromExtraction(Boolean(r.from_extraction))
@@ -90,7 +95,7 @@ export default function StrategistPage() {
   }, [cid, loadContactsBoard])
 
   useEffect(() => {
-    apiFetch<User[]>('/api/users').then((u) => {
+    apiFetch<User[]>('/api/users', { silent: true }).then((u) => {
       setUsers(u)
       if (!senderId && u.length) setSenderId(u[0].id)
     })
@@ -205,6 +210,7 @@ export default function StrategistPage() {
     if (!cid) return
     apiFetch<{ session_id: number }>(`/api/companies/${cid}/session`, {
       method: 'POST',
+      silent: true,
       json: { contact_id: contactId ?? null },
     }).then((r) => setSelection({ sessionId: r.session_id }))
   }, [cid, contactId, setSelection])
@@ -216,7 +222,9 @@ export default function StrategistPage() {
       setMessages([])
       return
     }
-    apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`).then((m) => setMessages(m.messages))
+    apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`, { silent: true }).then((m) =>
+      setMessages(m.messages),
+    )
   }, [sid])
 
   const senderEmail = users.find((u) => u.id === senderId)?.email || ''
@@ -264,7 +272,9 @@ export default function StrategistPage() {
         sender_email: senderEmail || null,
         recipient_research: recipientResearch,
       })
-      const m = await apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`)
+      const m = await apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`, {
+        silent: true,
+      })
       setMessages(m.messages)
       setStreamText('')
     } catch (ex) {
@@ -283,6 +293,7 @@ export default function StrategistPage() {
     try {
       const plan = await apiFetch<{ plan: Record<string, unknown>[] }>(`/api/sessions/${sid}/outreach-plan`, {
         method: 'POST',
+        silent: true,
         json: {
           sender_name: users.find((u) => u.id === senderId)?.username || '',
           sender_email: senderEmail || null,
@@ -308,26 +319,31 @@ export default function StrategistPage() {
 
   async function downloadPlanIcs() {
     if (!sid || !pendingPlan?.length) return
-    const token = getToken()
-    const res = await fetch(`/api/sessions/${sid}/outreach-plan/ics`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        steps: pendingPlan,
-        title: `LH2 — ${String(ws?.company?.domain || 'plan')}`,
-      }),
-    })
-    if (!res.ok) return
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'lh2_plan.ics'
-    a.click()
-    URL.revokeObjectURL(url)
+    apiLoadingBegin()
+    try {
+      const token = getToken()
+      const res = await fetch(`/api/sessions/${sid}/outreach-plan/ics`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          steps: pendingPlan,
+          title: `LH2 — ${String(ws?.company?.domain || 'plan')}`,
+        }),
+      })
+      if (!res.ok) return
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'lh2_plan.ics'
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      apiLoadingEnd()
+    }
   }
 
   async function runRecipientResearch(forceRefresh = false) {
@@ -337,7 +353,7 @@ export default function StrategistPage() {
     try {
       const r = await apiFetch<{ research: Record<string, unknown> }>(
         `/api/contacts/${contactId}/recipient-research`,
-        { method: 'POST', json: { force_refresh: forceRefresh } },
+        { method: 'POST', silent: true, json: { force_refresh: forceRefresh } },
       )
       setRecipientResearch(r.research || null)
     } catch (ex) {
@@ -354,14 +370,15 @@ export default function StrategistPage() {
     try {
       await apiFetch('/api/strategist/extract-contacts', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: cid,
           advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
           session_id: sid,
         },
       })
-      await loadContactsBoard()
-      await loadWorkspace()
+      await loadContactsBoard({ silent: true })
+      await loadWorkspace({ silent: true })
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Extract failed')
     } finally {
@@ -376,6 +393,7 @@ export default function StrategistPage() {
     try {
       await apiFetch('/api/strategist/add-contact-lookup', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: cid,
           advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
@@ -385,8 +403,8 @@ export default function StrategistPage() {
       })
       setLookupName('')
       setLookupRole('')
-      await loadContactsBoard()
-      await loadWorkspace()
+      await loadContactsBoard({ silent: true })
+      await loadWorkspace({ silent: true })
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Lookup failed')
     } finally {
@@ -403,14 +421,15 @@ export default function StrategistPage() {
     try {
       await apiFetch('/api/strategist/enrich-contacts', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: cid,
           advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
           rows,
         },
       })
-      await loadContactsBoard()
-      await loadWorkspace()
+      await loadContactsBoard({ silent: true })
+      await loadWorkspace({ silent: true })
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Enrichment failed')
     } finally {
@@ -427,6 +446,7 @@ export default function StrategistPage() {
     try {
       await apiFetch('/api/strategist/delete-contacts', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: cid,
           advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
@@ -434,8 +454,8 @@ export default function StrategistPage() {
         },
       })
       setSelectedRows(new Set())
-      await loadContactsBoard()
-      await loadWorkspace()
+      await loadContactsBoard({ silent: true })
+      await loadWorkspace({ silent: true })
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Delete failed')
     } finally {
@@ -460,6 +480,7 @@ export default function StrategistPage() {
       try {
         const r = await apiFetch<{ contact_id: number }>('/api/strategist/ensure-contact', {
           method: 'POST',
+          silent: true,
           json: {
             company_id: cid,
             advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
@@ -469,7 +490,7 @@ export default function StrategistPage() {
             linkedin_url: opt.row.linkedin_url === '—' ? '' : opt.row.linkedin_url,
           },
         })
-        await loadWorkspace()
+        await loadWorkspace({ silent: true })
         setContactId(r.contact_id)
         setSelection({ contactId: r.contact_id })
       } catch (ex) {
@@ -485,6 +506,7 @@ export default function StrategistPage() {
     try {
       await apiFetch(`/api/sessions/${sid}/strategist-draft-to-actions`, {
         method: 'POST',
+        silent: true,
         json: {
           sender_user_id: senderId,
           draft_content: draftText.trim(),
@@ -525,6 +547,7 @@ export default function StrategistPage() {
     try {
       const out = await apiFetch<{ draft_id: string }>('/api/gmail/draft', {
         method: 'POST',
+        silent: true,
         json: {
           account_email: senderEmail || null,
           to_email: ctCtx?.email || '',
@@ -548,6 +571,7 @@ export default function StrategistPage() {
     try {
       await apiFetch(`/api/sessions/${sid}/outreach-plan/commit`, {
         method: 'POST',
+        silent: true,
         json: { steps: pendingPlan, product_key: productKey, sender_user_id: senderId },
       })
       setPendingPlan(null)

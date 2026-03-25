@@ -9,7 +9,9 @@ export default function CalendarPage() {
 
   useEffect(() => {
     const src = selection.source === 'media' ? 'media' : 'independent'
-    apiFetch<{ items: { at: string; action: Record<string, unknown> }[] }>(`/api/calendar/upcoming?source=${src}`)
+    apiFetch<{ items: { at: string; action: Record<string, unknown> }[] }>(
+      `/api/calendar/upcoming?source=${src}`,
+    )
       .then((r) => setItems(r.items || []))
       .catch((e) => setErr(e instanceof Error ? e.message : 'Failed'))
   }, [selection.source])

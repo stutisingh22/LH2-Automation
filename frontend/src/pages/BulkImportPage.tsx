@@ -188,6 +188,7 @@ export default function BulkImportPage() {
     try {
       const summary = await apiFetch<{ created?: unknown[] }>('/api/bulk/commit', {
         method: 'POST',
+        silent: true,
         json: { rows, allow_new_parents: allowNewParents },
       })
       setLastCreated(summary.created || [])
@@ -205,7 +206,11 @@ export default function BulkImportPage() {
     setBusy(true)
     setErr('')
     try {
-      await apiFetch('/api/bulk/undo', { method: 'POST', json: { created: lastCreated } })
+      await apiFetch('/api/bulk/undo', {
+        method: 'POST',
+        silent: true,
+        json: { created: lastCreated },
+      })
       setLastCreated([])
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Undo failed')

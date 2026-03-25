@@ -25,7 +25,7 @@ export function MetaProvider({ children }: { children: ReactNode }) {
   const [cfg, setCfg] = useState<UiConfig | null>(null)
 
   useEffect(() => {
-    apiFetch<UiConfig>('/api/meta/config')
+    apiFetch<UiConfig>('/api/meta/config', { silent: true })
       .then(setCfg)
       .catch(() =>
         setCfg({

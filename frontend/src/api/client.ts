@@ -1,3 +1,5 @@
+import { apiLoadingBegin, apiLoadingEnd } from './loadingBus'
+
 const TOKEN_KEY = 'lh2_token'
 
 export function getToken(): string | null {
@@ -9,33 +11,43 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
-export async function apiFetch<T>(
-  path: string,
-  opts: RequestInit & { json?: unknown } = {},
-): Promise<T> {
+export type ApiFetchOptions = RequestInit & { json?: unknown; silent?: boolean }
+
+/**
+ * Global loading overlay on all routes unless opted out with `silent: true`.
+ * `silent` defaults to false via destructuring when omitted.
+ */
+export async function apiFetch<T>(path: string, opts: ApiFetchOptions = {}): Promise<T> {
+  const { json: jsonBody, silent = false, ...fetchOpts } = opts
+  const useLoader = !silent
+  if (useLoader) apiLoadingBegin()
   const headers: Record<string, string> = {
-    ...(opts.headers as Record<string, string>),
+    ...(fetchOpts.headers as Record<string, string>),
   }
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
-  let body = opts.body
-  if (opts.json !== undefined) {
+  let body = fetchOpts.body
+  if (jsonBody !== undefined) {
     headers['Content-Type'] = 'application/json'
-    body = JSON.stringify(opts.json)
+    body = JSON.stringify(jsonBody)
   }
-  const res = await fetch(path, { ...opts, headers, body })
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const j = await res.json()
-      if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
-    } catch {
-      /* ignore */
+  try {
+    const res = await fetch(path, { ...fetchOpts, headers, body })
+    if (!res.ok) {
+      let detail = res.statusText
+      try {
+        const j = await res.json()
+        if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail || `HTTP ${res.status}`)
     }
-    throw new Error(detail || `HTTP ${res.status}`)
+    if (res.status === 204) return undefined as T
+    return res.json() as Promise<T>
+  } finally {
+    if (useLoader) apiLoadingEnd()
   }
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
 }
 
 export type User = { id: number; username: string; email: string | null; role: string }
@@ -109,15 +121,26 @@ export async function streamStrategist(
   }
 }
 
-export async function downloadAuthorized(path: string, filename: string) {
-  const token = getToken()
-  const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-  if (!res.ok) throw new Error('Download failed')
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+export async function downloadAuthorized(
+  path: string,
+  filename: string,
+  opts: { silent?: boolean } = {},
+) {
+  const { silent = false } = opts
+  const useLoader = !silent
+  if (useLoader) apiLoadingBegin()
+  try {
+    const token = getToken()
+    const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    if (!res.ok) throw new Error('Download failed')
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  } finally {
+    if (useLoader) apiLoadingEnd()
+  }
 }

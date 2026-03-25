@@ -5,7 +5,7 @@ models.py — SQLAlchemy ORM models
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, Float, Boolean, DateTime,
-    ForeignKey, JSON, UniqueConstraint,
+    ForeignKey, JSON, UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship, declarative_base
 
@@ -62,6 +62,7 @@ class Contact(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     company = relationship("Company", back_populates="contacts")
+    __table_args__ = (Index("ix_contacts_company_id_name", "company_id", "name"),)
 
 
 class Session(Base):
@@ -82,6 +83,7 @@ class Session(Base):
     lead_score = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (Index("ix_sessions_company_id_updated_at", "company_id", "updated_at"),)
 
 
 class Message(Base):
@@ -120,6 +122,7 @@ class Action(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     draft_revisions = Column(JSON)  # list of revision strings (persists across refresh)
     draft_original = Column(Text)  # original draft before any revisions (for Version 1 after refresh)
+    __table_args__ = (Index("ix_actions_session_id_created_at", "session_id", "created_at"),)
 
 
 class MemoryEvent(Base):
@@ -216,6 +219,7 @@ class SpocContact(Base):
     extra_data = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (Index("ix_spoc_contacts_company_spoc", "company_id", "spoc_contact_id"),)
 
 
 class ProcessedGmailMessage(Base):

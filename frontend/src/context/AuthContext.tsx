@@ -30,7 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
     try {
-      const me = await apiFetch<User>('/api/auth/me')
+      const me = await apiFetch<User>('/api/auth/me', { silent: true })
       setUser(me)
     } catch {
       setToken(null)
@@ -47,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const r = await apiFetch<{ access_token: string }>('/api/auth/login', {
       method: 'POST',
+      silent: true,
       json: { username, password },
     })
     setToken(r.access_token)
@@ -57,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (username: string, password: string, email?: string) => {
       const r = await apiFetch<{ access_token: string }>('/api/auth/register', {
         method: 'POST',
+        silent: true,
         json: { username, password, email: email || null },
       })
       setToken(r.access_token)

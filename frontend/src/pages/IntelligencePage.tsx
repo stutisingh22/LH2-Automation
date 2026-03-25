@@ -147,7 +147,7 @@ export default function IntelligencePage() {
   })
 
   const loadWorkspace = useCallback(
-    async (opts?: { sessionId?: number | null; afterSave?: boolean }) => {
+    async (opts?: { sessionId?: number | null; afterSave?: boolean; silent?: boolean }) => {
       setLoadErr('')
       const q = new URLSearchParams()
       if (src === 'media' && aid != null) q.set('advisor_company_id', String(aid))
@@ -155,7 +155,10 @@ export default function IntelligencePage() {
       const effSid = opts?.sessionId !== undefined ? opts.sessionId : sid
       if (effSid != null) q.set('session_id', String(effSid))
       try {
-        const data = await apiFetch<IntelWorkspace>(`/api/intelligence/workspace?${q}`)
+        const data = await apiFetch<IntelWorkspace>(
+          `/api/intelligence/workspace?${q}`,
+          opts?.silent === true ? { silent: true } : {},
+        )
         const newFp = researchFingerprint(data)
         if (newFp !== researchFpRef.current) {
           setOverrides({})
@@ -244,6 +247,7 @@ export default function IntelligencePage() {
     setSectionsLoading(true)
     apiFetch<{ sections: IntelSection[] }>('/api/intelligence/research-sections', {
       method: 'POST',
+      silent: true,
       json: { display: displayForSplit, advisor_canonical: advisorCanon },
       signal: ac.signal,
     })
@@ -398,7 +402,7 @@ export default function IntelligencePage() {
             setOverrides({})
             setOpenSectionIds(new Set([0]))
             await loadWorkspace(
-              sessionIdDone != null ? { sessionId: sessionIdDone } : undefined,
+              sessionIdDone != null ? { sessionId: sessionIdDone, silent: true } : { silent: true },
             )
           }
         }
@@ -417,6 +421,7 @@ export default function IntelligencePage() {
     try {
       const r = await apiFetch<Record<string, unknown>>('/api/intelligence/offering-recommendation', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: src === 'independent' ? cid : null,
           advisor_company_id: src === 'media' ? aid : null,
@@ -466,6 +471,7 @@ export default function IntelligencePage() {
     try {
       const out = await apiFetch<SaveResearchResponse>('/api/intelligence/save-research', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: src === 'independent' ? cid : null,
           advisor_company_id: src === 'media' ? aid : null,
@@ -488,7 +494,9 @@ export default function IntelligencePage() {
         setSections(sectionsForSave)
       }
       await loadWorkspace(
-        sid != null ? { sessionId: sid, afterSave: true } : { afterSave: true },
+        sid != null
+          ? { sessionId: sid, afterSave: true, silent: true }
+          : { afterSave: true, silent: true },
       )
       setEditingIdx(null)
       const derr = (out.drive_error && String(out.drive_error).trim()) || ''
@@ -516,6 +524,7 @@ export default function IntelligencePage() {
     try {
       await apiFetch('/api/intelligence/delete-research', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: src === 'independent' ? cid : null,
           advisor_company_id: src === 'media' ? aid : null,
@@ -537,7 +546,7 @@ export default function IntelligencePage() {
       )
       researchFpRef.current = ''
       if (sid != null) setSelection({ sessionId: null })
-      await loadWorkspace({ sessionId: null })
+      await loadWorkspace({ sessionId: null, silent: true })
       setSections([])
       setOverrides({})
       setOpenSectionIds(new Set([0]))
@@ -556,6 +565,7 @@ export default function IntelligencePage() {
         '/api/intelligence/refresh-platform-analytics',
         {
           method: 'POST',
+          silent: true,
           json: {
             company_id: src === 'independent' ? cid : null,
             advisor_company_id: src === 'media' ? aid : null,
@@ -579,6 +589,7 @@ export default function IntelligencePage() {
     try {
       const r = await apiFetch<{ title: string; content: string }>('/api/intelligence/research-command', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: src === 'independent' ? cid : null,
           advisor_company_id: src === 'media' ? aid : null,
@@ -603,6 +614,7 @@ export default function IntelligencePage() {
         '/api/intelligence/research-command-append',
         {
           method: 'POST',
+          silent: true,
           json: {
             company_id: src === 'independent' ? cid : null,
             advisor_company_id: src === 'media' ? aid : null,
@@ -624,7 +636,7 @@ export default function IntelligencePage() {
       )
       setCmdResult(null)
       setCmd('')
-      await loadWorkspace()
+      await loadWorkspace({ silent: true })
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Append failed')
     } finally {
@@ -639,6 +651,7 @@ export default function IntelligencePage() {
     try {
       const r = await apiFetch<Record<string, unknown>>('/api/intelligence/intel-request', {
         method: 'POST',
+        silent: true,
         json: {
           company_id: src === 'independent' ? cid : null,
           advisor_company_id: src === 'media' ? aid : null,

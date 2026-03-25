@@ -76,7 +76,7 @@ export default function ActionsPage() {
   }, [sid])
 
   useEffect(() => {
-    apiFetch<User>('/api/auth/me')
+    apiFetch<User>('/api/auth/me', { silent: true })
       .then(setMe)
       .catch(() => setMe(null))
   }, [])
@@ -88,7 +88,9 @@ export default function ActionsPage() {
       setGmailConnected(null)
       return
     }
-    apiFetch<{ connected: boolean }>(`/api/gmail/status?account_email=${encodeURIComponent(accountEmail)}`)
+    apiFetch<{ connected: boolean }>(`/api/gmail/status?account_email=${encodeURIComponent(accountEmail)}`, {
+      silent: true,
+    })
       .then((r) => setGmailConnected(r.connected))
       .catch(() => setGmailConnected(null))
   }, [accountEmail])
@@ -115,14 +117,20 @@ export default function ActionsPage() {
 
   async function bulkDel() {
     if (!sid || !sel.length) return
-    await apiFetch(`/api/sessions/${sid}/actions/bulk-delete`, { method: 'POST', json: { action_ids: sel } })
+    await apiFetch(`/api/sessions/${sid}/actions/bulk-delete`, {
+      method: 'POST',
+      json: { action_ids: sel },
+    })
     setSel([])
     refreshBoard()
   }
 
   async function saveBody() {
     if (detailId == null) return
-    await apiFetch(`/api/actions/${detailId}`, { method: 'PATCH', json: { content_sent: bodyDraft } })
+    await apiFetch(`/api/actions/${detailId}`, {
+      method: 'PATCH',
+      json: { content_sent: bodyDraft },
+    })
     setUiMsg('Draft body saved.')
     refreshBoard()
   }
@@ -134,6 +142,7 @@ export default function ActionsPage() {
     try {
       await apiFetch(`/api/actions/${detailId}/refine-draft`, {
         method: 'POST',
+        silent: true,
         json: { instruction: refineInstr.trim(), draft_type: 'email' },
       })
       setRefineInstr('')
@@ -208,6 +217,7 @@ export default function ActionsPage() {
     try {
       const r = await apiFetch<{ advice: string }>(`/api/sessions/${sid}/replan`, {
         method: 'POST',
+        silent: true,
         json: {
           trigger_action_id: Number(replanTrigger),
           response_text: replanResp.trim(),
@@ -290,7 +300,9 @@ export default function ActionsPage() {
         <button
           type="button"
           className="secondary sm"
-          onClick={() => downloadAuthorized(`/api/sessions/${sid}/export.csv`, `export_${sid}.csv`)}
+          onClick={() =>
+            downloadAuthorized(`/api/sessions/${sid}/export.csv`, `export_${sid}.csv`)
+          }
         >
           Export CSV
         </button>

@@ -27,9 +27,14 @@ export default function SpocPage() {
   const statuses = meta?.contact_statuses || []
 
   async function setStatus(contactId: number, status: string) {
-    await apiFetch(`/api/pipeline/contacts/${contactId}/status`, { method: 'PATCH', json: { status } })
+    await apiFetch(`/api/pipeline/contacts/${contactId}/status`, {
+      method: 'PATCH',
+      json: { status },
+    })
     const params = q.trim() ? `?q=${encodeURIComponent(q)}` : ''
-    apiFetch<{ rows: Row[] }>(`/api/spoc/rows${params}`).then((r) => setRows(r.rows || []))
+    apiFetch<{ rows: Row[] }>(`/api/spoc/rows${params}`, { silent: true }).then((r) =>
+      setRows(r.rows || []),
+    )
   }
 
   return (

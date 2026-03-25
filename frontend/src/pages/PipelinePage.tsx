@@ -24,7 +24,7 @@ export default function PipelinePage() {
       json: { status },
     })
     const path = '/api/pipeline/media-houses'
-    apiFetch<Record<string, unknown>>(path).then(setData)
+    apiFetch<Record<string, unknown>>(path, { silent: true }).then(setData)
   }
 
   const labels = meta?.contact_status_labels || {}

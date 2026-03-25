@@ -1,77 +1,14 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api/client'
+import {
+  mapApiPublisherGroup,
+  type ApiPublisherGroup,
+  type UiPublisherGroup as CompanyGroup,
+} from '../api/publisherCrm'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
 import { useDebounced } from '../hooks/useDebounced'
-
-type ContactSummary = {
-  kind: 'contact' | 'spoc'
-  name: string
-  role: string
-  email: string
-  linkedin_url: string
-}
-
-type PublisherCrmRow = {
-  company_id: number
-  contact_id: number
-  advisor_company_id: number | null
-  parent_name?: string
-  company_domain: string
-  status: string
-  status_label: string
-  next_step_date: string
-  due_today: boolean
-  monthly_visits: number | null
-  syndication: string[]
-  contacts_summary: ContactSummary[]
-  planned_preview?: unknown[]
-  advisor_company_ids?: number[]
-  contact_ids?: number[]
-}
-
-type BrandSummary = {
-  company_domain: string
-  status: string
-  status_label: string
-  next_step_date: string
-  due_today: boolean
-  monthly_visits: number | null
-  syndication: string[]
-  spoc_name: string
-  contacts_summary: ContactSummary[]
-  advisor_company_id: number | null
-}
-
-type CompanyGroup = {
-  key: string
-  source: 'independent' | 'media'
-  displayTitle: string
-  company_id?: number
-  parent_name?: string
-  status: string
-  status_label: string
-  due_today: boolean
-  next_step_date: string
-  monthly_visits: number | null
-  syndication: string[]
-  spoc_name: string
-  contacts_summary: ContactSummary[]
-  brands?: BrandSummary[]
-}
-
-function uniqueBy<T>(items: T[], keyFn: (it: T) => string) {
-  const seen = new Set<string>()
-  const out: T[] = []
-  for (const it of items) {
-    const k = keyFn(it)
-    if (seen.has(k)) continue
-    seen.add(k)
-    out.push(it)
-  }
-  return out
-}
 
 function fmtVisits(v: number | null | undefined) {
   const n = typeof v === 'number' ? v : Number(v || 0)
@@ -79,14 +16,6 @@ function fmtVisits(v: number | null | undefined) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace('.0', '')}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace('.0', '')}K`
   return `${Math.round(n)}`
-}
-
-function parseDisplayDate(s: string | undefined) {
-  if (!s) return null
-  const v = String(s).trim()
-  if (!v || v === '—') return null
-  const ms = Date.parse(v)
-  return Number.isFinite(ms) ? new Date(ms) : null
 }
 
 function formatSpocSummary(spocs: { name: string }[]): string {
@@ -128,7 +57,7 @@ export default function CompaniesPage() {
   const nav = useNavigate()
   const [q, setQ] = useState('')
   const dq = useDebounced(q, 280)
-  const [rows, setRows] = useState<PublisherCrmRow[]>([])
+  const [companyGroups, setCompanyGroups] = useState<CompanyGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
@@ -139,22 +68,22 @@ export default function CompaniesPage() {
   const COMP_CACHE_TTL_MS = 60_000
   const cacheKeyFor = (source: typeof src) => `lh2_companies_crm_cache_v1:${source}`
 
-  const readCache = (key: string): { ts: number; rows: PublisherCrmRow[] } | null => {
+  const readCache = (key: string): { ts: number; groups: CompanyGroup[] } | null => {
     try {
       const raw = sessionStorage.getItem(key)
       if (!raw) return null
-      const parsed = JSON.parse(raw) as { ts?: number; rows?: PublisherCrmRow[] }
-      if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.rows)) return null
+      const parsed = JSON.parse(raw) as { ts?: number; groups?: CompanyGroup[] }
+      if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.groups)) return null
       if (Date.now() - parsed.ts > COMP_CACHE_TTL_MS) return null
-      return { ts: parsed.ts, rows: parsed.rows }
+      return { ts: parsed.ts, groups: parsed.groups }
     } catch {
       return null
     }
   }
 
-  const writeCache = (key: string, rows: PublisherCrmRow[]) => {
+  const writeCache = (key: string, groups: CompanyGroup[]) => {
     try {
-      sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), rows }))
+      sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), groups }))
     } catch {
       /* ignore */
     }
@@ -169,12 +98,12 @@ export default function CompaniesPage() {
 
   const loadCompanies = async (opts?: { force?: boolean }) => {
     const force = !!opts?.force
-    const key = cacheKeyFor(src)
+    const key = `${cacheKeyFor(src)}:${dq.trim().toLowerCase()}`
 
     if (!force) {
       const cached = readCache(key)
       if (cached) {
-        setRows(cached.rows || [])
+        setCompanyGroups(cached.groups || [])
         setExpandedMediaHouseKey(null)
         return
       }
@@ -183,9 +112,21 @@ export default function CompaniesPage() {
     const qs = new URLSearchParams()
     qs.set('source', src)
     qs.set('offer_tab', '')
-    const out = await apiFetch<{ kpis: Record<string, number>; rows: PublisherCrmRow[] }>(`/api/dashboard/publisher-crm?${qs.toString()}`)
-    setRows(out.rows || [])
-    writeCache(key, out.rows || [])
+    qs.set('page', '1')
+    qs.set('page_size', '3000')
+    qs.set('kpi', 'total')
+    if (dq.trim()) qs.set('search', dq.trim())
+    qs.set('due_dates', '')
+    const out = await apiFetch<{
+      kpis: Record<string, number>
+      groups: ApiPublisherGroup[]
+      total: number
+      page: number
+      page_size: number
+    }>(`/api/dashboard/publisher-crm?${qs.toString()}`)
+    const mapped = (out.groups || []).map(mapApiPublisherGroup)
+    setCompanyGroups(mapped)
+    writeCache(key, mapped)
     setExpandedMediaHouseKey(null)
   }
 
@@ -208,13 +149,12 @@ export default function CompaniesPage() {
     return () => {
       c = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src])
+  }, [src, dq])
 
   async function syncIndependent() {
     setBusy('sync-ind')
     try {
-      await apiFetch('/api/sync/notion/independent', { method: 'POST' })
+      await apiFetch('/api/sync/notion/independent', { method: 'POST', silent: true })
     } finally {
       setBusy('')
     }
@@ -228,7 +168,7 @@ export default function CompaniesPage() {
   async function syncMedia() {
     setBusy('sync-media')
     try {
-      await apiFetch('/api/sync/notion/media-houses', { method: 'POST' })
+      await apiFetch('/api/sync/notion/media-houses', { method: 'POST', silent: true })
     } finally {
       setBusy('')
     }
@@ -259,7 +199,7 @@ export default function CompaniesPage() {
         company_id: number
         contact_id: number
         advisor_company_id: number
-      }>(`/api/advisor/companies/${childId}/session`, { method: 'POST' })
+      }>(`/api/advisor/companies/${childId}/session`, { method: 'POST', silent: true })
       setSelection({
         source: 'media',
         companyId: r.company_id,
@@ -273,153 +213,7 @@ export default function CompaniesPage() {
     }
   }
 
-  const companyGroups = useMemo(() => {
-    const groupMap = new Map<string, PublisherCrmRow[]>()
-
-    const keyFor = (r: PublisherCrmRow) => {
-      if (src === 'media') return `parent:${r.parent_name || '(No parent)'}`
-      return `company:${r.company_id}`
-    }
-
-    for (const r of rows) {
-      const k = keyFor(r)
-      if (!groupMap.has(k)) groupMap.set(k, [])
-      groupMap.get(k)!.push(r)
-    }
-
-    const statusRank = (st: string) => {
-      const idx = statusOptions.indexOf(st)
-      return idx >= 0 ? idx : -1
-    }
-
-    const groups: CompanyGroup[] = []
-
-    for (const [key, arr] of groupMap.entries()) {
-      const displayTitle = src === 'media' ? arr[0].parent_name || '(No parent)' : arr[0].company_domain
-
-      const dedupedContacts = uniqueBy(
-        arr.flatMap((r) => r.contacts_summary || []),
-        (c) => `${c.kind}|${c.email}|${c.linkedin_url}|${c.name}|${c.role}`,
-      )
-
-      const statusBest = arr.slice().sort((a, b) => statusRank(b.status) - statusRank(a.status))[0] || arr[0]
-
-      const due_today = arr.some((x) => !!x.due_today)
-
-      const dated = arr
-        .map((x) => ({ x, d: parseDisplayDate(x.next_step_date) }))
-        .filter((v) => v.d)
-        .sort((a, b) => (a.d!.getTime() - b.d!.getTime()))
-
-      const next_step_date = dated[0]?.x.next_step_date || arr.find((x) => x.due_today)?.next_step_date || '—'
-
-      const syndication = uniqueBy(arr.flatMap((x) => x.syndication || []), (s) => s)
-
-      const monthly_visits =
-        src === 'media'
-          ? arr.reduce((sum, x) => sum + (typeof x.monthly_visits === 'number' ? x.monthly_visits : 0), 0) || null
-          : arr[0].monthly_visits ?? null
-
-      const primarySpoc = dedupedContacts.find((c) => c.kind === 'spoc') || dedupedContacts[0] || null
-
-      const brands =
-        src === 'media'
-          ? (() => {
-              const brandMap = new Map<string, PublisherCrmRow[]>()
-              for (const r of arr) {
-                const bk = r.company_domain
-                if (!brandMap.has(bk)) brandMap.set(bk, [])
-                brandMap.get(bk)!.push(r)
-              }
-
-              const out: BrandSummary[] = []
-              for (const [bk, brArr] of brandMap.entries()) {
-                const best = brArr.slice().sort((a, b) => statusRank(b.status) - statusRank(a.status))[0] || brArr[0]
-                const brandContacts = uniqueBy(
-                  brArr.flatMap((r) => r.contacts_summary || []),
-                  (c) => `${c.kind}|${c.email}|${c.linkedin_url}|${c.name}|${c.role}`,
-                )
-
-                const brandPrimarySpoc = brandContacts.find((c) => c.kind === 'spoc') || brandContacts[0] || null
-
-                const brandDue = brArr.some((x) => !!x.due_today)
-                const brandDated = brArr
-                  .map((x) => ({ x, d: parseDisplayDate(x.next_step_date) }))
-                  .filter((v) => v.d)
-                  .sort((a, b) => (a.d!.getTime() - b.d!.getTime()))
-                const brandNext = brandDated[0]?.x.next_step_date || brArr.find((x) => x.due_today)?.next_step_date || '—'
-
-                out.push({
-                  company_domain: bk,
-                  status: best.status,
-                  status_label: best.status_label,
-                  next_step_date: brandNext,
-                  due_today: brandDue,
-                  monthly_visits: best.monthly_visits,
-                  syndication: uniqueBy(brArr.flatMap((x) => x.syndication || []), (s) => s),
-                  spoc_name: brandPrimarySpoc?.name || bk,
-                  contacts_summary: brandContacts,
-                  advisor_company_id: best.advisor_company_id,
-                })
-              }
-
-              out.sort((a, b) => (a.due_today === b.due_today ? 0 : a.due_today ? -1 : 1))
-              return out
-            })()
-          : undefined
-
-      groups.push({
-        key,
-        source: src,
-        displayTitle,
-        company_id: src === 'independent' ? arr[0].company_id : undefined,
-        parent_name: src === 'media' ? arr[0].parent_name || '(No parent)' : undefined,
-        status: statusBest.status,
-        status_label: statusBest.status_label,
-        due_today,
-        next_step_date,
-        monthly_visits,
-        syndication,
-        spoc_name: primarySpoc?.name || displayTitle,
-        contacts_summary: dedupedContacts,
-        brands,
-      })
-    }
-
-    groups.sort((a, b) => {
-      if (a.due_today !== b.due_today) return a.due_today ? -1 : 1
-      const ad = parseDisplayDate(a.next_step_date)
-      const bd = parseDisplayDate(b.next_step_date)
-      if (ad && bd && ad.getTime() !== bd.getTime()) return ad.getTime() - bd.getTime()
-      return a.displayTitle.localeCompare(b.displayTitle)
-    })
-
-    return groups
-  }, [rows, src, statusOptions])
-
-  const visibleGroups = useMemo(() => {
-    const q = dq.trim().toLowerCase()
-    if (!q) return companyGroups
-
-    const matchesIndependent = (g: CompanyGroup) => {
-      const title = (g.displayTitle || '').toLowerCase()
-      if (title.includes(q)) return true
-      const spocs = (g.contacts_summary || []).filter((c) => c.kind === 'spoc')
-      return spocs.some((s) => (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
-    }
-
-    const matchesMedia = (g: CompanyGroup) => {
-      const title = (g.displayTitle || '').toLowerCase()
-      if (title.includes(q)) return true
-      return (g.brands || []).some((b) => {
-        if ((b.company_domain || '').toLowerCase().includes(q)) return true
-        const spocs = (b.contacts_summary || []).filter((c) => c.kind === 'spoc')
-        return spocs.some((s) => (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
-      })
-    }
-
-    return companyGroups.filter((g) => (src === 'media' ? matchesMedia(g) : matchesIndependent(g)))
-  }, [companyGroups, dq, src])
+  const visibleGroups = companyGroups
 
   const qLower = dq.trim().toLowerCase()
 

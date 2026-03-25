@@ -1,43 +1,14 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '../api/client'
+import {
+  mapApiPublisherGroup as mapApiGroup,
+  type ApiPublisherGroup,
+  type UiPublisherBrand as BrandSummary,
+  type UiPublisherGroup as CompanyGroup,
+} from '../api/publisherCrm'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
-import { useNavigate } from 'react-router-dom'
-
-type PublisherCrmRow = {
-  company_id: number
-  contact_id: number
-  advisor_company_id: number | null
-  parent_name?: string
-  source: 'independent' | 'media'
-  company_domain: string
-  spoc_name: string
-  spoc_role: string
-  spoc_email: string
-  spoc_linkedin_url: string
-  status: string
-  status_label: string
-  next_step_date: string
-  due_today: boolean
-  first_overdue_date_str?: string | null
-  syndication: string[]
-  monthly_visits: number | null
-  planned_preview: {
-    id: number
-    sequence_step: number | null
-    channel: string
-    status: string
-    scheduled_at: string | null
-    description: string
-  }[]
-  contacts_summary?: {
-    kind: 'contact' | 'spoc'
-    name: string
-    role: string
-    email: string
-    linkedin_url: string
-  }[]
-}
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 function fmtVisits(v: number | null | undefined) {
   const n = typeof v === 'number' ? v : Number(v || 0)
@@ -73,46 +44,153 @@ function SyndicationBadges({ syndication }: { syndication: string[] | undefined 
 
 type KpiKey = 'total' | 'in_campaign' | 'responded' | 'no_response' | 'won' | 'due'
 
-type ContactSummary = NonNullable<PublisherCrmRow['contacts_summary']>[number]
+const DEFAULT_PAGE_SIZE = 50
+const MIN_PAGE_SIZE = 10
+const MAX_PAGE_SIZE = 200
 
-type BrandSummary = {
-  company_domain: string
-  status: string
-  status_label: string
-  next_step_date: string
-  due_today: boolean
-  monthly_visits: number | null
-  syndication: string[]
-  spoc_name: string
-  contacts_summary: ContactSummary[]
-  advisor_company_id: number | null
+const ALL_KPI_KEYS: readonly KpiKey[] = [
+  'total',
+  'in_campaign',
+  'responded',
+  'no_response',
+  'won',
+  'due',
+]
+
+function clampPageSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_PAGE_SIZE
+  return Math.min(MAX_PAGE_SIZE, Math.max(MIN_PAGE_SIZE, Math.round(n)))
 }
 
-type CompanyGroup = {
-  key: string
-  source: 'independent' | 'media'
-  displayTitle: string // company_domain for independent, parent_name for media
-  parent_name?: string
-  company_id?: number
+function parseKpiParam(v: string | null): KpiKey {
+  if (v && (ALL_KPI_KEYS as readonly string[]).includes(v)) return v as KpiKey
+  return 'total'
+}
 
-  status: string
-  status_label: string
-  due_today: boolean
-  next_step_date: string
-  monthly_visits: number | null // independent: company monthly_visits; media: sum across brands
-  syndication: string[]
+function dueNeedsUrlParam(activeKpiKey: KpiKey, dueDisplayFilters: string[], todayDisplay: string): boolean {
+  if (activeKpiKey === 'due') return true
+  if (dueDisplayFilters.length !== 1) return true
+  return dueDisplayFilters[0] !== todayDisplay
+}
 
-  // For compact table rendering
-  spoc_name: string
+/** Compare query strings regardless of param ordering (avoids setSearchParams loops). */
+function dashboardUrlParamsEqual(a: URLSearchParams, b: URLSearchParams): boolean {
+  const keys = new Set<string>([...a.keys(), ...b.keys()])
+  for (const k of keys) {
+    if (a.get(k) !== b.get(k)) return false
+  }
+  return true
+}
 
-  // Detail drawer data
-  contacts_summary: ContactSummary[]
-  brands?: BrandSummary[]
+/** UTC "Mar 25, 2026" matching dashboard due-date strings (must match in-component formatter). */
+const _UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+function _utcPad2(n: number) {
+  return String(n).padStart(2, '0')
+}
+function formatUtcDisplayStatic(d: Date) {
+  const m = _UTC_MONTHS[d.getUTCMonth()]
+  const day = _utcPad2(d.getUTCDate())
+  const y = d.getUTCFullYear()
+  return `${m} ${day}, ${y}`
+}
+function getTodayUtcDisplayStatic() {
+  const now = new Date()
+  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  return formatUtcDisplayStatic(todayUtc)
+}
 
-  // For patching status
-  contact_ids: number[]
-  advisor_company_ids: number[]
-  planned_preview: PublisherCrmRow['planned_preview']
+/** Parse /dashboard query string once on mount so list filters + page match the URL before first fetch. */
+function parseDashboardUrlSearch(search: string): {
+  crmSource: 'independent' | 'media'
+  listPage: number
+  pageSize: number
+  offerTab: 'indication' | 'general_acq'
+  activeKpiKey: KpiKey
+  dueDisplayFilters: string[]
+  detailTab: 'overview' | 'campaign'
+  crmSearchInput: string
+  debouncedSearch: string
+} {
+  const raw = search.startsWith('?') ? search.slice(1) : search
+  const sp = new URLSearchParams(raw)
+  const todayDisplay = getTodayUtcDisplayStatic()
+  const crmSource: 'independent' | 'media' = sp.get('source') === 'media' ? 'media' : 'independent'
+  const listPage = Math.max(1, parseInt(sp.get('page') || '1', 10) || 1)
+  const pageSize = clampPageSize(parseInt(sp.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
+  const offerTab: 'indication' | 'general_acq' = sp.get('offer') === 'general_acq' ? 'general_acq' : 'indication'
+  const activeKpiKey = parseKpiParam(sp.get('kpi'))
+  const dueRaw = sp.get('due')
+  const dueParsed = dueRaw && dueRaw.length ? dueRaw.split('|').map((s) => s.trim()).filter(Boolean) : null
+  const dueDisplayFilters = dueParsed && dueParsed.length ? dueParsed : [todayDisplay]
+  const detailTab: 'overview' | 'campaign' = sp.get('detail') === 'campaign' ? 'campaign' : 'overview'
+  const qParam = sp.get('q') ?? ''
+  return {
+    crmSource,
+    listPage,
+    pageSize,
+    offerTab,
+    activeKpiKey,
+    dueDisplayFilters,
+    detailTab,
+    crmSearchInput: qParam,
+    debouncedSearch: qParam.trim(),
+  }
+}
+
+function minimalIndependentGroup(companyId: number): CompanyGroup {
+  return {
+    key: `company:${companyId}`,
+    source: 'independent',
+    displayTitle: '…',
+    company_id: companyId,
+    status: '',
+    status_label: '—',
+    due_today: false,
+    next_step_date: '—',
+    monthly_visits: null,
+    syndication: [],
+    spoc_name: '',
+    contacts_summary: [],
+    contact_ids: [],
+    advisor_company_ids: [],
+    planned_preview: [],
+  }
+}
+
+function minimalMediaBrandSelection(expandKey: string | null, advisorId: number): { parent: CompanyGroup; brand: BrandSummary } {
+  const pk = expandKey?.trim() || 'parent:(unknown)'
+  const parentName = pk.startsWith('parent:') ? pk.slice(7) : '(unknown)'
+  const parent: CompanyGroup = {
+    key: pk,
+    source: 'media',
+    displayTitle: parentName,
+    parent_name: parentName,
+    status: '',
+    status_label: '—',
+    due_today: false,
+    next_step_date: '—',
+    monthly_visits: null,
+    syndication: [],
+    spoc_name: '',
+    contacts_summary: [],
+    brands: [],
+    contact_ids: [],
+    advisor_company_ids: [],
+    planned_preview: [],
+  }
+  const brand: BrandSummary = {
+    company_domain: '…',
+    advisor_company_id: advisorId,
+    status: '',
+    status_label: '—',
+    due_today: false,
+    next_step_date: '—',
+    monthly_visits: null,
+    syndication: [],
+    spoc_name: '',
+    contacts_summary: [],
+  }
+  return { parent, brand }
 }
 
 function uniqueBy<T>(items: T[], keyFn: (t: T) => string) {
@@ -125,14 +203,6 @@ function uniqueBy<T>(items: T[], keyFn: (t: T) => string) {
     out.push(it)
   }
   return out
-}
-
-function parseDisplayDate(s: string | undefined) {
-  if (!s) return null
-  const v = String(s).trim()
-  if (!v || v === '—') return null
-  const ms = Date.parse(v)
-  return Number.isFinite(ms) ? new Date(ms) : null
 }
 
 function formatSpocSummary(spocs: { name: string }[]): string {
@@ -152,19 +222,39 @@ export default function DashboardPage() {
   const { selection, setSelection, clearWorkspace } = useSelection()
   const meta = useMeta()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedCompanyIdRef = useRef<number | undefined>(undefined)
+  const selectedAdvisorBrandIdRef = useRef<number | null>(null)
 
-  const [crmSource, setCrmSource] = useState<'independent' | 'media'>(selection.source === 'media' ? 'media' : 'independent')
-  const [offerTab, setOfferTab] = useState<'indication' | 'general_acq'>('indication')
+  const [initialDash] = useState(() =>
+    parseDashboardUrlSearch(typeof window !== 'undefined' ? window.location.search : ''),
+  )
+
+  const [crmSource, setCrmSource] = useState<'independent' | 'media'>(initialDash.crmSource)
+  const [offerTab, setOfferTab] = useState<'indication' | 'general_acq'>(initialDash.offerTab)
 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [rows, setRows] = useState<PublisherCrmRow[]>([])
+  const [companyGroups, setCompanyGroups] = useState<CompanyGroup[]>([])
+  const [listTotal, setListTotal] = useState(0)
+  const [listPage, setListPage] = useState(initialDash.listPage)
+  const [pageSize, setPageSize] = useState(initialDash.pageSize)
+  const [apiKpis, setApiKpis] = useState({
+    total: 0,
+    in_campaign: 0,
+    responded: 0,
+    no_response: 0,
+    won: 0,
+    due_today: 0,
+  })
 
-  const [activeKpiKey, setActiveKpiKey] = useState<KpiKey>('total')
+  const [activeKpiKey, setActiveKpiKey] = useState<KpiKey>(initialDash.activeKpiKey)
   const [selectedGroup, setSelectedGroup] = useState<CompanyGroup | null>(null)
   const [expandedMediaHouseKey, setExpandedMediaHouseKey] = useState<string | null>(null)
+  const [mediaBrandsLoadingKey, setMediaBrandsLoadingKey] = useState<string | null>(null)
+  const [listDataEpoch, setListDataEpoch] = useState(0)
   const [selectedMediaBrand, setSelectedMediaBrand] = useState<null | { parent: CompanyGroup; brand: BrandSummary }>(null)
-  const [detailTab, setDetailTab] = useState<'overview' | 'campaign'>('overview')
+  const [detailTab, setDetailTab] = useState<'overview' | 'campaign'>(initialDash.detailTab)
   const [drawerYOffsetPx, setDrawerYOffsetPx] = useState(0)
   const crmGridWrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -190,39 +280,25 @@ export default function DashboardPage() {
   const tomorrowDisplay = formatUtcDisplayDate(tomorrowUtc)
 
   const [dueFilterOpen, setDueFilterOpen] = useState(false)
-  const [dueDisplayFilters, setDueDisplayFilters] = useState<string[]>([todayDisplay])
+  const [dueDisplayFilters, setDueDisplayFilters] = useState<string[]>(initialDash.dueDisplayFilters)
   const [customDueDate, setCustomDueDate] = useState<string>('') // yyyy-mm-dd
   const [includeCustomDue, setIncludeCustomDue] = useState(false)
 
   const [drawerHasResearch, setDrawerHasResearch] = useState<boolean | null>(null)
   const [drawerResearchBusy, setDrawerResearchBusy] = useState(false)
 
-  const [crmSearchQuery, setCrmSearchQuery] = useState('')
-
-  const CRM_CACHE_TTL_MS = 60_000
-
-  const crmCacheKey = (source: typeof crmSource, tab: typeof offerTab) => `lh2_dashboard_crm_cache_v1:${source}:${tab}`
-
-  const readCrmCache = (key: string): { ts: number; rows: PublisherCrmRow[] } | null => {
-    try {
-      const raw = sessionStorage.getItem(key)
-      if (!raw) return null
-      const parsed = JSON.parse(raw) as { ts?: number; rows?: PublisherCrmRow[] }
-      if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.rows)) return null
-      if (Date.now() - parsed.ts > CRM_CACHE_TTL_MS) return null
-      return { ts: parsed.ts, rows: parsed.rows }
-    } catch {
-      return null
-    }
-  }
-
-  const writeCrmCache = (key: string, rows: PublisherCrmRow[]) => {
-    try {
-      sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), rows }))
-    } catch {
-      /* ignore cache write failures */
-    }
-  }
+  const [crmSearchInput, setCrmSearchInput] = useState(initialDash.crmSearchInput)
+  const [debouncedSearch, setDebouncedSearch] = useState(initialDash.debouncedSearch)
+  const lastDetailFetchKey = useRef<string | null>(null)
+  const companyGroupsRef = useRef(companyGroups)
+  companyGroupsRef.current = companyGroups
+  const listFilterKey = useMemo(
+    () =>
+      [crmSource, offerTab, debouncedSearch, activeKpiKey, dueDisplayFilters.join('\0'), pageSize].join('|'),
+    [crmSource, offerTab, debouncedSearch, activeKpiKey, dueDisplayFilters, pageSize],
+  )
+  const prevListFilterKey = useRef<string | null>(null)
+  const lastListFetchSig = useRef<string>('')
 
   const customDueDisplay = (() => {
     if (!customDueDate) return ''
@@ -247,6 +323,11 @@ export default function DashboardPage() {
     prevCustomDueDisplayRef.current = next
   }, [customDueDisplay, includeCustomDue])
 
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(crmSearchInput.trim()), 320)
+    return () => window.clearTimeout(t)
+  }, [crmSearchInput])
+
   const scrollRestoreRef = useRef<{ el: HTMLElement; top: number } | null>(null)
 
   const captureScrollTop = () => {
@@ -270,39 +351,49 @@ export default function DashboardPage() {
     })
   }, [selectedGroup])
 
-  const fetchCrm = async (opts?: { force?: boolean }) => {
-    const force = !!opts?.force
-
-    const cacheKey = crmCacheKey(crmSource, offerTab)
-    if (!force) {
-      const cached = readCrmCache(cacheKey)
-      if (cached) {
-        setRows(cached.rows || [])
-        setSelectedGroup(null)
-        setExpandedMediaHouseKey(null)
-        setSelectedMediaBrand(null)
-        setDrawerHasResearch(null)
-        setDrawerResearchBusy(false)
-        return
-      }
-    }
-
+  const fetchCrm = async (page: number, opts?: { clearSelection?: boolean }) => {
     setBusy(true)
     setErr('')
     try {
       const q = new URLSearchParams()
       q.set('source', crmSource)
       q.set('offer_tab', offerTab)
-      const out = await apiFetch<{ kpis: Record<string, number>; rows: PublisherCrmRow[] }>(
-        `/api/dashboard/publisher-crm?${q.toString()}`,
-      )
-      setRows(out.rows || [])
-      writeCrmCache(cacheKey, out.rows || [])
-      setSelectedGroup(null)
-      setExpandedMediaHouseKey(null)
-      setSelectedMediaBrand(null)
+      q.set('page', String(page))
+      q.set('page_size', String(pageSize))
+      if (debouncedSearch) q.set('search', debouncedSearch)
+      q.set('kpi', activeKpiKey === 'due' ? 'due' : activeKpiKey)
+      const duePipe = (dueDisplayFilters.length ? dueDisplayFilters : [todayDisplay]).join('|')
+      q.set('due_dates', duePipe)
+      q.set('compact', 'true')
+
+      const out = await apiFetch<{
+        kpis: Record<string, number>
+        groups: ApiPublisherGroup[]
+        total: number
+        page: number
+        page_size: number
+      }>(`/api/dashboard/publisher-crm?${q.toString()}`)
+
+      setApiKpis({
+        total: Number(out.kpis?.total ?? 0),
+        in_campaign: Number(out.kpis?.in_campaign ?? 0),
+        responded: Number(out.kpis?.responded ?? 0),
+        no_response: Number(out.kpis?.no_response ?? 0),
+        won: Number(out.kpis?.won ?? 0),
+        due_today: Number(out.kpis?.due_today ?? 0),
+      })
+      setListTotal(Number(out.total ?? 0))
+      setListPage(Number(out.page ?? page))
+      setCompanyGroups((out.groups || []).map(mapApiGroup))
+      if (opts?.clearSelection) {
+        setSelectedGroup(null)
+        setExpandedMediaHouseKey(null)
+        setSelectedMediaBrand(null)
+        lastDetailFetchKey.current = null
+      }
       setDrawerHasResearch(null)
       setDrawerResearchBusy(false)
+      setListDataEpoch((n) => n + 1)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to load dashboard')
     } finally {
@@ -311,14 +402,165 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
-    // Keep CRM source synced to the current workspace source only on first load / workspace changes.
-    setCrmSource(selection.source === 'media' ? 'media' : 'independent')
-  }, [selection.source])
+    if (crmSource !== 'media' || !expandedMediaHouseKey) {
+      setMediaBrandsLoadingKey(null)
+      return
+    }
+    const g = companyGroupsRef.current.find((x) => x.key === expandedMediaHouseKey)
+    if (!g) return
+    const bc = g.brandCount ?? 0
+    if ((g.brands?.length ?? 0) > 0 || bc === 0) {
+      setMediaBrandsLoadingKey(null)
+      return
+    }
+    let cancelled = false
+    setMediaBrandsLoadingKey(expandedMediaHouseKey)
+    ;(async () => {
+      try {
+        const q = new URLSearchParams()
+        q.set('source', 'media')
+        q.set('offer_tab', offerTab)
+        q.set('parent_key', expandedMediaHouseKey)
+        const out = await apiFetch<{ group: ApiPublisherGroup | null }>(
+          `/api/dashboard/publisher-crm/detail?${q.toString()}`,
+        )
+        if (cancelled || !out.group) return
+        const ui = mapApiGroup(out.group)
+        setCompanyGroups((prev) =>
+          prev.map((x) => (x.key === expandedMediaHouseKey ? { ...x, brands: ui.brands ?? [] } : x)),
+        )
+      } catch (e) {
+        if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed to load media brands')
+      } finally {
+        if (!cancelled) setMediaBrandsLoadingKey(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [crmSource, expandedMediaHouseKey, offerTab, listDataEpoch])
 
   useEffect(() => {
-    void fetchCrm()
+    selectedCompanyIdRef.current = selectedGroup?.company_id
+  }, [selectedGroup?.company_id])
+
+  useEffect(() => {
+    selectedAdvisorBrandIdRef.current = selectedMediaBrand?.brand.advisor_company_id ?? null
+  }, [selectedMediaBrand?.brand.advisor_company_id])
+
+  useLayoutEffect(() => {
+    const qParam = searchParams.get('q') ?? ''
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1)
+    const limit = clampPageSize(parseInt(searchParams.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
+    const source: 'independent' | 'media' = searchParams.get('source') === 'media' ? 'media' : 'independent'
+    const offer: 'indication' | 'general_acq' =
+      searchParams.get('offer') === 'general_acq' ? 'general_acq' : 'indication'
+    const kpi = parseKpiParam(searchParams.get('kpi'))
+    const dueRaw = searchParams.get('due')
+    const dueParsed =
+      dueRaw && dueRaw.length ? dueRaw.split('|').map((s) => s.trim()).filter(Boolean) : null
+
+    setCrmSearchInput(qParam)
+    setDebouncedSearch(qParam.trim())
+    setListPage(page)
+    setPageSize(limit)
+    setCrmSource(source)
+    setOfferTab(offer)
+    setActiveKpiKey(kpi)
+    setDueDisplayFilters(dueParsed && dueParsed.length ? dueParsed : [todayDisplay])
+
+    const detailParam = searchParams.get('detail') === 'campaign' ? 'campaign' : 'overview'
+    setDetailTab(detailParam)
+
+    if (source === 'independent') {
+      setSelectedMediaBrand(null)
+      setExpandedMediaHouseKey(null)
+      const cidRaw = searchParams.get('company')
+      if (cidRaw) {
+        const cid = parseInt(cidRaw, 10)
+        if (cid > 0 && selectedCompanyIdRef.current !== cid) {
+          lastDetailFetchKey.current = null
+          setSelectedGroup(minimalIndependentGroup(cid))
+        }
+      } else {
+        setSelectedGroup(null)
+      }
+    } else {
+      setSelectedGroup(null)
+      const expandKey = searchParams.get('expand')
+      if (expandKey) setExpandedMediaHouseKey(expandKey)
+      else setExpandedMediaHouseKey(null)
+      const brandRaw = searchParams.get('brand')
+      if (brandRaw) {
+        const aid = parseInt(brandRaw, 10)
+        if (aid > 0 && selectedAdvisorBrandIdRef.current !== aid) {
+          lastDetailFetchKey.current = null
+          setSelectedMediaBrand(minimalMediaBrandSelection(expandKey, aid))
+        }
+      } else {
+        setSelectedMediaBrand(null)
+      }
+    }
+  }, [searchParams, todayDisplay])
+
+  useEffect(() => {
+    const p = new URLSearchParams()
+    p.set('source', crmSource)
+    p.set('page', String(listPage))
+    if (debouncedSearch) p.set('q', debouncedSearch)
+    if (pageSize !== DEFAULT_PAGE_SIZE) p.set('limit', String(pageSize))
+    if (offerTab === 'general_acq') p.set('offer', 'general_acq')
+    if (activeKpiKey !== 'total') p.set('kpi', activeKpiKey)
+    if (dueNeedsUrlParam(activeKpiKey, dueDisplayFilters, todayDisplay)) {
+      p.set('due', dueDisplayFilters.join('|'))
+    }
+    if (crmSource === 'independent' && selectedGroup?.company_id) {
+      p.set('company', String(selectedGroup.company_id))
+    }
+    if (crmSource === 'media') {
+      if (expandedMediaHouseKey) p.set('expand', expandedMediaHouseKey)
+      if (selectedMediaBrand?.brand.advisor_company_id != null) {
+        p.set('brand', String(selectedMediaBrand.brand.advisor_company_id))
+      }
+    }
+    if (detailTab === 'campaign') p.set('detail', 'campaign')
+
+    if (dashboardUrlParamsEqual(p, new URLSearchParams(searchParams))) return
+    setSearchParams(p, { replace: true })
+  }, [
+    debouncedSearch,
+    listPage,
+    pageSize,
+    crmSource,
+    offerTab,
+    activeKpiKey,
+    dueDisplayFilters,
+    selectedGroup?.company_id,
+    selectedMediaBrand?.brand.advisor_company_id,
+    expandedMediaHouseKey,
+    detailTab,
+    todayDisplay,
+    searchParams,
+    setSearchParams,
+  ])
+
+  useEffect(() => {
+    if (searchParams.has('source')) return
+    setCrmSource(selection.source === 'media' ? 'media' : 'independent')
+  }, [selection.source, searchParams])
+
+  useEffect(() => {
+    const fkChanged =
+      prevListFilterKey.current !== null && prevListFilterKey.current !== listFilterKey
+    prevListFilterKey.current = listFilterKey
+    if (fkChanged && listPage !== 1) setListPage(1)
+    const pageToFetch = fkChanged ? 1 : listPage
+    const sig = `${listFilterKey}@${pageToFetch}`
+    if (lastListFetchSig.current === sig) return
+    lastListFetchSig.current = sig
+    void fetchCrm(pageToFetch)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crmSource, offerTab])
+  }, [listFilterKey, listPage])
 
   // When the drawer opens, check whether any research has been saved already.
   useEffect(() => {
@@ -340,7 +582,10 @@ export default function DashboardPage() {
         const q = new URLSearchParams()
         if (companyId) q.set('company_id', String(companyId))
         if (advisorCompanyId != null) q.set('advisor_company_id', String(advisorCompanyId))
-        const out = await apiFetch<{ has_research: boolean }>(`/api/intelligence/has-research?${q.toString()}`)
+        const out = await apiFetch<{ has_research: boolean }>(
+          `/api/intelligence/has-research?${q.toString()}`,
+          { silent: true },
+        )
         if (!cancelled) setDrawerHasResearch(Boolean(out.has_research))
       } catch {
         if (!cancelled) setDrawerHasResearch(false)
@@ -354,6 +599,58 @@ export default function DashboardPage() {
       cancelled = true
     }
   }, [crmSource, selectedGroup?.company_id, selectedMediaBrand?.brand.advisor_company_id])
+
+  useEffect(() => {
+    const cid = selectedGroup?.company_id
+    if (crmSource !== 'independent' || !cid) return
+    const sig = `ind:${cid}`
+    if (lastDetailFetchKey.current === sig) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const q = new URLSearchParams()
+        q.set('source', 'independent')
+        q.set('offer_tab', offerTab)
+        q.set('company_id', String(cid))
+        const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+        if (cancelled || !out.group) return
+        lastDetailFetchKey.current = sig
+        setSelectedGroup(mapApiGroup(out.group))
+      } catch {
+        /* keep list row */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [crmSource, offerTab, selectedGroup?.company_id])
+
+  useEffect(() => {
+    const aid = selectedMediaBrand?.brand.advisor_company_id
+    if (crmSource !== 'media' || aid == null) return
+    const sig = `media:${aid}`
+    if (lastDetailFetchKey.current === sig) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const q = new URLSearchParams()
+        q.set('source', 'media')
+        q.set('offer_tab', offerTab)
+        q.set('advisor_company_id', String(aid))
+        const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+        if (cancelled || !out.group) return
+        lastDetailFetchKey.current = sig
+        const mapped = mapApiGroup(out.group)
+        const brand = mapped.brands?.find((b) => b.advisor_company_id === aid) ?? mapped.brands?.[0]
+        if (brand) setSelectedMediaBrand({ parent: mapped, brand })
+      } catch {
+        /* keep list row */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [crmSource, offerTab, selectedMediaBrand?.brand.advisor_company_id])
 
   const selectedStatus =
     crmSource === 'media' ? selectedMediaBrand?.brand.status || '' : selectedGroup?.status || ''
@@ -373,16 +670,27 @@ export default function DashboardPage() {
         if (!idsAdvisor.length) throw new Error('No Media House/child advisor IDs available to update.')
         await Promise.all(
           idsAdvisor.map((aid) =>
-            apiFetch(`/api/pipeline/media-houses/companies/${aid}`, { method: 'PATCH', json: { status } }),
+            apiFetch(`/api/pipeline/media-houses/companies/${aid}`, {
+              method: 'PATCH',
+              json: { status },
+              silent: true,
+            }),
           ),
         )
       } else {
         if (!idsContact.length) throw new Error('No contacts available to update for this company yet.')
         await Promise.all(
-          idsContact.map((cid) => apiFetch(`/api/pipeline/contacts/${cid}/status`, { method: 'PATCH', json: { status } })),
+          idsContact.map((cid) =>
+            apiFetch(`/api/pipeline/contacts/${cid}/status`, {
+              method: 'PATCH',
+              json: { status },
+              silent: true,
+            }),
+          ),
         )
       }
-      await fetchCrm({ force: true })
+      lastListFetchSig.current = ''
+      await fetchCrm(listPage, { clearSelection: true })
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Update failed')
     } finally {
@@ -397,8 +705,13 @@ export default function DashboardPage() {
     setBusy(true)
     setErr('')
     try {
-      await apiFetch(`/api/pipeline/media-houses/companies/${aid}`, { method: 'PATCH', json: { status } })
-      await fetchCrm({ force: true })
+      await apiFetch(`/api/pipeline/media-houses/companies/${aid}`, {
+        method: 'PATCH',
+        json: { status },
+        silent: true,
+      })
+      lastListFetchSig.current = ''
+      await fetchCrm(listPage, { clearSelection: true })
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Update failed')
     } finally {
@@ -426,192 +739,43 @@ export default function DashboardPage() {
     return { notContacted, inCampaign, responded, won }
   }, [statusOptions])
 
-  const companyGroups = useMemo(() => {
-    const groupMap = new Map<string, PublisherCrmRow[]>()
-    const keyFor = (r: PublisherCrmRow) => {
-      if (crmSource === 'media') return `parent:${r.parent_name || '(No parent)'}`
-      return `company:${r.company_id}`
-    }
+  const kpiCounts = useMemo(
+    () => ({
+      total: apiKpis.total,
+      inCampaign: apiKpis.in_campaign,
+      responded: apiKpis.responded,
+      no_response: apiKpis.no_response,
+      won: apiKpis.won,
+    }),
+    [apiKpis],
+  )
 
-    for (const r of rows) {
-      const k = keyFor(r)
-      if (!groupMap.has(k)) groupMap.set(k, [])
-      groupMap.get(k)!.push(r)
-    }
-
-    const statusRank = (st: string) => {
-      const idx = statusOptions.indexOf(st)
-      return idx >= 0 ? idx : -1
-    }
-
-    const groups: CompanyGroup[] = []
-    for (const [key, arr] of groupMap.entries()) {
-      const source = crmSource
-      const displayTitle = source === 'media' ? arr[0].parent_name || '(No parent)' : arr[0].company_domain
-
-      const dedupedContacts = uniqueBy(
-        arr.flatMap((r) => r.contacts_summary || []),
-        (c) => `${c.kind}|${c.email}|${c.linkedin_url}|${c.name}`,
-      )
-
-      const statusBest = arr
-        .slice()
-        .sort((a, b) => statusRank(b.status) - statusRank(a.status))[0] || arr[0]
-
-      const due_today = arr.some((x) => !!x.due_today)
-
-      const dated = arr
-        .map((x) => ({ x, d: parseDisplayDate(x.next_step_date) }))
-        .filter((v) => v.d)
-        .sort((a, b) => (a.d!.getTime() - b.d!.getTime()))
-
-      const next_step_date = dated[0]?.x.next_step_date || arr.find((x) => x.due_today)?.next_step_date || '—'
-
-      const syndication = uniqueBy(arr.flatMap((x) => x.syndication || []), (s) => s)
-
-      const contact_ids = uniqueBy(arr.map((x) => x.contact_id).filter((x) => x > 0), (x) => String(x))
-
-      const advisor_company_ids = uniqueBy(
-        arr.map((x) => x.advisor_company_id).filter((x) => x !== null) as number[],
-        (x) => String(x),
-      )
-
-      const planned_preview = uniqueBy(
-        arr.flatMap((x) => x.planned_preview || []),
-        (p) => String(p.id),
-      )
-
-      const monthly_visits =
-        source === 'media'
-          ? arr.reduce((sum, x) => sum + (typeof x.monthly_visits === 'number' ? x.monthly_visits : 0), 0) || null
-          : arr[0].monthly_visits ?? null
-
-      const primaryContact = dedupedContacts.find((c) => c.kind === 'spoc') || dedupedContacts.find(Boolean) || null
-
-      const brands =
-        source === 'media'
-          ? (() => {
-              const brandMap = new Map<string, PublisherCrmRow[]>()
-              for (const r of arr) {
-                const bk = r.company_domain
-                if (!brandMap.has(bk)) brandMap.set(bk, [])
-                brandMap.get(bk)!.push(r)
-              }
-              const out: BrandSummary[] = []
-              for (const [bk, brArr] of brandMap.entries()) {
-                const best = brArr
-                  .slice()
-                  .sort((a, b) => statusRank(b.status) - statusRank(a.status))[0] || brArr[0]
-                const bdContacts = uniqueBy(
-                  brArr.flatMap((r) => r.contacts_summary || []),
-                  (c) => `${c.kind}|${c.email}|${c.linkedin_url}|${c.name}`,
-                )
-                out.push({
-                  company_domain: bk,
-                  status: best.status,
-                  status_label: best.status_label,
-                  next_step_date: best.next_step_date,
-                  due_today: brArr.some((x) => !!x.due_today),
-                  monthly_visits: best.monthly_visits,
-                  syndication: uniqueBy(brArr.flatMap((x) => x.syndication || []), (s) => s),
-                  spoc_name: best.spoc_name,
-                  contacts_summary: bdContacts,
-                  advisor_company_id: best.advisor_company_id,
-                })
-              }
-              out.sort((a, b) => (a.due_today === b.due_today ? 0 : a.due_today ? -1 : 1))
-              return out
-            })()
-          : undefined
-
-      groups.push({
-        key,
-        source,
-        displayTitle,
-        parent_name: source === 'media' ? arr[0].parent_name || '(No parent)' : undefined,
-        company_id: source === 'independent' ? arr[0].company_id : undefined,
-
-        status: statusBest.status,
-        status_label: statusBest.status_label,
-        due_today,
-        next_step_date,
-        monthly_visits,
-        syndication,
-
-        spoc_name: statusBest.spoc_name || primaryContact?.name || displayTitle,
-        contacts_summary: dedupedContacts,
-        brands,
-
-        contact_ids,
-        advisor_company_ids,
-        planned_preview,
-      })
-    }
-
-    // Sort: due today first, then next step date, then alphabetically.
-    groups.sort((a, b) => {
-      if (a.due_today !== b.due_today) return a.due_today ? -1 : 1
-      const ad = parseDisplayDate(a.next_step_date)
-      const bd = parseDisplayDate(b.next_step_date)
-      if (ad && bd && ad.getTime() !== bd.getTime()) return ad.getTime() - bd.getTime()
-      return a.displayTitle.localeCompare(b.displayTitle)
-    })
-    return groups
-  }, [rows, crmSource, statusOptions])
-
-  const kpiCounts = useMemo(() => {
-    const total = companyGroups.length
-    const inCampaign = companyGroups.filter((g) => g.status === statusBuckets.inCampaign).length
-    const responded = companyGroups.filter((g) => statusBuckets.responded.includes(g.status)).length
-    const no_response = companyGroups.filter((g) => g.status === statusBuckets.notContacted).length
-    const won = companyGroups.filter((g) => g.status === statusBuckets.won).length
-    return { total, inCampaign, responded, no_response, won }
-  }, [companyGroups, statusBuckets])
-
-  const dueCount = useMemo(() => {
-    const filters = dueDisplayFilters.length ? dueDisplayFilters : [todayDisplay]
-    return companyGroups.filter((g) => filters.includes(g.next_step_date)).length
-  }, [companyGroups, dueDisplayFilters, todayDisplay])
+  const dueCount = apiKpis.due_today
 
   const visibleGroups = useMemo(() => {
-    const k = activeKpiKey
-    let base: CompanyGroup[]
-    if (k === 'total') base = companyGroups
-    else if (k === 'in_campaign') base = companyGroups.filter((g) => g.status === statusBuckets.inCampaign)
-    else if (k === 'responded') base = companyGroups.filter((g) => statusBuckets.responded.includes(g.status))
-    else if (k === 'no_response') base = companyGroups.filter((g) => g.status === statusBuckets.notContacted)
-    else if (k === 'won') base = companyGroups.filter((g) => g.status === statusBuckets.won)
-    else if (k === 'due') base = companyGroups.filter((g) => dueDisplayFilters.includes(g.next_step_date))
-    else base = companyGroups
-
-    const q = crmSearchQuery.trim().toLowerCase()
-    if (!q) return base
-
-    const matchesIndependent = (g: CompanyGroup) => {
-      const title = (g.displayTitle || '').toLowerCase()
-      if (title.includes(q)) return true
-      const spocs = (g.contacts_summary || []).filter((c) => c.kind === 'spoc')
-      return spocs.some((s) => (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
-    }
-
-    const matchesMedia = (g: CompanyGroup) => {
-      const title = (g.displayTitle || '').toLowerCase()
-      if (title.includes(q)) return true
-      if (!g.brands?.length) return false
-      return g.brands.some((b) => {
+    const q = debouncedSearch.trim().toLowerCase()
+    if (!q || crmSource !== 'media') return companyGroups
+    return companyGroups.map((g) => {
+      if (!g.brands?.length) return g
+      const brandsToShow = g.brands.filter((b) => {
         if ((b.company_domain || '').toLowerCase().includes(q)) return true
-        return (b.contacts_summary || [])
-          .filter((c) => c.kind === 'spoc')
-          .some((s) => (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
+        return (b.spoc_names || []).some((n) => (n || '').toLowerCase().includes(q))
+            || (b.contacts_summary || [])
+              .filter((c) => c.kind === 'spoc')
+              .some(
+                (s) =>
+                  (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q),
+              )
       })
-    }
-
-    return base.filter((g) => (crmSource === 'media' ? matchesMedia(g) : matchesIndependent(g)))
-  }, [companyGroups, activeKpiKey, statusBuckets, dueDisplayFilters, crmSearchQuery, crmSource])
+      if (brandsToShow.length === g.brands.length) return g
+      return { ...g, brands: brandsToShow }
+    })
+  }, [companyGroups, debouncedSearch, crmSource])
 
   useEffect(() => {
     // Close drawer if the selected group is no longer in the current filtered view.
     if (selectedGroup && !visibleGroups.some((g) => g.key === selectedGroup.key)) {
+      lastDetailFetchKey.current = null
       setSelectedGroup(null)
       setDetailTab('overview')
     }
@@ -619,6 +783,7 @@ export default function DashboardPage() {
     if (crmSource === 'media' && selectedMediaBrand) {
       const parentKey = selectedMediaBrand.parent.key
       if (!visibleGroups.some((g) => g.key === parentKey)) {
+        lastDetailFetchKey.current = null
         setSelectedMediaBrand(null)
         setDetailTab('overview')
       }
@@ -667,7 +832,10 @@ export default function DashboardPage() {
             <button
               type="button"
               className={crmSource === 'independent' ? 'crm-seg-btn active' : 'crm-seg-btn'}
-              onClick={() => setCrmSource('independent')}
+              onClick={() => {
+                setCrmSource('independent')
+                setSelection({ source: 'independent' })
+              }}
               disabled={busy}
             >
               Independent
@@ -675,7 +843,10 @@ export default function DashboardPage() {
             <button
               type="button"
               className={crmSource === 'media' ? 'crm-seg-btn active' : 'crm-seg-btn'}
-              onClick={() => setCrmSource('media')}
+              onClick={() => {
+                setCrmSource('media')
+                setSelection({ source: 'media' })
+              }}
               disabled={busy}
             >
               Media Houses
@@ -807,14 +978,19 @@ export default function DashboardPage() {
               <input
                 className="crm-search-input"
                 type="text"
-                value={crmSearchQuery}
+                value={crmSearchInput}
                 placeholder="Search companies / SPOCs"
-                onChange={(e) => setCrmSearchQuery(e.target.value)}
+                onChange={(e) => setCrmSearchInput(e.target.value)}
                 aria-label="Search companies and SPOCs"
               />
             </div>
             <span className="muted small">
-              {visibleGroups.length} {crmSource === 'media' ? 'media groups' : 'companies'}
+              {listTotal.toLocaleString()} {crmSource === 'media' ? 'media groups' : 'companies'}
+              {listTotal > pageSize
+                ? ` · page ${listPage} (${visibleGroups.length} shown)`
+                : visibleGroups.length !== listTotal
+                  ? ` · ${visibleGroups.length} shown`
+                  : ''}
             </span>
           </div>
           <div className="lh2-table-wrap crm-table-wrap">
@@ -844,7 +1020,7 @@ export default function DashboardPage() {
                           {visibleGroups.length === 0 && (
                   <tr>
                     <td className="muted" colSpan={crmSource === 'media' ? 6 : 6}>
-                      No companies match this view{crmSearchQuery.trim() ? ' / search' : ''}.
+                      No companies match this view{debouncedSearch.trim() ? ' / search' : ''}.
                     </td>
                   </tr>
                 )}
@@ -852,18 +1028,29 @@ export default function DashboardPage() {
                   // MEDIA: parent row expands into a child table; child selection opens the drawer.
                   if (crmSource === 'media') {
                     const expanded = expandedMediaHouseKey === g.key
-                    const q = crmSearchQuery.trim().toLowerCase()
+                    const q = debouncedSearch.trim().toLowerCase()
+                    const brandList = g.brands || []
                     const brandsToShow = !q
-                      ? g.brands
-                      : (g.brands || []).filter((b) => {
+                      ? brandList
+                      : brandList.filter((b) => {
                           const bt = (b.company_domain || '').toLowerCase()
                           if (bt.includes(q)) return true
                           return (b.contacts_summary || [])
                             .filter((c) => c.kind === 'spoc')
                             .some((s) => (s.name || '').toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
                         })
-                    const contactedCount = brandsToShow ? brandsToShow.filter((b) => b.status !== statusBuckets.notContacted).length : 0
+                    const brandCountDisplay = g.brandCount ?? brandList.length
+                    const contactedCount =
+                      brandList.length > 0
+                        ? brandsToShow.filter((b) => b.status !== statusBuckets.notContacted).length
+                        : (g.contactedBrandCount ?? 0)
+                    const brandsLoading =
+                      expanded &&
+                      mediaBrandsLoadingKey === g.key &&
+                      brandList.length === 0 &&
+                      (g.brandCount ?? 0) > 0
                     const ceoContact = (g.contacts_summary || []).find((c) => c.kind === 'contact')
+                    const ceoLabel = ceoContact?.name || g.ceoDisplayName || g.spoc_name
                     return (
                       <Fragment key={g.key}>
                         <tr
@@ -897,12 +1084,12 @@ export default function DashboardPage() {
                               <strong>{g.displayTitle}</strong>
                             </div>
                           </td>
-                          <td>{brandsToShow?.length || 0}</td>
+                          <td>{brandCountDisplay}</td>
                           <td>
                             <span className="muted small">{contactedCount}</span>
                           </td>
                           <td>
-                            <div>{ceoContact?.name || g.spoc_name}</div>
+                            <div>{ceoLabel}</div>
                           </td>
                           <td>{fmtVisits(g.monthly_visits)}</td>
                           <td>
@@ -910,11 +1097,24 @@ export default function DashboardPage() {
                           </td>
                         </tr>
 
-                        {expanded && brandsToShow && (
+                        {expanded && (
                           <tr>
                             <td colSpan={6} style={{ padding: 0 }}>
                               <div className="crm-media-children-wrap">
-                                <table className="lh2-data-table crm-table crm-child-table">
+                                {brandsLoading ? (
+                                  <p className="muted small" style={{ padding: '0.75rem 1rem', margin: 0 }}>
+                                    Loading brands…
+                                  </p>
+                                ) : brandList.length > 0 && (brandsToShow?.length ?? 0) === 0 ? (
+                                  <p className="muted small" style={{ padding: '0.75rem 1rem', margin: 0 }}>
+                                    No brands match this search.
+                                  </p>
+                                ) : (brandsToShow?.length ?? 0) === 0 ? (
+                                  <p className="muted small" style={{ padding: '0.75rem 1rem', margin: 0 }}>
+                                    No brands in this media house.
+                                  </p>
+                                ) : (
+                                  <table className="lh2-data-table crm-table crm-child-table">
                                   <thead>
                                     <tr>
                                       <th>Website</th>
@@ -926,7 +1126,7 @@ export default function DashboardPage() {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {brandsToShow.map((b) => {
+                                    {brandsToShow!.map((b) => {
                                       const spocs = (b.contacts_summary || []).filter((c) => c.kind === 'spoc')
                                       const spocName = formatSpocSummary(spocs)
                                       const activeChild = selectedMediaBrand?.brand.company_domain === b.company_domain
@@ -973,6 +1173,7 @@ export default function DashboardPage() {
                                     })}
                                   </tbody>
                                 </table>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1048,6 +1249,51 @@ export default function DashboardPage() {
                 })}
               </tbody>
             </table>
+            <div className="crm-pagination crm-pagination-bar">
+              {listTotal > pageSize ? (
+                <>
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    disabled={busy || listPage <= 1}
+                    onClick={() => setListPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <span className="muted small">
+                    Page {listPage} of {Math.max(1, Math.ceil(listTotal / pageSize))}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    disabled={busy || listPage >= Math.ceil(listTotal / pageSize)}
+                    onClick={() => setListPage((p) => p + 1)}
+                  >
+                    Next
+                  </button>
+                </>
+              ) : null}
+              <label className="muted small crm-page-size-label">
+                Per page
+                <select
+                  className="crm-page-size-select"
+                  aria-label="Rows per page"
+                  value={pageSize}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const n = clampPageSize(Number(e.target.value))
+                    setPageSize(n)
+                    setListPage(1)
+                  }}
+                >
+                  {[25, 50, 100, 200].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
         </section>
 
@@ -1076,6 +1322,7 @@ export default function DashboardPage() {
                   onClick={() => {
                     captureScrollTop()
                     setDrawerYOffsetPx(0)
+                    lastDetailFetchKey.current = null
                     setSelectedGroup(null)
                     setDrawerHasResearch(null)
                     setDrawerResearchBusy(false)
@@ -1289,6 +1536,7 @@ export default function DashboardPage() {
                   onClick={() => {
                     captureScrollTop()
                     setDrawerYOffsetPx(0)
+                    lastDetailFetchKey.current = null
                     setSelectedMediaBrand(null)
                     setDrawerHasResearch(null)
                     setDrawerResearchBusy(false)

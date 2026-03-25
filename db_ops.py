@@ -42,6 +42,22 @@ def _create_sqlite_engine():
     return create_platform_engine()
 
 
+def ensure_performance_indexes(engine):
+    """Create composite indexes if missing (safe for existing DBs)."""
+    stmts = [
+        "CREATE INDEX IF NOT EXISTS ix_contacts_company_id_name ON contacts (company_id, name)",
+        "CREATE INDEX IF NOT EXISTS ix_sessions_company_id_updated_at ON sessions (company_id, updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_actions_session_id_created_at ON actions (session_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_spoc_contacts_company_spoc ON spoc_contacts (company_id, spoc_contact_id)",
+    ]
+    try:
+        with engine.begin() as conn:
+            for sql in stmts:
+                conn.execute(text(sql))
+    except Exception as e:
+        log.warning("ensure_performance_indexes: %s", e)
+
+
 def init_db():
     """Initialize engine and return sessionmaker (singleton; safe for Streamlit + FastAPI)."""
     global _engine, _session_factory
@@ -93,6 +109,7 @@ def init_db():
                     pass
                 else:
                     log.warning("Migration %s: %s", col, e)
+        ensure_performance_indexes(engine)
         db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
         print(f"DB connected successfully ({db_type})")
         _engine = engine
@@ -282,6 +299,43 @@ def get_company_by_domain(domain):
         return _comp_dict(c) if c else None
 
 
+def bulk_get_monthly_visits_by_domains(domains) -> dict[str, int | None]:
+    """
+    normalized domain -> monthly_visits for companies matching get_company_by_domain rules.
+    Uses IN lists instead of 4N OR clauses (avoids huge SQL and SQLite's ~999 variable limit).
+    """
+    norms = {d for d in domains if d}
+    if not norms:
+        return {}
+    variants_list = sorted(norms | {f"www.{n}" for n in norms})
+    eng = get_engine()
+    is_sqlite = "sqlite" in (eng.url.drivername or "")
+    # Two IN(chunk) clauses => 2 * len(chunk) bound params; SQLite default max is often 999.
+    batch_size = 450 if is_sqlite else 8000
+
+    out: dict[str, int | None] = {}
+    with db() as s:
+        for i in range(0, len(variants_list), batch_size):
+            chunk = variants_list[i : i + batch_size]
+            if not chunk:
+                continue
+            rows = (
+                s.query(Company.domain, Company.monthly_visits)
+                .filter(
+                    or_(
+                        Company.domain.in_(chunk),
+                        func.lower(Company.domain).in_(chunk),
+                    )
+                )
+                .all()
+            )
+            for domain_val, mv in rows:
+                nk = normalize_domain(domain_val or "")
+                if nk in norms:
+                    out[nk] = mv
+    return out
+
+
 def delete_company_by_domain(domain) -> bool:
     """Delete a company row by domain (normalized: www trimmed). Returns True if deleted."""
     norm = normalize_domain(domain)
@@ -379,6 +433,137 @@ def get_or_create_shadow_company_for_advisor(advisor_company_id):
         return company_id, ct.id
 
 
+def lookup_existing_shadow_pairs_for_advisors(advisor_company_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """
+    Advisor id -> (shadow_company_id, leadership_contact_id) when both rows already exist.
+    Does not create; used to batch-load Media House shadows before falling back to get_or_create.
+    """
+    uniq = sorted({int(i) for i in advisor_company_ids if i})
+    if not uniq:
+        return {}
+    domains = [f"__advisor_{aid}" for aid in uniq]
+    with db() as s:
+        comps = s.query(Company).filter(Company.domain.in_(domains)).all()
+        dom_to_comp = {c.domain: c for c in comps}
+        cids = [c.id for c in comps]
+        contacts_by_company: dict[int, int] = {}
+        if cids:
+            for ct in (
+                s.query(Contact)
+                .filter(Contact.company_id.in_(cids), Contact.name == "Leadership")
+                .all()
+            ):
+                contacts_by_company[ct.company_id] = ct.id
+        out: dict[int, tuple[int, int]] = {}
+        for aid in uniq:
+            comp = dom_to_comp.get(f"__advisor_{aid}")
+            if not comp:
+                continue
+            ctid = contacts_by_company.get(comp.id)
+            if not ctid:
+                continue
+            out[aid] = (comp.id, ctid)
+        return out
+
+
+def bulk_ensure_shadow_companies_for_advisor_ids(
+    advisor_company_ids: list[int],
+) -> dict[int, tuple[int | None, int | None]]:
+    """
+    For each advisor id: return (shadow_company_id, leadership_contact_id), creating rows in one
+    transaction when missing. Matches get_or_create_shadow_company_for_advisor semantics; use this
+    on read-heavy paths to avoid one transaction per child.
+    """
+    uniq = sorted({int(i) for i in advisor_company_ids if i})
+    if not uniq:
+        return {}
+    domains = [f"__advisor_{aid}" for aid in uniq]
+    out: dict[int, tuple[int | None, int | None]] = {}
+    with db() as s:
+        adv_by_id = {r.id: r for r in s.query(AdvisorCompany).filter(AdvisorCompany.id.in_(uniq)).all()}
+        comps = {c.domain: c for c in s.query(Company).filter(Company.domain.in_(domains)).all()}
+
+        for aid in uniq:
+            dom = f"__advisor_{aid}"
+            if dom in comps:
+                continue
+            adv = adv_by_id.get(aid)
+            if not adv:
+                continue
+            name = ((adv.domain or "") or (adv.parent_name or "") or "Child").strip() or "Child"
+            c = Company(domain=dom, name=name, extra_data={"source_advisor_company_id": aid})
+            s.add(c)
+        s.flush()
+        comps = {c.domain: c for c in s.query(Company).filter(Company.domain.in_(domains)).all()}
+
+        cids_existing = [c.id for c in comps.values()]
+        ct_map: dict[int, Contact] = {}
+        if cids_existing:
+            for ct in (
+                s.query(Contact)
+                .filter(Contact.company_id.in_(cids_existing), Contact.name == "Leadership")
+                .all()
+            ):
+                ct_map[ct.company_id] = ct
+
+        for aid in uniq:
+            dom = f"__advisor_{aid}"
+            c = comps.get(dom)
+            if not c or c.id in ct_map:
+                continue
+            adv = adv_by_id.get(aid)
+            if not adv:
+                continue
+            ct = Contact(company_id=c.id, name="Leadership", role="Leadership")
+            s.add(ct)
+        s.flush()
+
+        cids = [c.id for c in comps.values()]
+        ct_id_by_company: dict[int, int] = {}
+        if cids:
+            for ct in (
+                s.query(Contact)
+                .filter(Contact.company_id.in_(cids), Contact.name == "Leadership")
+                .all()
+            ):
+                ct_id_by_company[ct.company_id] = ct.id
+
+        for aid in uniq:
+            adv = adv_by_id.get(aid)
+            if not adv:
+                out[aid] = (None, None)
+                continue
+            dom = f"__advisor_{aid}"
+            c = comps.get(dom)
+            if not c:
+                out[aid] = (None, None)
+                continue
+            ctid = ct_id_by_company.get(c.id)
+            if not ctid:
+                out[aid] = (None, None)
+                continue
+            out[aid] = (c.id, ctid)
+    return out
+
+
+def bulk_get_companies_by_ids(company_ids: list[int]) -> dict[int, dict]:
+    uniq = sorted({int(i) for i in company_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        rows = s.query(Company).filter(Company.id.in_(uniq)).all()
+        return {c.id: _comp_dict(c) for c in rows}
+
+
+def bulk_get_contacts_by_ids(contact_ids: list[int]) -> dict[int, dict]:
+    uniq = sorted({int(i) for i in contact_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        rows = s.query(Contact).filter(Contact.id.in_(uniq)).all()
+        return {c.id: _ct_dict(c) for c in rows}
+
+
 def search_companies(q, exclude_advisor_shadows=True):
     """
     Fuzzy search: matches partial domains, names, and strips TLD suffixes.
@@ -441,6 +626,26 @@ def get_contacts(company_id):
             _ct_dict(c)
             for c in s.query(Contact).filter_by(company_id=company_id).order_by(Contact.name).all()
         ]
+
+
+def get_contacts_for_company_ids(company_ids: list[int]) -> dict[int, list]:
+    """Contacts per company_id, ordered by name (same rows as get_contacts)."""
+    uniq = sorted({int(i) for i in company_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        rows = (
+            s.query(Contact)
+            .filter(Contact.company_id.in_(uniq))
+            .order_by(Contact.company_id, Contact.name)
+            .all()
+        )
+    out: dict[int, list] = {cid: [] for cid in uniq}
+    for c in rows:
+        cid = c.company_id
+        if cid in out:
+            out[cid].append(_ct_dict(c))
+    return out
 
 
 def get_contact(contact_id):
@@ -719,6 +924,84 @@ def get_spoc_contacts_by_spoc(spoc_contact_id):
         ]
 
 
+def get_spoc_contacts_by_spocs(company_id: int, spoc_contact_ids: list[int]) -> dict[int, list]:
+    """SPOC rows grouped by leadership contact id (same row shape as get_spoc_contacts_by_spoc)."""
+    ids = sorted({int(i) for i in spoc_contact_ids})
+    if not ids:
+        return {}
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        rows = (
+            s.query(SpocContact)
+            .filter(
+                SpocContact.company_id == company_id,
+                SpocContact.spoc_contact_id.in_(ids),
+            )
+            .order_by(SpocContact.spoc_contact_id, SpocContact.name)
+            .all()
+        )
+        out: dict[int, list] = {i: [] for i in ids}
+        for r in rows:
+            out[r.spoc_contact_id].append(
+                {
+                    "id": r.id,
+                    "company_id": r.company_id,
+                    "spoc_contact_id": r.spoc_contact_id,
+                    "name": r.name,
+                    "role": r.role,
+                    "email": r.email,
+                    "linkedin_url": r.linkedin_url,
+                    "phone": r.phone,
+                    "extra_data": r.extra_data,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+            )
+        return out
+
+
+def get_spoc_contacts_by_company_and_leader(company_ids: list[int]) -> dict[int, dict[int, list]]:
+    """
+    For each company_id, map leadership contact id (spoc_contact_id) -> SPOC-tagged rows.
+    Same row shape as get_spoc_contacts_by_spocs values; use for batching independent CRM.
+    """
+    uniq = sorted({int(i) for i in company_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        rows = (
+            s.query(SpocContact)
+            .filter(SpocContact.company_id.in_(uniq))
+            .order_by(SpocContact.company_id, SpocContact.spoc_contact_id, SpocContact.name)
+            .all()
+        )
+    nested: dict[int, dict[int, list]] = {cid: {} for cid in uniq}
+    for r in rows:
+        cid = r.company_id
+        if cid not in nested:
+            continue
+        lid = r.spoc_contact_id
+        if lid not in nested[cid]:
+            nested[cid][lid] = []
+        nested[cid][lid].append(
+            {
+                "id": r.id,
+                "company_id": r.company_id,
+                "spoc_contact_id": r.spoc_contact_id,
+                "name": r.name,
+                "role": r.role,
+                "email": r.email,
+                "linkedin_url": r.linkedin_url,
+                "phone": r.phone,
+                "extra_data": r.extra_data,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+        )
+    return nested
+
+
 def get_spoc_contacts_by_company(company_id):
     """All SPOC-tagged contacts for this company."""
     with db() as s:
@@ -733,6 +1016,41 @@ def get_spoc_contacts_by_company(company_id):
             }
             for r in s.query(SpocContact).filter_by(company_id=company_id).order_by(SpocContact.spoc_contact_id, SpocContact.name).all()
         ]
+
+
+def get_spoc_contacts_for_company_ids(company_ids: list[int]) -> dict[int, list]:
+    """SPOC rows grouped by company_id (same row shape as get_spoc_contacts_by_company)."""
+    uniq = sorted({int(i) for i in company_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        rows = (
+            s.query(SpocContact)
+            .filter(SpocContact.company_id.in_(uniq))
+            .order_by(SpocContact.company_id, SpocContact.spoc_contact_id, SpocContact.name)
+            .all()
+        )
+        out: dict[int, list] = {cid: [] for cid in uniq}
+        for r in rows:
+            cid = r.company_id
+            if cid in out:
+                out[cid].append(
+                    {
+                        "id": r.id,
+                        "company_id": r.company_id,
+                        "spoc_contact_id": r.spoc_contact_id,
+                        "name": r.name,
+                        "role": r.role,
+                        "email": r.email,
+                        "linkedin_url": r.linkedin_url,
+                        "phone": r.phone,
+                        "extra_data": r.extra_data,
+                        "created_at": r.created_at.isoformat() if r.created_at else None,
+                        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                    }
+                )
+        return out
 
 
 def delete_spoc_contact(spoc_contact_id: int):
@@ -792,6 +1110,26 @@ def get_sessions_for_company(company_id):
             for x in s.query(Session).filter_by(company_id=company_id)
             .order_by(Session.updated_at.desc()).all()
         ]
+
+
+def get_sessions_for_companies(company_ids: list[int]) -> dict[int, list]:
+    """All sessions per company_id, each list ordered by updated_at desc (same as get_sessions_for_company)."""
+    uniq = sorted({int(i) for i in company_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        rows = (
+            s.query(Session)
+            .filter(Session.company_id.in_(uniq))
+            .order_by(Session.company_id, Session.updated_at.desc())
+            .all()
+        )
+        out: dict[int, list] = {cid: [] for cid in uniq}
+        for x in rows:
+            cid = x.company_id
+            if cid in out:
+                out[cid].append(_sess_dict(x))
+        return out
 
 
 def get_user_sessions(user_id):
@@ -1011,6 +1349,26 @@ def get_session_actions(sid):
             _act_dict(a) for a in
             s.query(Action).filter_by(session_id=sid).order_by(Action.created_at.desc()).all()
         ]
+
+
+def get_session_actions_for_sessions(session_ids: list[int]) -> dict[int, list]:
+    """Batch-load actions for sessions. Lists match get_session_actions order (created_at desc per session)."""
+    uniq = sorted({int(i) for i in session_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        actions = (
+            s.query(Action)
+            .filter(Action.session_id.in_(uniq))
+            .order_by(Action.session_id, Action.created_at.desc())
+            .all()
+        )
+        out: dict[int, list] = {i: [] for i in uniq}
+        for a in actions:
+            sid = a.session_id
+            if sid in out:
+                out[sid].append(_act_dict(a))
+        return out
 
 
 def get_user_actions(uid, limit=50):
@@ -1749,6 +2107,16 @@ def get_advisor_company(advisor_id):
     with db() as s:
         c = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
         return _advisor_comp_dict(c) if c else None
+
+
+def bulk_get_advisor_companies_by_ids(advisor_ids: list[int]) -> dict[int, dict]:
+    """Advisor id -> advisor company dict."""
+    uniq = sorted({int(i) for i in advisor_ids if i})
+    if not uniq:
+        return {}
+    with db() as s:
+        rows = s.query(AdvisorCompany).filter(AdvisorCompany.id.in_(uniq)).all()
+        return {r.id: _advisor_comp_dict(r) for r in rows}
 
 
 def merge_advisor_company_extra_data(advisor_id, patch) -> bool:

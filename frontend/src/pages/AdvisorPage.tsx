@@ -14,7 +14,9 @@ export default function AdvisorPage() {
   const [convs, setConvs] = useState<Record<string, unknown>[]>([])
 
   useEffect(() => {
-    apiFetch<Record<string, unknown>[]>('/api/advisor-chat/conversations').then(setConvs).catch(() => {})
+    apiFetch<Record<string, unknown>[]>('/api/advisor-chat/conversations')
+      .then(setConvs)
+      .catch(() => {})
   }, [])
 
   async function loadConv(id: number) {
@@ -32,6 +34,7 @@ export default function AdvisorPage() {
     try {
       const r = await apiFetch<{ messages: Msg[] }>('/api/advisor-chat/turn', {
         method: 'POST',
+        silent: true,
         json: { messages: next, sender_email: user?.email || null },
       })
       setMessages(r.messages || [])
