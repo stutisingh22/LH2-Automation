@@ -1,13 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Override if needed: LH2_API_PROXY=http://127.0.0.1:PORT npm run dev
-const apiProxy = process.env.LH2_API_PROXY || 'http://127.0.0.1:10001'
+// 👇 ADD THIS LINE (keep your existing env if any)
+const apiProxy = 'http://127.0.0.1:8001'
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: "0.0.0.0",
+    port: 3000,
+    // Allow nginx-hosted domain access through reverse proxy.
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: apiProxy,
