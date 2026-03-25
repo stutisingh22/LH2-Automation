@@ -11,6 +11,7 @@ from db_ops import (
     get_advisor_company,
     get_all_companies,
     get_company,
+    get_company_by_domain,
     get_contact,
     get_contacts,
     get_or_create_shadow_company_for_advisor,
@@ -194,6 +195,8 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
 
     if src == "media":
         parents = get_advisor_parents_with_children() or []
+        # Avoid repeating DB lookups for Similarweb monthly_visits per child domain.
+        monthly_visits_cache: dict[str, int | None] = {}
         for g in parents:
             parent_name = (g.get("parent_name") or "").strip() or "(No parent)"
             for ch in g.get("children") or []:
@@ -218,8 +221,6 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
                 for a in planned:
                     try:
                         dt = datetime.fromisoformat((a.get("scheduled_at") or "").replace("Z", "+00:00"))
-                        if dt.date() == _today:
-                            due_today = True
                         if dt.date() >= _today:
                             next_dates.append(dt)
                         else:
@@ -228,7 +229,10 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
                         continue
                 planned_past.sort(key=lambda x: x[1])
                 first_overdue_date_str = planned_past[0][1].strftime("%b %d, %Y") if planned_past else None
-                next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
+                min_next_dt = min(next_dates) if next_dates else None
+                next_step_date = min_next_dt.strftime("%b %d, %Y") if min_next_dt else "—"
+                # "Due today" must align with the first upcoming step that will be shown in the UI.
+                due_today = bool(min_next_dt and min_next_dt.date() == _today)
 
                 offering_labels = _infer_offering_labels_from_actions(planned)
                 if want_labels and offering_labels and not (offering_labels & want_labels):
@@ -253,7 +257,16 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
                     for k, v in (platform_presence or {}).items()
                     if k in ("msn", "yahoo", "newsbreak", "smartnews") and bool(v)
                 ]
+                # Traffic (Similarweb) must be sourced from the *real* child domain.
+                # Media Houses use shadow companies (`__advisor_*`) for pipeline actions,
+                # but Similarweb monthly_visits is stored on the real company domain.
+                child_domain = (ch.get("domain") or "").strip()
                 monthly_visits = (shadow_company or {}).get("monthly_visits")
+                if monthly_visits is None and child_domain:
+                    if child_domain not in monthly_visits_cache:
+                        comp = get_company_by_domain(child_domain) or {}
+                        monthly_visits_cache[child_domain] = comp.get("monthly_visits")
+                    monthly_visits = monthly_visits_cache.get(child_domain)
 
                 planned_sorted = sorted(planned, key=lambda a: a.get("scheduled_at") or "")
                 planned_preview = [
@@ -349,8 +362,6 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
             for a in planned:
                 try:
                     dt = datetime.fromisoformat((a.get("scheduled_at") or "").replace("Z", "+00:00"))
-                    if dt.date() == _today:
-                        due_today = True
                     if dt.date() >= _today:
                         next_dates.append(dt)
                     else:
@@ -362,7 +373,9 @@ def build_publisher_crm_rows(source: str, offer_tab: str | None = None) -> list[
             first_overdue_action = planned_past[0][0] if planned_past else None
             first_overdue_date_str = planned_past[0][1].strftime("%b %d, %Y") if planned_past else None
 
-            next_step_date = min(next_dates).strftime("%b %d, %Y") if next_dates else "—"
+            min_next_dt = min(next_dates) if next_dates else None
+            next_step_date = min_next_dt.strftime("%b %d, %Y") if min_next_dt else "—"
+            due_today = bool(min_next_dt and min_next_dt.date() == _today)
 
             primary_spoc = sub[0] if sub else None
 

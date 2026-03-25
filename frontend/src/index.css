@@ -1837,12 +1837,52 @@ button.linkish:disabled {
   margin-bottom: 0.65rem;
 }
 
+.crm-search {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.crm-search-input {
+  width: 320px;
+  max-width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  outline: none;
+}
+
+.crm-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
 .crm-table-wrap {
   margin-top: 0.25rem;
 }
 
 .crm-table {
   min-width: 880px;
+}
+
+.crm-media-children-wrap {
+  padding: 0.35rem 0.5rem 0.6rem 0.75rem;
+  border-left: 2px solid rgba(201, 162, 39, 0.35);
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.crm-child-table {
+  min-width: 740px;
+}
+
+.crm-child-table th {
+  font-size: 0.72rem;
+}
+
+.crm-child-table td {
+  font-size: 0.72rem;
 }
 
 .crm-row {
@@ -2005,7 +2045,7 @@ button.linkish:disabled {
 .crm-kpi-won.active {
   border-color: #16A34A;
 }
-.crm-kpi-due_today.active {
+.crm-kpi-due.active {
   border-color: var(--accent);
 }
 
@@ -2067,4 +2107,40 @@ button.linkish:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+}
+
+/* Due filter (KPI drawer) */
+.crm-due-filter {
+  margin: -0.15rem 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+}
+.crm-due-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: center;
+}
+.crm-due-chk {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.crm-due-custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+.crm-due-date {
+  padding: 0.25rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
 }

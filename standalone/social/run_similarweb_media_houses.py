@@ -56,6 +56,11 @@ os.environ["SIMILARWEB_COOKIES"] = cookies
 from config import normalize_domain
 from integrations.analytics.platform_analytics import _similarweb_monthly_visits, _similarweb_snapshot_from_fetch
 
+from sqlalchemy import or_, func
+
+from db_ops import db
+from models import AdvisorCompany, Company
+
 try:
     from db_ops import get_company_by_domain, get_company, merge_company_extra_data, upsert_company
 except Exception:
@@ -183,6 +188,34 @@ def run_similarweb_media_houses(
                     updated_db += 1
                 if visits is not None:
                     upsert_company(comp.get("domain") or dom, monthly_visits=visits)
+            else:
+                # Media Houses dashboard uses shadow companies created via:
+                #   domain = "__advisor_<advisor_company_id>"
+                # but this script previously only updated real domains.
+                # If the real domain row doesn't exist, write monthly_visits into the shadow company.
+                norm_dom = normalize_domain(dom) or dom
+                www_dom = f"www.{norm_dom}"
+                with db() as s:
+                    adv = (
+                        s.query(AdvisorCompany)
+                        .filter(
+                            or_(
+                                AdvisorCompany.domain == norm_dom,
+                                AdvisorCompany.domain == www_dom,
+                                func.lower(AdvisorCompany.domain) == norm_dom,
+                                func.lower(AdvisorCompany.domain) == www_dom,
+                            )
+                        )
+                        .first()
+                    )
+                    if adv:
+                        shadow_domain = f"__advisor_{adv.id}"
+                        shadow = s.query(Company).filter(Company.domain == shadow_domain).first()
+                        if shadow and visits is not None:
+                            shadow.monthly_visits = visits
+                            shadow.updated_at = datetime.utcnow()
+                            s.flush()
+                            updated_db += 1
 
         if idx < len(to_fetch) - 1:
             time.sleep(random.uniform(MIN_DELAY_SEC, MAX_DELAY_SEC))

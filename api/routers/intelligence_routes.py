@@ -600,6 +600,28 @@ def intelligence_workspace(
     }
 
 
+@router.get("/has-research")
+def intelligence_has_research(
+    company_id: Optional[int] = Query(None),
+    advisor_company_id: Optional[int] = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Lightweight check used by the Publisher CRM drawer to decide whether
+    a "Research pending" CTA should be shown.
+    """
+    del user
+    comp, _domain = _load_intel_company(company_id, advisor_company_id)
+    ed = comp.get("extra_data") if isinstance(comp.get("extra_data"), dict) else {}
+
+    rf = (ed.get("research_full") or "").strip() if isinstance(ed.get("research_full"), str) else ""
+    rdh = (ed.get("research_display_html") or "").strip() if isinstance(ed.get("research_display_html"), str) else ""
+    rs = ed.get("research_sections") if isinstance(ed.get("research_sections"), list) else []
+
+    has_research = bool(rf or rdh or rs)
+    return {"has_research": has_research}
+
+
 @router.post("/research-sections")
 def post_research_sections(body: ResearchSectionsIn, user: dict = Depends(get_current_user)):
     del user
