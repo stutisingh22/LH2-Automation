@@ -1,6 +1,7 @@
 import type { SelectionState } from '../state/SelectionContext'
 
 export const WORKSPACE_QUERY_KEYS = [
+  'source',
   'sel_source',
   'sel_company',
   'sel_advisor',
@@ -22,8 +23,9 @@ export function workspaceParamsPresent(sp: URLSearchParams): boolean {
 
 export function workspaceFromSearchParams(sp: URLSearchParams): SelectionState | null {
   if (!workspaceParamsPresent(sp)) return null
+  const sourceParam = sp.get('sel_source') ?? sp.get('source')
   return {
-    source: sp.get('sel_source') === 'media' ? 'media' : 'independent',
+    source: sourceParam === 'media' ? 'media' : 'independent',
     companyId: parseNum(sp.get('sel_company')),
     advisorCompanyId: parseNum(sp.get('sel_advisor')),
     contactId: parseNum(sp.get('sel_contact')),
@@ -31,16 +33,33 @@ export function workspaceFromSearchParams(sp: URLSearchParams): SelectionState |
   }
 }
 
+function hasScopedSelection(sel: SelectionState): boolean {
+  return sel.companyId != null || sel.advisorCompanyId != null || sel.contactId != null || sel.sessionId != null
+}
+
 export function applyWorkspaceToSearchParams(sp: URLSearchParams, sel: SelectionState) {
-  sp.set('sel_source', sel.source)
-  if (sel.companyId != null) sp.set('sel_company', String(sel.companyId))
-  else sp.delete('sel_company')
-  if (sel.advisorCompanyId != null) sp.set('sel_advisor', String(sel.advisorCompanyId))
-  else sp.delete('sel_advisor')
-  if (sel.contactId != null) sp.set('sel_contact', String(sel.contactId))
-  else sp.delete('sel_contact')
-  if (sel.sessionId != null) sp.set('sel_session', String(sel.sessionId))
-  else sp.delete('sel_session')
+  if (hasScopedSelection(sel)) {
+    // Selected workspace: keep source in scoped key only.
+    sp.set('sel_source', sel.source)
+    sp.delete('source')
+    if (sel.companyId != null) sp.set('sel_company', String(sel.companyId))
+    else sp.delete('sel_company')
+    if (sel.advisorCompanyId != null) sp.set('sel_advisor', String(sel.advisorCompanyId))
+    else sp.delete('sel_advisor')
+    if (sel.contactId != null) sp.set('sel_contact', String(sel.contactId))
+    else sp.delete('sel_contact')
+    if (sel.sessionId != null) sp.set('sel_session', String(sel.sessionId))
+    else sp.delete('sel_session')
+    return
+  }
+
+  // No selected entity: keep plain source and clear scoped selection keys.
+  sp.set('source', sel.source)
+  sp.delete('sel_source')
+  sp.delete('sel_company')
+  sp.delete('sel_advisor')
+  sp.delete('sel_contact')
+  sp.delete('sel_session')
 }
 
 export function stripWorkspaceFromSearchParams(sp: URLSearchParams) {

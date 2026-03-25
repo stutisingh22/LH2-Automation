@@ -154,6 +154,8 @@ export default function CompaniesPage() {
   }, [crmSource, dq])
 
   useEffect(() => {
+    const sourceInUrl = searchParams.get('source')
+    if (sourceInUrl && sourceInUrl !== crmSource) return
     const p = new URLSearchParams()
     p.set('source', crmSource)
     p.set('page', String(listPage))
