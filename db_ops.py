@@ -16,7 +16,7 @@ import threading
 
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import create_engine, or_, text, func
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import load_only, sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool, StaticPool, NullPool
 from sqlalchemy.exc import OperationalError
 
@@ -297,6 +297,42 @@ def get_company_by_domain(domain):
             .first()
         )
         return _comp_dict(c) if c else None
+
+
+def get_company_platform_presence_bundle_by_domain(domain) -> dict:
+    """
+    Lightweight read for intelligence UI: only platform_presence / social_from_search
+    from extra_data (avoids loading the full company row for overlay merge).
+    """
+    norm = normalize_domain(domain)
+    if not norm:
+        return {}
+    www = "www." + norm
+    with db() as s:
+        c = (
+            s.query(Company)
+            .filter(
+                or_(
+                    Company.domain == norm,
+                    Company.domain == www,
+                    func.lower(Company.domain) == norm,
+                    func.lower(Company.domain) == www,
+                )
+            )
+            .options(load_only(Company.extra_data))
+            .first()
+        )
+        if not c:
+            return {}
+        ed = _normalize_extra_data(c.extra_data)
+        if not isinstance(ed, dict):
+            return {}
+        out = {}
+        if ed.get("platform_presence"):
+            out["platform_presence"] = ed["platform_presence"]
+        if ed.get("social_from_search"):
+            out["social_from_search"] = ed["social_from_search"]
+        return out
 
 
 def bulk_get_monthly_visits_by_domains(domains) -> dict[str, int | None]:

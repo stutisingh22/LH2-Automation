@@ -629,13 +629,29 @@ button.linkish:disabled {
   background: rgba(0, 0, 0, 0.2);
   font-size: 0.8rem;
 }
+.sel-pill-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
 .sel-pill {
   color: var(--muted);
+}
+button.sel-pill-clear {
+  padding: 0.1rem;
+  line-height: 0;
+  border-radius: 4px;
+  opacity: 0.75;
+}
+button.sel-pill-clear:hover {
+  opacity: 1;
 }
 .frame-content {
   flex: 1;
   min-height: 0;
-  padding: 1rem 1.25rem 2rem;
+  --frame-content-pad-top: 1rem;
+  --frame-content-pad-x: 1.25rem;
+  padding: var(--frame-content-pad-top) var(--frame-content-pad-x) 2rem;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -1666,10 +1682,15 @@ button.linkish:disabled {
   padding: 0.5rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
   position: sticky;
-  top: 0;
-  z-index: 3;
+  /* Cancel .frame-content top padding so the bar sits flush under the app header (no dead band). */
+  top: calc(-1 * var(--frame-content-pad-top, 1rem));
+  z-index: 50;
+}
+:root[data-theme='light'] .intel-section-nav {
+  box-shadow: 0 4px 14px rgba(31, 36, 48, 0.12);
 }
 .intel-section-nav-pill {
   display: inline-flex;
@@ -1757,6 +1778,37 @@ button.linkish:disabled {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
+}
+.intel-lookup-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.intel-lookup-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  min-height: 5.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+.intel-lookup-textarea::placeholder {
+  color: var(--muted);
+}
+.intel-lookup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-start;
 }
 .intel-cmd-result {
   margin-top: 1rem;
@@ -2077,6 +2129,45 @@ button.linkish:disabled {
   margin-top: 0.25rem;
 }
 
+th.crm-research-col,
+td.crm-research-col {
+  width: 2.35rem;
+  padding-left: 0.45rem;
+  padding-right: 0.35rem;
+  text-align: center;
+  vertical-align: middle;
+}
+.crm-research-col-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+.crm-research-col-icon svg {
+  display: block;
+}
+.crm-research-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.crm-research-dot--no {
+  background: #e85d5d;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.crm-research-dot--yes {
+  background: #34d399;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+:root[data-theme='light'] .crm-research-dot--no {
+  background: #c63d3d;
+}
+:root[data-theme='light'] .crm-research-dot--yes {
+  background: #059669;
+}
+
 .crm-pagination-bar {
   display: flex;
   flex-wrap: wrap;
@@ -2108,7 +2199,7 @@ button.linkish:disabled {
 
 .crm-media-children-wrap {
   padding: 0.35rem 0.5rem 0.6rem 0.75rem;
-  border-left: 2px solid rgba(201, 162, 39, 0.35);
+  border-left: 2px solid var(--border);
   background: rgba(255, 255, 255, 0.01);
 }
 

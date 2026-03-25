@@ -6,9 +6,12 @@ import {
   type UiPublisherBrand as BrandSummary,
   type UiPublisherGroup as CompanyGroup,
 } from '../api/publisherCrm'
+import { toWorkspaceSearchString } from '../lib/workspaceUrl'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { CrmResearchDot } from '../ui/CrmResearchDot'
+import { CrmResearchTh } from '../ui/CrmResearchTh'
 
 function fmtVisits(v: number | null | undefined) {
   const n = typeof v === 'number' ? v : Number(v || 0)
@@ -1007,6 +1010,7 @@ export default function DashboardPage() {
                   </tr>
                 ) : (
                   <tr>
+                    <th className="crm-research-col" scope="col" aria-label="Research saved" title="Research" />
                     <th>Website</th>
                     <th>SPOC name</th>
                     <th>Status</th>
@@ -1019,7 +1023,7 @@ export default function DashboardPage() {
               <tbody>
                           {visibleGroups.length === 0 && (
                   <tr>
-                    <td className="muted" colSpan={crmSource === 'media' ? 6 : 6}>
+                    <td className="muted" colSpan={crmSource === 'media' ? 6 : 7}>
                       No companies match this view{debouncedSearch.trim() ? ' / search' : ''}.
                     </td>
                   </tr>
@@ -1117,6 +1121,7 @@ export default function DashboardPage() {
                                   <table className="lh2-data-table crm-table crm-child-table">
                                   <thead>
                                     <tr>
+                                      <CrmResearchTh />
                                       <th>Website</th>
                                       <th>SPOC name</th>
                                       <th>Status</th>
@@ -1151,6 +1156,9 @@ export default function DashboardPage() {
                                           }}
                                           aria-label={`Select child ${b.company_domain}`}
                                         >
+                                          <td className="crm-research-col">
+                                            <CrmResearchDot researched={b.hasResearch} />
+                                          </td>
                                           <td>
                                             <strong>{b.company_domain}</strong>
                                           </td>
@@ -1227,6 +1235,9 @@ export default function DashboardPage() {
                       }}
                       aria-label={`Select ${g.displayTitle}`}
                     >
+                      <td className="crm-research-col">
+                        <CrmResearchDot researched={g.hasResearch} />
+                      </td>
                       <td>
                         <strong>{g.displayTitle}</strong>
                       </td>
@@ -1346,14 +1357,15 @@ export default function DashboardPage() {
                       className="secondary sm"
                       onClick={() => {
                         clearWorkspace()
-                        setSelection({
-                          source: 'independent',
-                          companyId: selectedGroup.company_id,
+                        const nextSel = {
+                          source: 'independent' as const,
+                          companyId: selectedGroup.company_id ?? null,
                           contactId: null,
                           advisorCompanyId: null,
                           sessionId: null,
-                        })
-                        navigate('/intelligence')
+                        }
+                        setSelection(nextSel)
+                        navigate(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
                       }}
                     >
                       Go to research
@@ -1366,14 +1378,15 @@ export default function DashboardPage() {
                         className="secondary sm"
                         onClick={() => {
                           clearWorkspace()
-                          setSelection({
-                            source: 'independent',
-                            companyId: selectedGroup.company_id,
+                          const nextSel = {
+                            source: 'independent' as const,
+                            companyId: selectedGroup.company_id ?? null,
                             contactId: null,
                             advisorCompanyId: null,
                             sessionId: null,
-                          })
-                          navigate('/intelligence')
+                          }
+                          setSelection(nextSel)
+                          navigate(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
                         }}
                       >
                         Head to intelligence
@@ -1560,14 +1573,15 @@ export default function DashboardPage() {
                       className="secondary sm"
                       onClick={() => {
                         clearWorkspace()
-                        setSelection({
-                          source: 'media',
+                        const nextSel = {
+                          source: 'media' as const,
                           companyId: null,
                           contactId: null,
                           advisorCompanyId: selectedMediaBrand.brand.advisor_company_id,
                           sessionId: null,
-                        })
-                        navigate('/intelligence')
+                        }
+                        setSelection(nextSel)
+                        navigate(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
                       }}
                     >
                       Go to research
@@ -1580,14 +1594,15 @@ export default function DashboardPage() {
                         className="secondary sm"
                         onClick={() => {
                           clearWorkspace()
-                          setSelection({
-                            source: 'media',
+                          const nextSel = {
+                            source: 'media' as const,
                             companyId: null,
                             contactId: null,
                             advisorCompanyId: selectedMediaBrand.brand.advisor_company_id,
                             sessionId: null,
-                          })
-                          navigate('/intelligence')
+                          }
+                          setSelection(nextSel)
+                          navigate(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
                         }}
                       >
                         Head to intelligence

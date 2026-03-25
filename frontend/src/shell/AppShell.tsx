@@ -17,9 +17,11 @@ import {
   type LucideIcon,
   Upload,
   UsersRound,
+  X,
 } from 'lucide-react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { mergeSelectionIntoSearchString } from '../lib/workspaceUrl'
 import { useSelection, type CompanySource } from '../state/SelectionContext'
 
 function clearedWorkspace() {
@@ -57,6 +59,7 @@ export default function AppShell() {
   const { user, logout } = useAuth()
   const { selection, setSelection, clearWorkspace } = useSelection()
   const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [navFlyout, setNavFlyout] = useState<NavFlyout>(null)
   const [navCollapsed, setNavCollapsed] = useState(() => {
     try {
@@ -166,18 +169,38 @@ export default function AppShell() {
             DB{' '}
             <select
               value={selection.source}
-              onChange={(e) =>
-                setSelection({ source: e.target.value as CompanySource, ...clearedWorkspace() })
-              }
+              onChange={(e) => {
+                const source = e.target.value as CompanySource
+                const next = { source, ...clearedWorkspace() }
+                setSelection(next)
+                setSearchParams(mergeSelectionIntoSearchString(searchParams.toString(), next), {
+                  replace: true,
+                })
+              }}
             >
               <option value="independent">Independent</option>
               <option value="media">Media houses</option>
             </select>
           </label>
-          {selection.companyId != null && (
-            <span className="sel-pill">
-              Company #{selection.companyId}
-              {selection.contactId != null && ` · Contact #${selection.contactId}`}
+          {(selection.companyId != null || selection.advisorCompanyId != null) && (
+            <span className="sel-pill-wrap">
+              <span className="sel-pill">
+                {selection.companyId != null && `Company #${selection.companyId}`}
+                {selection.companyId != null && selection.advisorCompanyId != null && ' · '}
+                {selection.advisorCompanyId != null && `Advisor #${selection.advisorCompanyId}`}
+                {selection.contactId != null && ` · Contact #${selection.contactId}`}
+              </span>
+              <button
+                type="button"
+                className="sel-pill-clear ghost sm"
+                aria-label="Clear company and open Companies"
+                onClick={() => {
+                  clearWorkspace()
+                  nav('/companies')
+                }}
+              >
+                <X size={14} strokeWidth={2} aria-hidden />
+              </button>
             </span>
           )}
           <button type="button" className="ghost sm" onClick={() => nav('/companies')}>

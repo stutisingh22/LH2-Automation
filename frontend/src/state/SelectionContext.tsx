@@ -3,10 +3,19 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
 } from 'react'
+import { useLocation, useSearchParams } from 'react-router-dom'
+import {
+  applyWorkspaceToSearchParams,
+  workspaceFromSearchParams,
+  workspaceKeysEqual,
+  workspaceParamsFromSelection,
+  selectionWorkspaceEqual,
+} from '../lib/workspaceUrl'
 
 const KEY = 'lh2_selection_v2'
 
@@ -28,7 +37,7 @@ const defaultSel: SelectionState = {
   sessionId: null,
 }
 
-function load(): SelectionState {
+function loadSession(): SelectionState {
   try {
     const raw = sessionStorage.getItem(KEY)
     if (!raw) return { ...defaultSel }
@@ -45,6 +54,17 @@ function load(): SelectionState {
   }
 }
 
+function readInitial(): SelectionState {
+  try {
+    const sp = new URLSearchParams(window.location.search)
+    const fromUrl = workspaceFromSearchParams(sp)
+    if (fromUrl) return fromUrl
+  } catch {
+    /* ignore */
+  }
+  return loadSession()
+}
+
 type Ctx = {
   selection: SelectionState
   setSelection: (p: Partial<SelectionState>) => void
@@ -54,11 +74,25 @@ type Ctx = {
 const SelectionContext = createContext<Ctx | null>(null)
 
 export function SelectionProvider({ children }: { children: ReactNode }) {
-  const [selection, setSel] = useState<SelectionState>(defaultSel)
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [selection, setSel] = useState<SelectionState>(readInitial)
+
+  useLayoutEffect(() => {
+    const w = workspaceFromSearchParams(new URLSearchParams(searchParams.toString()))
+    if (!w) return
+    setSel((prev) => (selectionWorkspaceEqual(prev, w) ? prev : w))
+  }, [searchParams])
 
   useEffect(() => {
-    setSel(load())
-  }, [])
+    if (location.pathname !== '/intelligence') return
+    const cur = new URLSearchParams(location.search)
+    const expected = workspaceParamsFromSelection(selection)
+    if (workspaceKeysEqual(cur, expected)) return
+    const next = new URLSearchParams(location.search)
+    applyWorkspaceToSearchParams(next, selection)
+    setSearchParams(next, { replace: true })
+  }, [selection, location.pathname, location.search, setSearchParams])
 
   useEffect(() => {
     sessionStorage.setItem(KEY, JSON.stringify(selection))

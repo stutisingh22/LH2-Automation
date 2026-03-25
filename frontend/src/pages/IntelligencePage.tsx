@@ -71,7 +71,10 @@ function truncateNavTitle(t: string, max = 44) {
 }
 
 function researchFingerprint(w: IntelWorkspace | null): string {
-  const t = (w?.research_display_html || w?.research_full || '').trim()
+  let t = (w?.research_display_html || w?.research_full || '').trim()
+  if (!t && w && Array.isArray(w.research_sections) && w.research_sections.length > 0) {
+    t = w.research_sections.map((s) => `${s.title}\0${s.body_html}`).join('\n')
+  }
   let h = 2166136261
   for (let i = 0; i < t.length; i++) {
     h ^= t.charCodeAt(i)
@@ -154,6 +157,7 @@ export default function IntelligencePage() {
       else if (cid != null) q.set('company_id', String(cid))
       const effSid = opts?.sessionId !== undefined ? opts.sessionId : sid
       if (effSid != null) q.set('session_id', String(effSid))
+      q.set('compact', 'true')
       try {
         const data = await apiFetch<IntelWorkspace>(
           `/api/intelligence/workspace?${q}`,
@@ -227,7 +231,13 @@ export default function IntelligencePage() {
   }, [companyPersistKey, intelCache, ws, sections, overrides, openSectionIds])
 
   const displayForSplit = useMemo(() => {
-    return (ws?.research_display_html || ws?.research_full || '').trim()
+    const fromWs = (ws?.research_display_html || ws?.research_full || '').trim()
+    if (fromWs) return fromWs
+    const secs = ws?.research_sections
+    if (Array.isArray(secs) && secs.length > 0) {
+      return buildMergedHtml(secs as IntelSection[], {})
+    }
+    return ''
   }, [ws])
 
   const advisorCanon = Boolean(ws?.advisor_canonical)
@@ -960,15 +970,20 @@ export default function IntelligencePage() {
       <section className="panel intel-card">
         <h2>Person lookup &amp; suggestions</h2>
         <p className="muted small">LinkedIn URL, email, or free-text name; or ask what to add to research.</p>
-        <textarea
-          rows={3}
-          value={intelRaw}
-          onChange={(e) => setIntelRaw(e.target.value)}
-          placeholder="linkedin.com/in/… or email or ‘expand section on…’"
-        />
-        <button type="button" className="secondary sm" disabled={busy === 'ir'} onClick={runIntelRequest}>
-          {busy === 'ir' ? '…' : 'Run'}
-        </button>
+        <div className="intel-lookup-stack">
+          <textarea
+            className="intel-lookup-textarea"
+            rows={3}
+            value={intelRaw}
+            onChange={(e) => setIntelRaw(e.target.value)}
+            placeholder="linkedin.com/in/… or email or ‘expand section on…’"
+          />
+          <div className="intel-lookup-actions">
+            <button type="button" className="secondary sm" disabled={busy === 'ir'} onClick={runIntelRequest}>
+              {busy === 'ir' ? '…' : 'Run'}
+            </button>
+          </div>
+        </div>
         {intelOut && (
           <div className="intel-intel-out">
             {intelOut.kind === 'person' && (

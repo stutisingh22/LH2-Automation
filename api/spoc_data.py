@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import re
 
 from config import (
@@ -32,6 +33,22 @@ from db_ops import (
 )
 
 from integrations.analytics.tracker_sources import load_domain_to_platforms, get_presence_for_domain
+
+
+def _extra_has_research(extra) -> bool:
+    """True if saved deep research exists (matches /api/intelligence/has-research)."""
+    ed = extra
+    if isinstance(ed, str) and ed.strip():
+        try:
+            ed = json.loads(ed)
+        except Exception:
+            ed = {}
+    if not isinstance(ed, dict) or not ed:
+        return False
+    rf = (ed.get("research_full") or "").strip() if isinstance(ed.get("research_full"), str) else ""
+    rdh = (ed.get("research_display_html") or "").strip() if isinstance(ed.get("research_display_html"), str) else ""
+    rs = ed.get("research_sections") if isinstance(ed.get("research_sections"), list) else []
+    return bool(rf or rdh or rs)
 
 
 def build_spoc_tracking_rows() -> list[dict]:
@@ -403,6 +420,9 @@ def build_publisher_crm_rows(
                 contacts_use = contacts_summary
                 extra_media = {"platform_presence": platform_presence}
 
+            has_research_media = _extra_has_research(ch.get("extra_data")) or _extra_has_research(
+                (shadow_company or {}).get("extra_data")
+            )
             media_row = {
                 "row_type": "publisher",
                 "company_id": shadow_company_id or 0,
@@ -411,6 +431,7 @@ def build_publisher_crm_rows(
                 "advisor_company_id": advisor_company_id,
                 "parent_name": parent_name,
                 "source": src,
+                "has_research": has_research_media,
                 "spoc_name": (ctd or {}).get("name") or "Leadership",
                 "spoc_role": (ctd or {}).get("role") or "Leadership",
                 "spoc_email": (ctd or {}).get("email") or "",
@@ -641,6 +662,7 @@ def build_publisher_crm_rows(
                 "advisor_company_id": advisor_company_id,
                 "parent_name": parent_name,
                 "source": src,
+                "has_research": _extra_has_research(cd.get("extra_data")),
                 "spoc_name": _nm,
                 "spoc_role": _role,
                 "spoc_email": _em,
@@ -843,6 +865,7 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                         "contacts_summary": bd_contacts,
                         "advisor_company_id": best.get("advisor_company_id"),
                         "spoc_names": spoc_names_brand,
+                        "has_research": any(bool(x.get("has_research")) for x in br_arr),
                     }
                 )
             brand_list.sort(key=lambda b: (not bool(b.get("due_today")), str(b.get("company_domain") or "")))
@@ -858,6 +881,7 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                 "display_title": display_title,
                 "parent_name": (arr[0].get("parent_name") or "") if crm_source == "media" else None,
                 "company_id": int(arr[0]["company_id"]) if crm_source != "media" and arr[0].get("company_id") else None,
+                "has_research": any(bool(x.get("has_research")) for x in arr),
                 "status": status_best.get("status"),
                 "status_label": status_best.get("status_label"),
                 "due_today": due_today,
@@ -926,6 +950,7 @@ def _slim_independent_list_group(g: dict) -> dict:
         "display_title": g.get("display_title"),
         "parent_name": g.get("parent_name"),
         "company_id": g.get("company_id"),
+        "has_research": bool(g.get("has_research")),
         "status": g.get("status"),
         "status_label": g.get("status_label"),
         "due_today": g.get("due_today"),

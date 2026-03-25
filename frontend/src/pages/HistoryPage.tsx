@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api/client'
+import { toWorkspaceSearchString } from '../lib/workspaceUrl'
 import { useSelection } from '../state/SelectionContext'
 
 export default function HistoryPage() {
@@ -26,14 +27,15 @@ export default function HistoryPage() {
 
   function openSession(sx: Record<string, unknown>) {
     const aid = sx.source_advisor_company_id as number | null | undefined
-    setSelection({
-      source: aid ? 'media' : 'independent',
+    const nextSel = {
+      source: (aid ? 'media' : 'independent') as 'media' | 'independent',
       companyId: sx.company_id as number,
       contactId: (sx.contact_id as number) || null,
       sessionId: sx.id as number,
       advisorCompanyId: aid ?? null,
-    })
-    nav('/intelligence')
+    }
+    setSelection(nextSel)
+    nav(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
   }
 
   if (!data) return err ? <p className="error">{err}</p> : <p className="muted">Loading…</p>

@@ -17,6 +17,7 @@ export type PlannedPreviewItem = {
 
 export type ApiPublisherBrand = {
   company_domain: string
+  has_research?: boolean
   status: string
   status_label: string
   next_step_date: string
@@ -33,6 +34,7 @@ export type ApiPublisherGroup = {
   key: string
   source: 'independent' | 'media'
   display_title: string
+  has_research?: boolean
   parent_name: string | null
   company_id: number | null
   status: string
@@ -72,6 +74,7 @@ export type UiPublisherGroup = {
   key: string
   source: 'independent' | 'media'
   displayTitle: string
+  hasResearch?: boolean
   parent_name?: string
   company_id?: number
   status: string
@@ -94,6 +97,7 @@ export type UiPublisherGroup = {
 
 export type UiPublisherBrand = {
   company_domain: string
+  hasResearch?: boolean
   status: string
   status_label: string
   next_step_date: string
@@ -118,6 +122,7 @@ export function mapApiPublisherGroup(g: ApiPublisherGroup): UiPublisherGroup {
     }
     return {
       company_domain: b.company_domain,
+      hasResearch: Boolean(b.has_research),
       status: b.status,
       status_label: b.status_label,
       next_step_date: b.next_step_date,
@@ -134,6 +139,7 @@ export function mapApiPublisherGroup(g: ApiPublisherGroup): UiPublisherGroup {
     key: g.key,
     source: g.source,
     displayTitle: g.display_title,
+    hasResearch: Boolean(g.has_research),
     parent_name: g.parent_name ?? undefined,
     company_id: g.company_id ?? undefined,
     status: g.status,

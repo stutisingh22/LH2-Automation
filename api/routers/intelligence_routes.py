@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from db_ops import (
     get_advisor_company,
     get_company,
-    get_company_by_domain,
+    get_company_platform_presence_bundle_by_domain,
     get_or_create_session,
     get_or_create_shadow_company_for_advisor,
     get_session_summary,
@@ -195,14 +195,37 @@ def _merge_platform_presence_for_display(comp: dict) -> dict:
     _pp_ed = dict(comp.get("extra_data") or {}) if isinstance(comp.get("extra_data"), dict) else {}
     dom = (comp.get("domain") or "").strip()
     if dom:
-        main = get_company_by_domain(dom)
-        if main and isinstance(main.get("extra_data"), dict):
-            med = main.get("extra_data") or {}
-            if med.get("platform_presence"):
-                _pp_ed["platform_presence"] = med["platform_presence"]
-            if med.get("social_from_search"):
-                _pp_ed["social_from_search"] = med["social_from_search"]
+        med = get_company_platform_presence_bundle_by_domain(dom)
+        if med.get("platform_presence"):
+            _pp_ed["platform_presence"] = med["platform_presence"]
+        if med.get("social_from_search"):
+            _pp_ed["social_from_search"] = med["social_from_search"]
     return _pp_ed
+
+
+def _compact_platform_presence_analytics(raw) -> dict:
+    """Strip heavy nested blobs (positioning evidence, full Similarweb payload) for list/detail views."""
+    if not isinstance(raw, dict):
+        return {}
+    sw_in = raw.get("similarweb") if isinstance(raw.get("similarweb"), dict) else {}
+    sw_out = {
+        "available": sw_in.get("available"),
+        "latest_monthly_visits": sw_in.get("latest_monthly_visits"),
+        "errors": sw_in.get("errors") or [],
+        "date_range": sw_in.get("date_range"),
+    }
+    plat_top = raw.get("platform_presence") if isinstance(raw.get("platform_presence"), dict) else {}
+    return {
+        "status": raw.get("status"),
+        "updated_at": raw.get("updated_at"),
+        "domain": raw.get("domain"),
+        "country": raw.get("country"),
+        "source": raw.get("source"),
+        "monthly_visits": raw.get("monthly_visits"),
+        "monthly_visits_date_range": raw.get("monthly_visits_date_range"),
+        "platform_presence": plat_top,
+        "similarweb": sw_out,
+    }
 
 
 def _load_intel_company(company_id: Optional[int], advisor_company_id: Optional[int]):
@@ -511,6 +534,7 @@ def intelligence_workspace(
     company_id: Optional[int] = Query(None),
     advisor_company_id: Optional[int] = Query(None),
     session_id: Optional[int] = Query(None),
+    compact: bool = Query(False),
     user: dict = Depends(get_current_user),
 ):
     del user
@@ -527,7 +551,8 @@ def intelligence_workspace(
             used_session_fallback = True
     if rf and not rdh:
         rdh = research_display_to_editor_html(rf)
-    if not rs and (rdh or rf):
+    # Full split + DB persist on GET is heavy; `compact` defers to POST /research-sections on the client.
+    if not rs and (rdh or rf) and not compact:
         display = rdh or rf
         if advisor_company_id is not None:
             if is_html_content(display):
@@ -561,8 +586,9 @@ def intelligence_workspace(
             "research_full": rf,
             "research_full_updated_at": datetime.utcnow().isoformat(),
             "research_display_html": rdh or research_display_to_editor_html(rf),
-            "research_sections": rs,
         }
+        if rs:
+            patch["research_sections"] = rs
         if advisor_company_id is not None:
             merge_advisor_company_extra_data(advisor_company_id, patch)
         elif company_id is not None:
@@ -578,6 +604,20 @@ def intelligence_workspace(
                 and (n.get("content") or "").strip() == rf
             )
         ]
+    _pa_raw = ed.get("platform_presence_analytics") if isinstance(ed.get("platform_presence_analytics"), dict) else {}
+    _pa_out = _compact_platform_presence_analytics(_pa_raw) if compact else (_pa_raw or {})
+
+    if compact and rs:
+        rf_out, rdh_out = "", ""
+    elif compact:
+        _rdh_s = (rdh or "").strip()
+        if _rdh_s:
+            rf_out, rdh_out = "", rdh
+        else:
+            rf_out, rdh_out = rf, ""
+    else:
+        rf_out, rdh_out = rf, rdh
+
     return {
         "profile": {
             "domain": comp.get("domain"),
@@ -587,13 +627,13 @@ def intelligence_workspace(
             "monthly_visits": comp.get("monthly_visits"),
             "research_status": comp.get("research_status"),
         },
-        "research_full": rf,
-        "research_display_html": rdh,
+        "research_full": rf_out,
+        "research_display_html": rdh_out,
         "research_sections": rs,
         "recommended_offering": ed.get("recommended_offering"),
         "platform_presence": ed.get("platform_presence") or {},
-        "social_from_search": ed.get("social_from_search") or {},
-        "platform_presence_analytics": ed.get("platform_presence_analytics") or {},
+        "social_from_search": {} if compact else (ed.get("social_from_search") or {}),
+        "platform_presence_analytics": _pa_out,
         "notion_notes": notes,
         "notion_page_id": comp.get("notion_page_id"),
         "advisor_canonical": bool(advisor_company_id),
