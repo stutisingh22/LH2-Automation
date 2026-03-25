@@ -12,7 +12,22 @@ saved to Gmail with injection applied.
 """
 
 import re
-import streamlit as st
+import sys
+
+# This module is imported by FastAPI routers on startup.
+# Streamlit imports produce noisy runtime warnings under uvicorn.
+if any("uvicorn" in (a or "").lower() for a in sys.argv):
+    class _StStub:
+        def __getattr__(self, name):
+            # UI-only functions: no-op when running under uvicorn.
+            def _noop(*args, **kwargs):
+                return None
+
+            return _noop
+
+    st = _StStub()  # type: ignore[assignment]
+else:
+    import streamlit as st
 
 from db_ops import (
     bulk_log_actions,

@@ -4,9 +4,32 @@ Moved from notion_sync.py into integrations/notion/.
 """
 
 import logging
+import sys
 import time
 import requests
-import streamlit as st
+
+# Avoid importing Streamlit under uvicorn (no runtime → noisy warnings).
+if any("uvicorn" in (a or "").lower() for a in sys.argv):
+    class _ProgressStub:
+        def progress(self, *args, **kwargs):
+            return None
+
+        def empty(self, *args, **kwargs):
+            return None
+
+    class _StStub:
+        def progress(self, *args, **kwargs):
+            return _ProgressStub()
+
+        def error(self, *args, **kwargs):
+            return None
+
+        def toast(self, *args, **kwargs):
+            return None
+
+    st = _StStub()  # type: ignore[assignment]
+else:
+    import streamlit as st
 
 from config import NOTION_TOKEN, NOTION_DATABASE_ID
 from db_ops import upsert_company, upsert_contact

@@ -4,6 +4,7 @@ config.py — Configuration, env vars, and constants
 
 import os
 import re
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -17,11 +18,15 @@ load_dotenv(_config_dir / ".env")
 # Use same DATABASE_URL (e.g. Supabase) on all systems so data is shared (laptop + server).
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
-    try:
-        import streamlit as st
-        DATABASE_URL = (st.secrets.get("DATABASE_URL") or "").strip()
-    except Exception:
-        pass
+    # Avoid importing Streamlit during FastAPI/uvicorn runtime (it causes cache runtime warnings).
+    # Only use Streamlit secrets when we are actually running via `streamlit run`.
+    if os.environ.get("STREAMLIT_SERVER_RUNNING") and any("streamlit" in (a or "").lower() for a in sys.argv):
+        try:
+            import streamlit as st
+
+            DATABASE_URL = (st.secrets.get("DATABASE_URL") or "").strip()
+        except Exception:
+            pass
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 if not DATABASE_URL:

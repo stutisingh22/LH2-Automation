@@ -4,8 +4,28 @@ Notion Advisor (DB2) sync. NOTION_DATABASE_ID_2 → advisor_companies in main DB
 
 import logging
 import os
+import sys
 import requests
-import streamlit as st
+
+# Avoid importing Streamlit under uvicorn (no runtime → noisy warnings).
+if any("uvicorn" in (a or "").lower() for a in sys.argv):
+    class _ProgressStub:
+        def progress(self, *args, **kwargs):
+            return None
+
+        def empty(self, *args, **kwargs):
+            return None
+
+    class _StStub:
+        def progress(self, *args, **kwargs):
+            return _ProgressStub()
+
+        def error(self, *args, **kwargs):
+            return None
+
+    st = _StStub()  # type: ignore[assignment]
+else:
+    import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv("keys.env")

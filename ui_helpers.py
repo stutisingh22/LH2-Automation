@@ -11,8 +11,23 @@ from contextlib import contextmanager
 import html
 import re
 import uuid
-import streamlit as st
 from config import ROLE_PERMISSIONS
+
+
+class _StreamlitProxy:
+    """Lazy Streamlit import.
+
+    FastAPI/uvicorn startup should not import Streamlit (it triggers cache runtime warnings).
+    Streamlit-only UI helpers will import Streamlit when they actually touch `st.*`.
+    """
+
+    def __getattr__(self, name: str):
+        import streamlit as _st
+
+        return getattr(_st, name)
+
+
+st = _StreamlitProxy()
 
 
 # ── Full name display (use wherever full name is shown) ─────────

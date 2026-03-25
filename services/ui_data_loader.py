@@ -18,7 +18,27 @@ Research vs. Display Boundary:
 - NEVER cache live API calls like ai_engine.*, notion_sync.* (Active Rule ❌)
 """
 
-import streamlit as st
+import sys
+
+# FastAPI/uvicorn entrypoints import this module at server startup. Streamlit's
+# cache runtime is not available there and produces noisy warnings. When running
+# under uvicorn we stub `st.cache_data` with a no-op decorator.
+if any("uvicorn" in (a or "").lower() for a in sys.argv):
+    def _cache_data(ttl=None, **kwargs):
+        def decorator(fn):
+            # Provide a .clear() method so cache invalidation code doesn't fail.
+            if not hasattr(fn, "clear"):
+                fn.clear = lambda: None  # type: ignore[attr-defined]
+            return fn
+
+        return decorator
+
+    class _StStub:
+        cache_data = staticmethod(_cache_data)
+
+    st = _StStub()  # type: ignore[assignment]
+else:
+    import streamlit as st
 from db_ops import (
     get_all_companies,
     get_company,

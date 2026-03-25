@@ -11,10 +11,16 @@ Flow:
 
 import io
 import logging
+import sys
 from typing import List
 
 import pandas as pd
-import streamlit as st
+
+# Avoid importing Streamlit under uvicorn (it produces noisy runtime warnings).
+if any("uvicorn" in (a or "").lower() for a in sys.argv):
+    st = None  # type: ignore
+else:
+    import streamlit as st
 
 from config import normalize_domain
 from db_ops import get_company_by_domain, upsert_company, delete_company_by_domain
