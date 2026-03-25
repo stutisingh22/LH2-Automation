@@ -12,8 +12,8 @@ import os
 import re
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+import threading
 
-import streamlit as st
 from passlib.hash import pbkdf2_sha256
 from sqlalchemy import create_engine, or_, text, func
 from sqlalchemy.orm import sessionmaker, scoped_session
@@ -34,62 +34,70 @@ log = logging.getLogger(__name__)
 # ── Engine + Session Factory ──────────────────────────────────
 
 _engine = None  # Set by init_db(); use get_engine() for code that needs the engine
+_session_factory_lock = threading.Lock()
+_session_factory = None
 
 
 def _create_sqlite_engine():
     return create_platform_engine()
 
 
-@st.cache_resource
 def init_db():
-    engine = None
-    if DATABASE_URL:
-        try:
-            engine = create_engine(
-                DATABASE_URL, poolclass=QueuePool, pool_size=5,
-                max_overflow=10, pool_pre_ping=True, pool_recycle=300,
-            )
-            Base.metadata.create_all(engine)
+    """Initialize engine and return sessionmaker (singleton; safe for Streamlit + FastAPI)."""
+    global _engine, _session_factory
+    if _session_factory is not None:
+        return _session_factory
+    with _session_factory_lock:
+        if _session_factory is not None:
+            return _session_factory
+        engine = None
+        if DATABASE_URL:
             try:
-                CachedContext.__table__.create(bind=engine, checkfirst=True)
-            except Exception:
-                pass
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            log.info("DB connected successfully (PostgreSQL)")
-        except OperationalError as e:
-            log.warning("PostgreSQL unreachable (%s), falling back to SQLite", e)
+                engine = create_engine(
+                    DATABASE_URL, poolclass=QueuePool, pool_size=5,
+                    max_overflow=10, pool_pre_ping=True, pool_recycle=300,
+                )
+                Base.metadata.create_all(engine)
+                try:
+                    CachedContext.__table__.create(bind=engine, checkfirst=True)
+                except Exception:
+                    pass
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                log.info("DB connected successfully (PostgreSQL)")
+            except OperationalError as e:
+                log.warning("PostgreSQL unreachable (%s), falling back to SQLite", e)
+                engine = _create_sqlite_engine()
+                Base.metadata.create_all(engine)
+                try:
+                    CachedContext.__table__.create(bind=engine, checkfirst=True)
+                except Exception:
+                    pass
+        if engine is None:
             engine = _create_sqlite_engine()
             Base.metadata.create_all(engine)
             try:
                 CachedContext.__table__.create(bind=engine, checkfirst=True)
             except Exception:
                 pass
-    if engine is None:
-        engine = _create_sqlite_engine()
-        Base.metadata.create_all(engine)
-        try:
-            CachedContext.__table__.create(bind=engine, checkfirst=True)
-        except Exception:
-            pass
-    # Add draft_revisions / draft_original columns if missing (existing DBs)
-    is_sqlite = "sqlite" in (engine.url.drivername or "")
-    for col, typ in (("draft_revisions", "TEXT" if is_sqlite else "JSON"), ("draft_original", "TEXT")):
-        try:
-            with engine.connect() as conn:
-                with conn.begin():
-                    conn.execute(text(f"ALTER TABLE actions ADD COLUMN {col} {typ}"))
-        except Exception as e:
-            err = str(e).lower()
-            if "duplicate column" in err or "already exists" in err:
-                pass
-            else:
-                log.warning("Migration %s: %s", col, e)
-    db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
-    print(f"DB connected successfully ({db_type})")
-    global _engine
-    _engine = engine
-    return sessionmaker(bind=engine, expire_on_commit=False)
+        # Add draft_revisions / draft_original columns if missing (existing DBs)
+        is_sqlite = "sqlite" in (engine.url.drivername or "")
+        for col, typ in (("draft_revisions", "TEXT" if is_sqlite else "JSON"), ("draft_original", "TEXT")):
+            try:
+                with engine.connect() as conn:
+                    with conn.begin():
+                        conn.execute(text(f"ALTER TABLE actions ADD COLUMN {col} {typ}"))
+            except Exception as e:
+                err = str(e).lower()
+                if "duplicate column" in err or "already exists" in err:
+                    pass
+                else:
+                    log.warning("Migration %s: %s", col, e)
+        db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
+        print(f"DB connected successfully ({db_type})")
+        _engine = engine
+        _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        return _session_factory
 
 
 def get_engine():
@@ -306,16 +314,25 @@ def merge_company_extra_data(company_id: int, patch: dict):
     """
     if not isinstance(patch, dict):
         return False
-    with db() as s:
+    s = SessionFactory()
+    try:
         c = s.get(Company, company_id)
         if not c:
             return False
-        base = _normalize_extra_data(c.extra_data)
+        # IMPORTANT: copy before update. If we mutate the same dict instance that SQLAlchemy
+        # already tracks, JSON changes may not be detected and only updated_at gets written.
+        base = dict(_normalize_extra_data(c.extra_data))
         base.update(patch)
         c.extra_data = dict(base)  # new dict so ORM detects change and persists to DB
         c.updated_at = datetime.utcnow()
         s.flush()
+        s.commit()
         return True
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
 
 
 def get_all_companies(exclude_advisor_shadows=True):
@@ -1120,6 +1137,12 @@ def delete_action(aid):
             s.delete(a)
 
 
+def get_action_by_id(aid):
+    with db() as s:
+        a = s.get(Action, int(aid))
+        return _act_dict(a) if a else None
+
+
 def get_overdue_followups(days=3):
     cutoff = datetime.utcnow() - timedelta(days=days)
     with db() as s:
@@ -1728,14 +1751,15 @@ def get_advisor_company(advisor_id):
         return _advisor_comp_dict(c) if c else None
 
 
-def merge_advisor_company_extra_data(advisor_id, patch):
-    """Merge patch dict into advisor company's extra_data."""
-    if not advisor_id or not patch:
-        return
-    with db() as s:
+def merge_advisor_company_extra_data(advisor_id, patch) -> bool:
+    """Merge patch dict into advisor company's extra_data. Returns False if row missing or invalid input."""
+    if not advisor_id or not isinstance(patch, dict):
+        return False
+    s = SessionFactory()
+    try:
         row = s.query(AdvisorCompany).filter_by(id=advisor_id).first()
         if not row:
-            return
+            return False
         ed = getattr(row, "extra_data", None)
         if isinstance(ed, dict):
             current = ed
@@ -1748,6 +1772,13 @@ def merge_advisor_company_extra_data(advisor_id, patch):
             current = {}
         row.extra_data = {**(current or {}), **patch}
         s.flush()
+        s.commit()
+        return True
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
 
 
 def get_advisor_company_by_domain(domain):

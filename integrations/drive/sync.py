@@ -72,9 +72,13 @@ def _get_oauth_creds():
         if _TOKEN_FILE and os.path.exists(_TOKEN_FILE):
             # Load with scopes=None so we accept token created with any scopes (e.g. readonly). Write will 403 until user re-auths.
             try:
-                creds = Credentials.from_authorized_user_file(_TOKEN_FILE, SCOPES)
-            except Exception:
-                creds = Credentials.from_authorized_user_file(_TOKEN_FILE, None)
+                try:
+                    creds = Credentials.from_authorized_user_file(_TOKEN_FILE, SCOPES)
+                except Exception:
+                    creds = Credentials.from_authorized_user_file(_TOKEN_FILE, None)
+            except Exception as e:
+                log.warning("Invalid or unreadable token.json (%s). Delete it or fix JSON, then run drive_auth.", e)
+                creds = None
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:

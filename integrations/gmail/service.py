@@ -35,7 +35,7 @@ def parse_email_content(content):
     return subject, body
 
 
-def create_gmail_draft(user_email, to_email, subject, body, body_html=None):
+def create_gmail_draft(user_email, to_email, subject, body, body_html=None, allow_interactive=True):
     """
     Create a Gmail draft for the given account. Does not send the email.
 
@@ -52,7 +52,9 @@ def create_gmail_draft(user_email, to_email, subject, body, body_html=None):
     result = {"success": False, "draft_id": None, "error": None}
 
     try:
-        creds = get_google_credentials(user_email, scope_set="gmail_compose")
+        creds = get_google_credentials(
+            user_email, scope_set="gmail_compose", allow_interactive=allow_interactive
+        )
         if not creds:
             result["error"] = "Authentication required."
             return result

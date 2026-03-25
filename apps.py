@@ -2150,7 +2150,8 @@ with tabs[2]:  # INTELLIGENCE
                                 st.rerun()
                     section_edits.append((effective_content or "").strip() or section_html or "")
                 current_research_text = "\n\n".join(
-                    f"<h2>{sec_title}</h2>\n\n{html}" for (sec_title, _), html in zip(sections, section_edits)
+                    f"<!--lh2:section:{i}-->\n\n<h2>{sec_title}</h2>\n\n{html}"
+                    for i, ((sec_title, _), html) in enumerate(zip(sections, section_edits))
                 ).strip() if section_edits else research_full_display
             if st.button("💾 Save", key=f"save_research_all_{cache_key}", width="stretch", help="Save research to DB and Drive (proper format with tables)"):
                 _research = (current_research_text or research_full_display or "").strip()

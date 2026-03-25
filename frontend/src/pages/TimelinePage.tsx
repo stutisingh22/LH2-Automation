@@ -1,0 +1,44 @@
+import { useEffect, useState } from 'react'
+import { apiFetch } from '../api/client'
+import { useSelection } from '../state/SelectionContext'
+
+export default function TimelinePage() {
+  const { selection } = useSelection()
+  const [rows, setRows] = useState<Record<string, unknown>[]>([])
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    if (!selection.companyId) {
+      setRows([])
+      return
+    }
+    const q = new URLSearchParams()
+    q.set('company_id', String(selection.companyId))
+    if (selection.contactId) q.set('contact_id', String(selection.contactId))
+    apiFetch<Record<string, unknown>[]>(`/api/timeline?${q}`)
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'Failed'))
+  }, [selection.companyId, selection.contactId])
+
+  if (!selection.companyId) {
+    return <div className="empty-state"><p>Select a company.</p></div>
+  }
+
+  return (
+    <div className="page-wide">
+      <h1>Timeline</h1>
+      {err && <p className="error">{err}</p>}
+      <ul className="timeline">
+        {rows.length === 0 && <li className="muted">No entries.</li>}
+        {rows.map((a, i) => (
+          <li key={i}>
+            <span className="tl-date">{String((a.created_at as string) || '').slice(0, 10)}</span>
+            <span className="tl-body">
+              {String(a.action_type)} via {String(a.channel)} — {String(a.description || '').slice(0, 200)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}

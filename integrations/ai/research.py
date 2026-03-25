@@ -1181,6 +1181,8 @@ def run_research(domain, context="", progress_callback=None, platform_presence=N
     for attempt in range(1, 3):
         try:
             start = time.time()
+            if progress_callback:
+                progress_callback(0, 0.0)
             collected = []
             chars = 0
             # Buffer for partial lines — held until newline so we can check

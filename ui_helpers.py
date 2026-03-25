@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import html
+import re
 import uuid
 import streamlit as st
 from config import ROLE_PERMISSIONS
@@ -546,6 +547,27 @@ def is_html_content(s):
     return s.lstrip().startswith("<") and ("</" in s or "/>" in s)
 
 
+def looks_like_html_fragment(s):
+    """
+    True if this section body should be kept as HTML, not passed through markdown_to_html.
+    Section bodies often start with a sentence then <table>; is_html_content() would be false
+    and tables would be destroyed on save/reload.
+    """
+    if not (s or "").strip():
+        return False
+    t = (s or "").strip()
+    if is_html_content(t):
+        return True
+    # Table or obvious HTML block tags anywhere in the chunk
+    if re.search(r"<\s*(table|thead|tbody|tfoot|tr|td|th)\b", t, re.I):
+        return True
+    if re.search(r"<\s*(div|section|article|ul|ol|pre|blockquote)\b", t, re.I) and "</" in t:
+        return True
+    if re.search(r"<\s*p\b[^>]*>", t, re.I) and "</p>" in t.lower():
+        return True
+    return False
+
+
 def html_to_plain_text(html, max_length=None):
     """
     Strip HTML to plain text for Drive Docs API, AI context, etc.
@@ -583,10 +605,41 @@ _CANONICAL_SECTION_TITLES = [
 # For each of sections 1..4, try these patterns in order; first match wins. Enables flexible matching
 # (e.g. "2. Article Frequency" or "ARTICLE FREQUENCY" inside <h2>) so content lands in the right expander.
 _CANONICAL_SECTION_BOUNDARY_PATTERNS = [
-    ["2. ARTICLE FREQUENCY", "2. Article Frequency", "ARTICLE FREQUENCY & EXECUTION", "Article Frequency & Execution"],
-    ["3. POWER MAPPING", "3. Power Mapping", "POWER MAPPING & STAKEHOLDER", "Power Mapping & Stakeholder"],
-    ["4. INDIVIDUAL STRATEGIC", "4. Individual Strategic", "INDIVIDUAL STRATEGIC INTERPRETATION", "5. FIT ASSESSMENT", "5. Fit Assessment"],
-    ["6. OUTREACH SEQUENCING", "6. Outreach Sequencing", "OUTREACH SEQUENCING", "7. ACCELERATE POSITIONING", "FINAL SECTION: STRATEGIC WEDGE"],
+    [
+        "2. ARTICLE FREQUENCY & EXECUTION CAPACITY",
+        "2. ARTICLE FREQUENCY &amp; EXECUTION CAPACITY",
+        "2. ARTICLE FREQUENCY",
+        "2. Article Frequency",
+        "ARTICLE FREQUENCY & EXECUTION",
+        "ARTICLE FREQUENCY &amp; EXECUTION",
+        "Article Frequency & Execution",
+        "Article Frequency &amp; Execution",
+    ],
+    [
+        "3. POWER MAPPING & STAKEHOLDER PRIORITIZATION",
+        "3. POWER MAPPING &amp; STAKEHOLDER PRIORITIZATION",
+        "3. POWER MAPPING",
+        "3. Power Mapping",
+        "POWER MAPPING & STAKEHOLDER",
+        "POWER MAPPING &amp; STAKEHOLDER",
+        "Power Mapping & Stakeholder",
+    ],
+    [
+        "4. INDIVIDUAL STRATEGIC INTERPRETATION",
+        "4. INDIVIDUAL STRATEGIC",
+        "4. Individual Strategic",
+        "INDIVIDUAL STRATEGIC INTERPRETATION",
+        "5. FIT ASSESSMENT",
+        "5. Fit Assessment",
+    ],
+    [
+        "6. OUTREACH SEQUENCING STRATEGY",
+        "6. OUTREACH SEQUENCING",
+        "6. Outreach Sequencing",
+        "OUTREACH SEQUENCING",
+        "7. ACCELERATE POSITIONING",
+        "FINAL SECTION: STRATEGIC WEDGE",
+    ],
 ]
 
 
@@ -657,29 +710,102 @@ def split_html_into_canonical_sections(html):
     return out
 
 
-def split_html_into_sections(html):
+# Written by Command Center / Streamlit save before each top-level section <h2>.
+# Lets us split reliably even when section bodies contain nested <h2> from markdown.
+_LH2_SECTION_COMMENT_RE = re.compile(r"<!--\s*lh2:section:(\d+)\s*-->", re.I)
+
+
+def try_split_html_at_lh2_markers(raw_html: str):
     """
-    Split HTML that was produced from research (with <h2>section title</h2> blocks) into
-    [(title, html_body), ...]. Used when we have stored research_display_html so tables survive
-    JSON/JSONB round-trip on the server.
+    If HTML contains <!--lh2:section:N--> markers (saved from React or Streamlit), split only
+    on those boundaries. Returns list of (title, body_html) or None if no markers.
     """
-    import re
-    if not (html or "").strip():
-        return []
-    text = (html or "").strip()
+    if not (raw_html or "").strip() or "lh2:section:" not in raw_html:
+        return None
+    matches = list(_LH2_SECTION_COMMENT_RE.finditer(raw_html))
+    if not matches:
+        return None
+    out = []
+    preamble = raw_html[: matches[0].start()].strip()
+    for idx, m in enumerate(matches):
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_html)
+        block = raw_html[start:end].strip()
+        hm = re.match(r"(?is)^\s*<h2[^>]*>(.*?)</h2>\s*(.*)\Z", block)
+        if not hm:
+            title = f"Section {idx + 1}"
+            body = block
+        else:
+            raw_title = hm.group(1).strip()
+            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title).strip()) or f"Section {idx + 1}"
+            body = (hm.group(2) or "").strip()
+        if idx == 0 and preamble:
+            body = f"{preamble}\n\n{body}".strip() if body else preamble
+        out.append((title, body))
+    return out if out else None
+
+
+def _split_html_by_headings_only(text: str) -> list:
+    """Split on <h2> (else <h1>); prepend preamble to first body. Ignores lh2 markers."""
     parts = re.split(r"<h2[^>]*>(.*?)</h2>", text, flags=re.I | re.DOTALL)
     if len(parts) < 2:
-        return [("Research", text)]
+        parts = re.split(r"<h1[^>]*>(.*?)</h1>", text, flags=re.I | re.DOTALL)
+        if len(parts) < 2:
+            return [("Research", text)]
+    preamble = (parts[0] or "").strip()
     out = []
     titles = parts[1::2]
     bodies = parts[2::2]
     for i, title in enumerate(titles):
         body = (bodies[i] if i < len(bodies) else "").strip()
-        title_clean = re.sub(r"<[^>]+>", "", title).strip() or "Section"
+        title_clean = html.unescape(re.sub(r"<[^>]+>", "", title).strip() or "Section")
+        if i == 0 and preamble:
+            body = f"{preamble}\n\n{body}".strip() if body else preamble
         out.append((title_clean, body))
     if not out:
         return [("Research", text)]
     return out
+
+
+def split_html_into_sections(raw_html: str):
+    """
+    Split HTML that was produced from research (with <h2>section title</h2> blocks) into
+    [(title, html_body), ...]. Used when we have stored research_display_html so tables survive
+    JSON/JSONB round-trip on the server.
+
+    Prefer <!--lh2:section:N--> markers when present (stable round-trip vs nested <h2> in bodies).
+
+    Content *before* the first heading is kept: it is prepended to the first section body so
+    nothing is dropped (matches user expectation and round-trip save fidelity). If there are
+    no <h2> tags, falls back to splitting on <h1>; if neither exists, returns one block.
+    """
+    if not (raw_html or "").strip():
+        return []
+    text = (raw_html or "").strip()
+    marked = try_split_html_at_lh2_markers(text)
+    if marked is not None:
+        return marked
+    return _split_html_by_headings_only(text)
+
+
+def redocument_with_lh2_markers(raw_html: str) -> str:
+    """
+    Re-serialize split sections with <!--lh2:section:N--> markers so future splits stay stable
+    even when bodies contain nested <h2>. Idempotent if markers already present.
+    """
+    raw_html = (raw_html or "").strip()
+    if not raw_html or "lh2:section:" in raw_html:
+        return raw_html
+    if not is_html_content(raw_html):
+        return raw_html
+    pairs = _split_html_by_headings_only(raw_html)
+    if not pairs:
+        return raw_html
+    bits = []
+    for i, (title, body) in enumerate(pairs):
+        t = html.escape(title)
+        bits.append(f"<!--lh2:section:{i}-->\n\n<h2>{t}</h2>\n\n{(body or '').strip()}")
+    return "\n\n".join(bits).strip()
 
 
 def research_display_to_editor_html(text):

@@ -43,6 +43,14 @@ def _token_path(account_email, scope_set):
     return _TOKEN_DIR / f"{key}_{suffix}.json"
 
 
+def gmail_compose_token_exists(account_email) -> bool:
+    """True if a saved gmail.compose token file exists (does not validate or refresh)."""
+    if not (account_email or "").strip():
+        return False
+    _migrate_old_token_if_exists(account_email, "gmail_compose")
+    return _token_path(account_email, "gmail_compose").exists()
+
+
 def _migrate_old_token_if_exists(account_email, scope_set):
     """One-time: rename old token files to new naming so existing users don't re-auth."""
     key = _sanitize_account_key(account_email)
@@ -61,13 +69,16 @@ def _migrate_old_token_if_exists(account_email, scope_set):
             log.warning("Token migration failed %s -> %s: %s", old_path, new_path, e)
 
 
-def get_google_credentials(account_email, scope_set="gmail_compose"):
+def get_google_credentials(account_email, scope_set="gmail_compose", allow_interactive=True):
     """
     Load or obtain OAuth credentials for the given account and scope set.
 
     Args:
         account_email: User email (or username fallback) used for token file path.
         scope_set: "gmail_compose" or "gmail_read".
+
+    Args:
+        allow_interactive: If False, never start a local OAuth server (for API servers).
 
     Returns:
         Google credentials object or None on failure.
@@ -100,6 +111,9 @@ def get_google_credentials(account_email, scope_set="gmail_compose"):
             creds = None
 
     if (not creds or not creds.valid) and _CREDS_FILE.exists():
+        if not allow_interactive:
+            log.info("No valid token for %s (non-interactive; skipping OAuth)", account_email)
+            return None
         try:
             flow = InstalledAppFlow.from_client_secrets_file(str(_CREDS_FILE), scopes)
             creds = flow.run_local_server(port=0)
