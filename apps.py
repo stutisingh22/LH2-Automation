@@ -406,7 +406,7 @@ defaults = {
     "sel_company": None, "sel_contact": None, "session_id": None,
     "sel_advisor_company_id": None,
     "chat_messages": [], "auto_brief_text": None, "research_cache": {},
-    "pending_plan": None, "sender_id": user["id"],
+    "pending_plan": None, "sender_id": user["id"] if user else None,
     "intel_lookup_lead": None, "intel_person_brief": None,
     "intel_suggestion": None, "intel_suggestion_raw": None,
     "current_tab": "DASHBOARD", "advisor_messages": [],
