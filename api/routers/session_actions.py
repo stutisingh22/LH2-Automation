@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from db_ops import (
     delete_action,
     get_action_by_id,
+    get_company,
+    get_contact,
     get_session,
     get_active_sequences,
     get_sequence_actions,
@@ -82,6 +84,47 @@ def action_board(session_id: int, user: dict = Depends(get_current_user)):
     all_a = get_session_actions(session_id)
     non_seq = [a for a in all_a if not a.get("sequence_id")]
     return {"sequences": sequences, "standalone": non_seq, "all": all_a}
+
+
+@router.get("/actions/{action_id}/context")
+def action_context(action_id: int, user: dict = Depends(get_current_user)):
+    del user
+    act = get_action_by_id(action_id)
+    if not act:
+        raise HTTPException(status_code=404, detail="Action not found")
+    sid = act.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=404, detail="Session not found")
+    sess = get_session(int(sid))
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    company_id = sess.get("company_id")
+    contact_id = sess.get("contact_id")
+    source = "independent"
+    advisor_company_id = None
+    if company_id:
+        comp = get_company(int(company_id)) or {}
+        extra = comp.get("extra_data") if isinstance(comp.get("extra_data"), dict) else {}
+        aid = extra.get("source_advisor_company_id")
+        if aid is not None:
+            source = "media"
+            advisor_company_id = int(aid)
+
+    contact = get_contact(int(contact_id)) if contact_id else None
+    return {
+        "action_id": int(action_id),
+        "session_id": int(sid),
+        "source": source,
+        "company_id": int(company_id) if company_id else None,
+        "contact_id": int(contact_id) if contact_id else None,
+        "advisor_company_id": advisor_company_id,
+        "contact": {
+            "id": contact.get("id") if contact else None,
+            "name": contact.get("name") if contact else None,
+            "email": contact.get("email") if contact else None,
+        },
+    }
 
 
 @router.post("/sessions/{session_id}/actions")

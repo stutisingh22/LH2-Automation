@@ -744,6 +744,30 @@ export default function DashboardPage() {
     }
   }
 
+  async function openActionFromPreview(actionId: number, fallbackSource: 'independent' | 'media') {
+    try {
+      const ctx = await apiFetch<{
+        action_id: number
+        session_id: number
+        source: 'independent' | 'media'
+        company_id: number | null
+        contact_id: number | null
+        advisor_company_id: number | null
+      }>(`/api/actions/${actionId}/context`, { silent: true })
+      const nextSel = {
+        source: ctx.source || fallbackSource,
+        companyId: ctx.company_id ?? null,
+        contactId: ctx.contact_id ?? null,
+        advisorCompanyId: ctx.advisor_company_id ?? null,
+        sessionId: ctx.session_id ?? null,
+      }
+      setSelection(nextSel)
+      navigate(`/actions?${toWorkspaceSearchString(nextSel)}`)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not open action context')
+    }
+  }
+
   const drawerVars = useMemo(
     () =>
       ({
@@ -1530,7 +1554,20 @@ export default function DashboardPage() {
                 <ul className="crm-plan-list">
                   {(selectedGroup.planned_preview || []).length === 0 && <li className="muted">No planned outreach yet.</li>}
                   {(selectedGroup.planned_preview || []).map((p) => (
-                    <li key={String(p.id)} className="crm-plan-item">
+                    <li
+                      key={String(p.id)}
+                      className="crm-plan-item"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => void openActionFromPreview(Number(p.id), 'independent')}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          void openActionFromPreview(Number(p.id), 'independent')
+                        }
+                      }}
+                      aria-label={`Open action ${String(p.id)} in Actions`}
+                    >
                       <div className="crm-plan-title">
                         {p.channel} · {p.sequence_step ? `Step ${p.sequence_step}` : ''}
                       </div>
@@ -1729,7 +1766,33 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="crm-subhead">Planned outreach (preview)</div>
-                <p className="muted">Planned outreach preview is available at the media-house level for now.</p>
+                <ul className="crm-plan-list">
+                  {(selectedMediaBrand.parent.planned_preview || []).length === 0 && (
+                    <li className="muted">No planned outreach yet.</li>
+                  )}
+                  {(selectedMediaBrand.parent.planned_preview || []).map((p) => (
+                    <li
+                      key={String(p.id)}
+                      className="crm-plan-item"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => void openActionFromPreview(Number(p.id), 'media')}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          void openActionFromPreview(Number(p.id), 'media')
+                        }
+                      }}
+                      aria-label={`Open action ${String(p.id)} in Actions`}
+                    >
+                      <div className="crm-plan-title">
+                        {p.channel} · {p.sequence_step ? `Step ${p.sequence_step}` : ''}
+                      </div>
+                      <div className="muted small">{p.scheduled_at ? String(p.scheduled_at).slice(0, 10) : '—'}</div>
+                      <div className="crm-plan-desc">{p.description}</div>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </aside>
