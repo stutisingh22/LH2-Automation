@@ -563,7 +563,7 @@ def _extract_painpoint_signals(research_context, platform_block, max_items=8):
 
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
-def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, query=None):
+def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, query=None, strategist_rules=None):
     """Build the full context system prompt. If sender_email provided, includes training docs and sender profile.
     If product_key provided ('accelerate' or 'mediaos'), injects focused product pitch context.
     If recipient_research provided, includes social research on the recipient."""
@@ -701,6 +701,19 @@ The RESEARCH section shows programmatic/core revenue is the primary driver (e.g.
     context_health_block = _build_context_health_block(comp, research_notes=research_notes)
     painpoint_signals_block = _extract_painpoint_signals(research_context, platform_presence_block)
     preference_memory_block = _build_preference_memory_block(query or "")
+    strategist_rules_block = ""
+    if strategist_rules and str(strategist_rules).strip():
+        cleaned_rules = re.sub(r"\s+", " ", str(strategist_rules)).strip()
+        # Keep rule context bounded to avoid slowing first-token latency.
+        if len(cleaned_rules) > 900:
+            cleaned_rules = cleaned_rules[:900].rstrip() + "..."
+        strategist_rules_block = (
+            "\n== USER CUSTOM STRATEGIST RULES (NON-NEGOTIABLE FOR THIS CONTEXT) ==\n"
+            + cleaned_rules
+            + "\nThese rules OVERRIDE default stylistic/template preferences in this prompt."
+            + "\nYou MUST explicitly follow these rules for this ongoing chat context across recommendations and sequence drafts."
+            + "\nOnly deviate when a rule conflicts with hard grounding/safety constraints."
+        )
 
     _child_focus = comp.get('_child_company_focus')
     if _child_focus:
@@ -739,6 +752,7 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
 {platform_painpoint_block}
 {context_health_block}
 {preference_memory_block}
+{strategist_rules_block}
 == PAINPOINT SIGNALS (extracted from available context) ==
 {painpoint_signals_block}
 
@@ -757,6 +771,12 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
 {global_block}
 
 == OUTPUT RULES ==
+
+0. USER CUSTOM RULE PRIORITY (highest priority after safety/grounding):
+   - If USER CUSTOM STRATEGIST RULES are present, treat them as hard constraints.
+   - These user rules override default template/style instructions in this prompt.
+   - Before finalizing any output, run a compliance check against the user rules and revise until fully compliant.
+   - If any line conflicts (example: template suggests mentioning a job posting, but user rule forbids job-posting references), follow the user rule.
 
 1. GROUNDING (mandatory for all outputs):
    - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
@@ -1780,12 +1800,22 @@ def parse_ai_actions(text):
 
 # ── Main Strategist (with optional streaming) ─────────────────
 
-def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None):
+def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, strategist_rules=None):
     """
     FIX: The user_msg is already in `messages` (appended by the caller).
     We do NOT append again to avoid sending it twice.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, query=user_msg)
+    system = _build_system_prompt(
+        comp,
+        ct,
+        uid,
+        sid,
+        research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        query=user_msg,
+        strategist_rules=strategist_rules,
+    )
 
     # Add retrieved memories for this specific query
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
@@ -1809,12 +1839,23 @@ def get_strategist_response(comp, ct, messages, user_msg, uid, sid, research_not
         return f"Error: {e}"
 
 
-def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, strategist_rules=None):
     """
     Streaming version of the strategist. Yields text chunks.
     Used for Full Plan and other non-chat flows. For the strategist chat box, use get_strategist_chat_response_stream.
     """
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research, query=user_msg)
+    system = _build_system_prompt(
+        comp,
+        ct,
+        uid,
+        sid,
+        research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        recipient_research=recipient_research,
+        query=user_msg,
+        strategist_rules=strategist_rules,
+    )
 
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
     if relevant:
@@ -1839,7 +1880,7 @@ def get_strategist_response_stream(comp, ct, messages, user_msg, uid, sid, resea
         yield f"Error: {e}"
 
 
-def _build_strategist_chat_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, user_msg=None):
+def _build_strategist_chat_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, user_msg=None, strategist_rules=None):
     """
     Build system prompt for the strategist CHAT only. Reuses the same full context as Full Plan
     (research, drive, strategy profile, etc.) but with chat-specific instructions: recipient (To) focus,
@@ -1866,11 +1907,12 @@ This is a live chat. Every response is scoped to outreach TO: {to_line}.
         product_key=product_key,
         recipient_research=recipient_research,
         query=user_msg,
+        strategist_rules=strategist_rules,
     )
     return chat_prefix + base_system
 
 
-def get_strategist_chat_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+def get_strategist_chat_response_stream(comp, ct, messages, user_msg, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, strategist_rules=None):
     """
     Dedicated streaming handler for the strategist CHAT BOX only. Uses the same research/context
     as Full Plan but with a chat-specific system prompt (recipient focus, strict user requirements).
@@ -1883,6 +1925,7 @@ def get_strategist_chat_response_stream(comp, ct, messages, user_msg, uid, sid, 
         product_key=product_key,
         recipient_research=recipient_research,
         user_msg=user_msg,
+        strategist_rules=strategist_rules,
     )
 
     relevant = retrieve_relevant_memories(sid, uid, user_msg)
@@ -1948,7 +1991,7 @@ def export_session_csv(sid, domain):
 
 # ── Outreach Sequence Generation ──────────────────────────────
 
-def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None, sender_email=None, product_key=None, recipient_research=None):
+def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=None, sender_email=None, product_key=None, recipient_research=None, strategist_rules=None):
     """
     Generate a structured outreach sequence.
     Returns list of dicts: [{step, channel, day_offset, description, content_draft, timing_note}, ...]
@@ -1958,7 +2001,17 @@ def generate_outreach_plan(comp, ct, uid, sid, sender_name="", research_notes=No
         # Do not hard-block plan generation; keep running and let prompt constraints
         # ground output to available context. UI can still surface this warning.
         log.warning("Generating outreach plan with partial context: %s", reason)
-    system = _build_system_prompt(comp, ct, uid, sid, research_notes, sender_email=sender_email, product_key=product_key, recipient_research=recipient_research)
+    system = _build_system_prompt(
+        comp,
+        ct,
+        uid,
+        sid,
+        research_notes,
+        sender_email=sender_email,
+        product_key=product_key,
+        recipient_research=recipient_research,
+        strategist_rules=strategist_rules,
+    )
 
     sender_line = f"Sender name: {sender_name}" if sender_name else ""
 

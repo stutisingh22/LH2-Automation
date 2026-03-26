@@ -83,6 +83,7 @@ export async function streamStrategist(
     product_key?: string | null
     sender_email?: string | null
     recipient_research?: unknown | null
+    strategist_rules?: string | null
   },
 ): Promise<void> {
   const token = getToken()
@@ -98,6 +99,7 @@ export async function streamStrategist(
       product_key: extra?.product_key || null,
       sender_email: extra?.sender_email || null,
       recipient_research: extra?.recipient_research ?? null,
+      strategist_rules: extra?.strategist_rules || null,
     }),
   })
   if (!res.ok) {

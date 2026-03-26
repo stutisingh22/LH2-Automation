@@ -37,3 +37,4 @@ class ChatStreamIn(BaseModel):
     product_key: Optional[str] = None
     sender_email: Optional[str] = None
     recipient_research: Optional[Any] = None
+    strategist_rules: Optional[str] = None

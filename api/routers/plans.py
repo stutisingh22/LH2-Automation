@@ -19,6 +19,7 @@ class OutreachPlanRequest(BaseModel):
     sender_email: Optional[str] = None
     product_key: Optional[str] = None
     recipient_research: Optional[Any] = None
+    strategist_rules: Optional[str] = None
 
 
 class PlanStep(BaseModel):
@@ -86,6 +87,7 @@ def create_outreach_plan(
         sender_email=body.sender_email or user.get("email"),
         product_key=body.product_key,
         recipient_research=body.recipient_research,
+        strategist_rules=body.strategist_rules,
     )
     return {"plan": plan or []}
 

@@ -65,6 +65,9 @@ export default function StrategistPage() {
   const [lookupName, setLookupName] = useState('')
   const [lookupRole, setLookupRole] = useState('')
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
+  const [showRulesPopup, setShowRulesPopup] = useState(false)
+  const [strategistRules, setStrategistRules] = useState('')
+  const [draftStrategistRules, setDraftStrategistRules] = useState('')
 
   const boardKey = (r: ContactsBoardRow) => `${(r.name || '').trim().toLowerCase()}|${(r.linkedin_url || '').trim()}`
 
@@ -255,6 +258,10 @@ export default function StrategistPage() {
   }, [timelineSeqs, targetSequenceId])
 
   const senderEmail = users.find((u) => u.id === senderId)?.email || ''
+  const rulesStorageKey = useMemo(
+    () => `lh2_strategist_rules_${cid ?? 'none'}_${contactId ?? 'company'}`,
+    [cid, contactId],
+  )
   const selectedTimelineSeq = useMemo(
     () => timelineSeqs.find((s) => s.id === targetSequenceId) || null,
     [timelineSeqs, targetSequenceId],
@@ -263,6 +270,17 @@ export default function StrategistPage() {
     () => (selectedTimelineSeq?.steps || []).filter((st) => st.id != null),
     [selectedTimelineSeq],
   )
+
+  useEffect(() => {
+    if (!cid) {
+      setStrategistRules('')
+      setDraftStrategistRules('')
+      return
+    }
+    const saved = localStorage.getItem(rulesStorageKey) || ''
+    setStrategistRules(saved)
+    setDraftStrategistRules(saved)
+  }, [cid, rulesStorageKey])
 
   function parseDraft(content: string) {
     const raw = (content || '').trim()
@@ -306,6 +324,7 @@ export default function StrategistPage() {
         product_key: productKey,
         sender_email: senderEmail || null,
         recipient_research: recipientResearch,
+        strategist_rules: strategistRules || null,
       })
       const m = await apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`, {
         silent: true,
@@ -334,6 +353,7 @@ export default function StrategistPage() {
           sender_email: senderEmail || null,
           product_key: productKey,
           recipient_research: recipientResearch,
+          strategist_rules: strategistRules || null,
         },
       })
       const steps = plan.plan || []
@@ -584,6 +604,29 @@ export default function StrategistPage() {
     setShowAddTimelinePopup(true)
   }
 
+  function openRulesPopup() {
+    setDraftStrategistRules(strategistRules)
+    setShowRulesPopup(true)
+  }
+
+  async function saveStrategistRules() {
+    const cleaned = draftStrategistRules.trim()
+    setStrategistRules(cleaned)
+    localStorage.setItem(rulesStorageKey, cleaned)
+    if (sid && cleaned) {
+      try {
+        await apiFetch(`/api/sessions/${sid}/strategist-rules`, {
+          method: 'POST',
+          silent: true,
+          json: { strategist_rules: cleaned },
+        })
+      } catch (ex) {
+        setErr(ex instanceof Error ? ex.message : 'Could not save strategist rules to memory')
+      }
+    }
+    setShowRulesPopup(false)
+  }
+
   async function saveDraftToGmail(content: string, stepIndex?: number) {
     if (!content.trim()) {
       setErr('Draft content is required to save Gmail draft')
@@ -733,6 +776,9 @@ export default function StrategistPage() {
               <button type="button" className="secondary sm" onClick={fullPlan} disabled={busy || !sid}>
                 Full plan
               </button>
+              <button type="button" className="ghost sm" onClick={openRulesPopup}>
+                Rules
+              </button>
               {contactId != null && (
                 <button
                   type="button"
@@ -754,6 +800,7 @@ export default function StrategistPage() {
                 </button>
               )}
             </div>
+            {!!strategistRules && <p className="muted small">Custom rules active for this chat context.</p>}
           </section>
 
           {recipientResearch && (
@@ -954,6 +1001,23 @@ export default function StrategistPage() {
             )}
           </div>
 
+          <section className="panel strategist-rules-panel">
+            <div className="strategist-rules-row">
+              <button type="button" className="primary sm" onClick={openRulesPopup}>
+                Set chat rules
+              </button>
+              {!!strategistRules && <span className="ok small">Rules active for this context</span>}
+            </div>
+            <p className="muted small">
+              Add instructions the strategist must follow for this ongoing chat context.
+            </p>
+            {!!strategistRules && (
+              <pre className="strategist-rules-preview">
+                {strategistRules}
+              </pre>
+            )}
+          </section>
+
           {pendingPlan && pendingPlan.length > 0 && (
             <section className="panel plan-preview strategist-main-plan">
               <div className="intel-card-head">
@@ -1120,6 +1184,34 @@ export default function StrategistPage() {
                 }
               >
                 {addDraftBusy ? '…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showRulesPopup && (
+        <div className="strategist-add-overlay" role="dialog" aria-modal="true" aria-label="Strategist rules">
+          <div className="strategist-add-popup panel">
+            <h3>Strategist rules</h3>
+            <p className="muted small">These instructions are applied to the ongoing chat + full plan for the current company/recipient context.</p>
+            <label>
+              Rules / expectations
+              <textarea
+                rows={8}
+                value={draftStrategistRules}
+                onChange={(e) => setDraftStrategistRules(e.target.value)}
+                placeholder="Example: Keep tone concise, always include 3-step sequence, avoid emojis, include one metric per email."
+              />
+            </label>
+            <div className="btn-row">
+              <button type="button" className="secondary sm" onClick={() => setShowRulesPopup(false)}>
+                Cancel
+              </button>
+              <button type="button" className="ghost sm" onClick={() => setDraftStrategistRules('')}>
+                Clear
+              </button>
+              <button type="button" className="primary sm" onClick={() => void saveStrategistRules()}>
+                Save rules
               </button>
             </div>
           </div>

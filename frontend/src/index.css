@@ -2096,6 +2096,25 @@ button.sel-pill-clear:hover {
   padding: 0.55rem 0.65rem;
   background: var(--surface);
 }
+.strategist-rules-panel {
+  margin-top: 0.6rem;
+}
+.strategist-rules-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.strategist-rules-preview {
+  margin-top: 0.45rem;
+  max-height: 10rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: var(--surface-2, var(--surface));
+  font-size: 0.78rem;
+}
 .strategist-add-popup {
   width: min(560px, calc(100vw - 2rem));
   padding: 0.75rem;
@@ -2121,8 +2140,19 @@ button.sel-pill-clear:hover {
   border: 1px solid #323646;
   border-radius: 8px;
 }
+.strategist-add-popup textarea {
+  min-height: 7rem;
+  resize: vertical;
+  background: #1c1f28;
+  color: var(--text);
+  border: 1px solid #323646;
+  border-radius: 8px;
+  padding: 0.5rem;
+  font-family: inherit;
+}
 .strategist-add-popup select:focus,
-.strategist-add-popup input:focus {
+.strategist-add-popup input:focus,
+.strategist-add-popup textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.22);
@@ -2141,7 +2171,8 @@ button.sel-pill-clear:hover {
   padding: 1rem;
 }
 :root[data-theme='light'] .strategist-add-popup select,
-:root[data-theme='light'] .strategist-add-popup input {
+:root[data-theme='light'] .strategist-add-popup input,
+:root[data-theme='light'] .strategist-add-popup textarea {
   background: var(--surface);
   border-color: var(--border);
 }
