@@ -27,6 +27,9 @@ type RecipientOption =
   | { kind: 'contact'; value: string; label: string; contactId: number }
   | { kind: 'row'; value: string; label: string; row: ContactsBoardRow }
 
+type TimelineStep = Record<string, unknown>
+type TimelineSeq = { id: string; steps: TimelineStep[]; done: number; total: number }
+
 export default function StrategistPage() {
   const { selection, setSelection } = useSelection()
   const meta = useMeta()
@@ -48,6 +51,11 @@ export default function StrategistPage() {
   const [addDraftText, setAddDraftText] = useState('')
   const [addDraftBusy, setAddDraftBusy] = useState(false)
   const [parseMulti, setParseMulti] = useState(false)
+  const [showAddTimelinePopup, setShowAddTimelinePopup] = useState(false)
+  const [addMode, setAddMode] = useState<'new_sequence' | 'append_sequence' | 'overwrite'>('new_sequence')
+  const [timelineSeqs, setTimelineSeqs] = useState<TimelineSeq[]>([])
+  const [targetSequenceId, setTargetSequenceId] = useState('')
+  const [targetActionId, setTargetActionId] = useState<number | null>(null)
   const [gmailBusy, setGmailBusy] = useState(false)
   const [gmailMsg, setGmailMsg] = useState('')
   const [boardRows, setBoardRows] = useState<ContactsBoardRow[]>([])
@@ -220,14 +228,40 @@ export default function StrategistPage() {
   useEffect(() => {
     if (!sid) {
       setMessages([])
+      setTimelineSeqs([])
       return
     }
     apiFetch<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`, { silent: true }).then((m) =>
       setMessages(m.messages),
     )
+    apiFetch<{ sequences: TimelineSeq[] }>(`/api/sessions/${sid}/action-board`, { silent: true })
+      .then((r) => setTimelineSeqs(r.sequences || []))
+      .catch(() => setTimelineSeqs([]))
   }, [sid])
 
+  useEffect(() => {
+    if (!timelineSeqs.length) {
+      setTargetSequenceId('')
+      setTargetActionId(null)
+      return
+    }
+    if (!targetSequenceId || !timelineSeqs.some((s) => s.id === targetSequenceId)) {
+      const first = timelineSeqs[0]
+      setTargetSequenceId(first.id)
+      const firstStep = first.steps?.[0]
+      setTargetActionId(typeof firstStep?.id === 'number' ? (firstStep.id as number) : null)
+    }
+  }, [timelineSeqs, targetSequenceId])
+
   const senderEmail = users.find((u) => u.id === senderId)?.email || ''
+  const selectedTimelineSeq = useMemo(
+    () => timelineSeqs.find((s) => s.id === targetSequenceId) || null,
+    [timelineSeqs, targetSequenceId],
+  )
+  const overwriteCandidates = useMemo(
+    () => (selectedTimelineSeq?.steps || []).filter((st) => st.id != null),
+    [selectedTimelineSeq],
+  )
 
   function parseDraft(content: string) {
     const raw = (content || '').trim()
@@ -499,8 +533,16 @@ export default function StrategistPage() {
     }
   }
 
-  async function addDraftToTimeline(draftText: string) {
-    if (!sid || !senderId || !draftText.trim()) return
+  async function addDraftToTimeline(draftText: string): Promise<boolean> {
+    if (!sid || !senderId || !draftText.trim()) return false
+    if (addMode === 'append_sequence' && !targetSequenceId) {
+      setErr('Choose a sequence to append to.')
+      return false
+    }
+    if (addMode === 'overwrite' && !targetActionId) {
+      setErr('Choose a target step to overwrite.')
+      return false
+    }
     setAddDraftBusy(true)
     setErr('')
     try {
@@ -510,30 +552,33 @@ export default function StrategistPage() {
         json: {
           sender_user_id: senderId,
           draft_content: draftText.trim(),
-          mode: parseMulti ? 'multi_sequence' : 'new_sequence',
+          mode: addMode === 'new_sequence' ? (parseMulti ? 'multi_sequence' : 'new_sequence') : addMode,
           product_key: productKey,
-          parse_multi: parseMulti,
+          parse_multi: addMode === 'new_sequence' ? parseMulti : false,
           channel: 'Email',
+          sequence_id: addMode === 'append_sequence' ? targetSequenceId : null,
+          target_action_id: addMode === 'overwrite' ? targetActionId : null,
         },
       })
+      const board = await apiFetch<{ sequences: TimelineSeq[] }>(`/api/sessions/${sid}/action-board`, { silent: true })
+      setTimelineSeqs(board.sequences || [])
+      return true
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Add to timeline failed')
+      return false
     } finally {
       setAddDraftBusy(false)
     }
   }
 
   async function addChatDraftToTimeline() {
-    await addDraftToTimeline(addDraftText)
+    const ok = await addDraftToTimeline(addDraftText)
+    if (ok) setShowAddTimelinePopup(false)
   }
 
-  function fillDraftFromLastAssistant() {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant') {
-        setAddDraftText(messages[i].content)
-        return
-      }
-    }
+  function openAddTimelinePopup(draftText: string) {
+    setAddDraftText((draftText || '').trim())
+    setShowAddTimelinePopup(true)
   }
 
   async function saveDraftToGmail(content: string, stepIndex?: number) {
@@ -724,39 +769,6 @@ export default function StrategistPage() {
             </section>
           )}
 
-          {sid && senderId && (
-            <section className="panel strategist-add-draft">
-              <h2>To timeline</h2>
-              <p className="muted small">
-                Multiple emails split automatically when the draft has lines like <code>Email 1:</code>,{' '}
-                <code>Email 2:</code>, or <code>Email 1 — …</code>. Each step saves as subject + body only.
-              </p>
-              <div className="btn-row">
-                <button type="button" className="secondary sm" onClick={fillDraftFromLastAssistant}>
-                  Last reply
-                </button>
-                <label className="chk-inline">
-                  <input type="checkbox" checked={parseMulti} onChange={(e) => setParseMulti(e.target.checked)} />
-                  Require multi-email (error if fewer than 2 sections)
-                </label>
-              </div>
-              <textarea
-                rows={6}
-                value={addDraftText}
-                onChange={(e) => setAddDraftText(e.target.value)}
-                placeholder="Draft…"
-              />
-              <button
-                type="button"
-                className="primary sm"
-                onClick={addChatDraftToTimeline}
-                disabled={addDraftBusy || !addDraftText.trim()}
-              >
-                {addDraftBusy ? '…' : 'Add to timeline'}
-              </button>
-            </section>
-          )}
-
         </aside>
 
         <div className="strategist-main">
@@ -911,10 +923,7 @@ export default function StrategistPage() {
                         {parsed.subject && <div className="draft-subject"><strong>Subject:</strong> {parsed.subject}</div>}
                         <pre className="draft-body">{parsed.body || m.content}</pre>
                         <div className="btn-row">
-                          <button type="button" className="secondary sm" onClick={() => setAddDraftText(m.content)}>
-                            Use in timeline box
-                          </button>
-                          <button type="button" className="primary sm" onClick={() => void addDraftToTimeline(m.content)} disabled={addDraftBusy}>
+                          <button type="button" className="primary sm" onClick={() => openAddTimelinePopup(m.content)} disabled={addDraftBusy}>
                             {addDraftBusy ? '…' : 'Add to timeline'}
                           </button>
                           <button
@@ -975,10 +984,7 @@ export default function StrategistPage() {
                               {parsed.subject && <div className="draft-subject"><strong>Subject:</strong> {parsed.subject}</div>}
                               <pre className="draft-body">{parsed.body || raw}</pre>
                               <div className="btn-row">
-                                <button type="button" className="secondary sm" onClick={() => setAddDraftText(raw)}>
-                                  Use in timeline box
-                                </button>
-                                <button type="button" className="primary sm" onClick={() => void addDraftToTimeline(raw)} disabled={addDraftBusy}>
+                                <button type="button" className="primary sm" onClick={() => openAddTimelinePopup(raw)} disabled={addDraftBusy}>
                                   {addDraftBusy ? '…' : 'Add step to timeline'}
                                 </button>
                                 <button
@@ -1025,6 +1031,89 @@ export default function StrategistPage() {
           </form>
         </div>
       </div>
+      {showAddTimelinePopup && (
+        <div className="strategist-add-overlay" role="dialog" aria-modal="true" aria-label="Add to timeline">
+          <div className="strategist-add-popup panel">
+            <h3>Add to timeline</h3>
+            <p className="muted small">Choose how this draft should be added.</p>
+            <label>
+              Add mode
+              <select
+                value={addMode}
+                onChange={(e) => setAddMode(e.target.value as 'new_sequence' | 'append_sequence' | 'overwrite')}
+              >
+                <option value="new_sequence">Start new sequence</option>
+                <option value="append_sequence">Append as new step to existing sequence</option>
+                <option value="overwrite">Overwrite existing step</option>
+              </select>
+            </label>
+            {addMode === 'new_sequence' ? (
+              <label className="chk-inline">
+                <input type="checkbox" checked={parseMulti} onChange={(e) => setParseMulti(e.target.checked)} />
+                Require multi-email (error if fewer than 2 sections)
+              </label>
+            ) : (
+              <>
+                <label>
+                  Sequence
+                  <select
+                    value={targetSequenceId}
+                    onChange={(e) => {
+                      const seqId = e.target.value
+                      setTargetSequenceId(seqId)
+                      const seq = timelineSeqs.find((s) => s.id === seqId)
+                      const firstStep = seq?.steps?.[0]
+                      const firstId = Number(firstStep?.id || 0)
+                      setTargetActionId(Number.isFinite(firstId) && firstId > 0 ? firstId : null)
+                    }}
+                  >
+                    {!timelineSeqs.length && <option value="">No sequences yet</option>}
+                    {timelineSeqs.map((seq) => (
+                      <option key={seq.id} value={seq.id}>
+                        {seq.id} ({seq.done}/{seq.total})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {addMode === 'overwrite' && (
+                  <label>
+                    Step to overwrite
+                    <select
+                      value={targetActionId ?? ''}
+                      onChange={(e) => setTargetActionId(e.target.value ? Number(e.target.value) : null)}
+                    >
+                      {!overwriteCandidates.length && <option value="">No steps found</option>}
+                      {overwriteCandidates.map((st) => (
+                        <option key={String(st.id)} value={String(st.id)}>
+                          #{String(st.sequence_step || '?')} · {String(st.description || '').slice(0, 70)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+              </>
+            )}
+            <div className="btn-row">
+              <button type="button" className="secondary sm" onClick={() => setShowAddTimelinePopup(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary sm"
+                onClick={addChatDraftToTimeline}
+                disabled={
+                  addDraftBusy
+                  || !addDraftText.trim()
+                  || (addMode === 'append_sequence' && !targetSequenceId)
+                  || (addMode === 'overwrite' && !targetActionId)
+                }
+              >
+                {addDraftBusy ? '…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -2096,6 +2096,34 @@ button.sel-pill-clear:hover {
   padding: 0.55rem 0.65rem;
   background: var(--surface);
 }
+.strategist-add-popup {
+  width: min(560px, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.strategist-add-popup h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.8rem;
+}
+.strategist-add-popup label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.45rem;
+  font-size: 0.82rem;
+}
+.strategist-add-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
 
 /* ── Dashboard: Publisher CRM ───────────────────────────────────────── */
 .dashboard-crm {
