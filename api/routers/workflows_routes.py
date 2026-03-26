@@ -61,6 +61,7 @@ class ChatToActionIn(BaseModel):
     offering_label: Optional[str] = None
     product_key: Optional[str] = None
     parse_multi: bool = False
+    persist_following_changes: bool = False
 
 
 def _offering_from_product_key(pk: Optional[str]) -> Optional[str]:
@@ -316,7 +317,9 @@ def strategist_draft_to_actions(
         cleaned = get_cleaned_draft_for_save(draft) or draft
         if not overwrite_sequence_step(body.target_action_id, cleaned):
             raise HTTPException(status_code=400, detail="Overwrite failed")
-        updated, count = _adapt_following_steps_for_anchor(act, cleaned)
+        updated, count = ([], 0)
+        if body.persist_following_changes:
+            updated, count = _adapt_following_steps_for_anchor(act, cleaned)
         return {
             "ok": True,
             "mode": "overwrite",

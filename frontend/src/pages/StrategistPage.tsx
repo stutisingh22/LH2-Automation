@@ -56,6 +56,7 @@ export default function StrategistPage() {
   const [timelineSeqs, setTimelineSeqs] = useState<TimelineSeq[]>([])
   const [targetSequenceId, setTargetSequenceId] = useState('')
   const [targetActionId, setTargetActionId] = useState<number | null>(null)
+  const [persistFollowingChanges, setPersistFollowingChanges] = useState(false)
   const [gmailBusy, setGmailBusy] = useState(false)
   const [gmailMsg, setGmailMsg] = useState('')
   const [boardRows, setBoardRows] = useState<ContactsBoardRow[]>([])
@@ -558,6 +559,7 @@ export default function StrategistPage() {
           channel: 'Email',
           sequence_id: addMode === 'append_sequence' ? targetSequenceId : null,
           target_action_id: addMode === 'overwrite' ? targetActionId : null,
+          persist_following_changes: addMode !== 'new_sequence' ? persistFollowingChanges : false,
         },
       })
       const board = await apiFetch<{ sequences: TimelineSeq[] }>(`/api/sessions/${sid}/action-board`, { silent: true })
@@ -578,6 +580,7 @@ export default function StrategistPage() {
 
   function openAddTimelinePopup(draftText: string) {
     setAddDraftText((draftText || '').trim())
+    setPersistFollowingChanges(false)
     setShowAddTimelinePopup(true)
   }
 
@@ -1091,6 +1094,14 @@ export default function StrategistPage() {
                     </select>
                   </label>
                 )}
+                <label className="chk-inline">
+                  <input
+                    type="checkbox"
+                    checked={persistFollowingChanges}
+                    onChange={(e) => setPersistFollowingChanges(e.target.checked)}
+                  />
+                  Persist topic/tone pivot to following emails
+                </label>
               </>
             )}
             <div className="btn-row">

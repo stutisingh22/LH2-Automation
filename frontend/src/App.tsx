@@ -11,8 +11,6 @@ const StrategistPage = lazy(() => import('./pages/StrategistPage'))
 const ActionsPage = lazy(() => import('./pages/ActionsPage'))
 const TimelinePage = lazy(() => import('./pages/TimelinePage'))
 const CalendarPage = lazy(() => import('./pages/CalendarPage'))
-const PipelinePage = lazy(() => import('./pages/PipelinePage'))
-const SpocPage = lazy(() => import('./pages/SpocPage'))
 const HistoryPage = lazy(() => import('./pages/HistoryPage'))
 const AdvisorPage = lazy(() => import('./pages/AdvisorPage'))
 const BulkImportPage = lazy(() => import('./pages/BulkImportPage'))
@@ -98,19 +96,11 @@ export default function App() {
         />
         <Route
           path="/pipeline"
-          element={
-            <SuspenseWrap>
-              <PipelinePage />
-            </SuspenseWrap>
-          }
+          element={<Navigate to="/dashboard" replace />}
         />
         <Route
           path="/spoc"
-          element={
-            <SuspenseWrap>
-              <SpocPage />
-            </SuspenseWrap>
-          }
+          element={<Navigate to="/dashboard" replace />}
         />
         <Route
           path="/history"

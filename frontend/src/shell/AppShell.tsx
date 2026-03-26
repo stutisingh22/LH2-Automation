@@ -7,7 +7,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   History,
-  Kanban,
   LayoutDashboard,
   ListTodo,
   LogOut,
@@ -16,7 +15,6 @@ import {
   Target,
   type LucideIcon,
   Upload,
-  UsersRound,
   X,
 } from 'lucide-react'
 import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
@@ -41,8 +39,6 @@ const NAV: { to: string; label: string; Icon: LucideIcon }[] = [
   { to: '/actions', label: 'Actions', Icon: ListTodo },
   { to: '/timeline', label: 'Timeline', Icon: CalendarClock },
   { to: '/calendar', label: 'Calendar', Icon: Calendar },
-  { to: '/pipeline', label: 'Pipeline', Icon: Kanban },
-  { to: '/spoc', label: 'SPOC', Icon: UsersRound },
   { to: '/history', label: 'History', Icon: History },
   { to: '/advisor', label: 'Advisor', Icon: MessageSquareText },
   { to: '/bulk-import', label: 'Bulk import', Icon: Upload },
