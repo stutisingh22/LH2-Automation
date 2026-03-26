@@ -228,6 +228,32 @@ def _compact_platform_presence_analytics(raw) -> dict:
     }
 
 
+def _platform_presence_for_intelligence_display(comp: dict, ed: dict) -> tuple[dict, bool]:
+    """
+    Match Dashboard syndication behavior:
+    use saved platform_presence when available, otherwise fallback to tracker_sources lookup.
+    """
+    pp = ed.get("platform_presence") if isinstance(ed.get("platform_presence"), dict) else {}
+    if pp and any(bool(pp.get(k)) for k in ("msn", "yahoo", "newsbreak", "smartnews")):
+        return pp, False
+    target = (
+        (comp.get("research_domain") or "").strip()
+        or (comp.get("domain") or "").strip()
+        or (comp.get("name") or "").strip()
+    )
+    if not target:
+        return pp or {}, False
+    try:
+        tracker_map = load_domain_to_platforms()
+        from_tracker = get_presence_for_domain(target, tracker_map) or {}
+        resolved = from_tracker or (pp or {})
+        # Persist once so future /workspace reads don't need tracker lookup repeatedly.
+        should_persist = bool(resolved) and resolved != (pp or {})
+        return resolved, should_persist
+    except Exception:
+        return pp or {}, False
+
+
 def _load_intel_company(company_id: Optional[int], advisor_company_id: Optional[int]):
     if advisor_company_id is not None:
         adv = get_advisor_company(advisor_company_id)
@@ -606,6 +632,18 @@ def intelligence_workspace(
         ]
     _pa_raw = ed.get("platform_presence_analytics") if isinstance(ed.get("platform_presence_analytics"), dict) else {}
     _pa_out = _compact_platform_presence_analytics(_pa_raw) if compact else (_pa_raw or {})
+    _pp_out, _pp_should_persist = _platform_presence_for_intelligence_display(comp, ed)
+    if _pp_should_persist:
+        try:
+            if advisor_company_id is not None:
+                merge_advisor_company_extra_data(advisor_company_id, {"platform_presence": _pp_out})
+            elif company_id is not None:
+                merge_company_extra_data(company_id, {"platform_presence": _pp_out})
+            # Keep local object in sync for this response.
+            ed = dict(ed or {})
+            ed["platform_presence"] = _pp_out
+        except Exception:
+            pass
 
     if compact and rs:
         rf_out, rdh_out = "", ""
@@ -631,7 +669,7 @@ def intelligence_workspace(
         "research_display_html": rdh_out,
         "research_sections": rs,
         "recommended_offering": ed.get("recommended_offering"),
-        "platform_presence": ed.get("platform_presence") or {},
+        "platform_presence": _pp_out,
         "social_from_search": {} if compact else (ed.get("social_from_search") or {}),
         "platform_presence_analytics": _pa_out,
         "notion_notes": notes,
