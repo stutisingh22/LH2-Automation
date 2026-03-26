@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -5,8 +6,10 @@ from pydantic import BaseModel, Field
 
 from db_ops import (
     delete_action,
+    get_action_by_id,
     get_session,
     get_active_sequences,
+    get_sequence_actions,
     get_session_actions,
     log_action,
     update_action,
@@ -32,9 +35,31 @@ class PatchActionIn(BaseModel):
     response_content: Optional[str] = None
     description: Optional[str] = None
     scheduled_at: Optional[str] = None
+    shift_following_in_sequence: bool = False
     content_sent: Optional[str] = None
     draft_revisions: Optional[list[Any]] = None
     draft_original: Optional[str] = None
+
+
+def _parse_scheduled_dt(val: str) -> Optional[datetime]:
+    if not (val or "").strip():
+        return None
+    s = str(val).strip()
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        s = f"{s}T12:00:00"
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _dt_from_action_sched(raw: Any) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 class BulkDeleteIn(BaseModel):
@@ -108,6 +133,33 @@ def patch_action(
     if not user_has_perm(user, "can_log_outcomes"):
         raise HTTPException(status_code=403, detail="Forbidden")
     patch = body.model_dump(exclude_unset=True)
+    shift_follow = bool(patch.pop("shift_following_in_sequence", False))
+    sched_in = patch.get("scheduled_at")
+
+    if sched_in is not None and shift_follow:
+        act = get_action_by_id(action_id)
+        if not act:
+            raise HTTPException(status_code=404, detail="Action not found")
+        seq_id = (act.get("sequence_id") or "").strip()
+        new_dt = _parse_scheduled_dt(str(sched_in)) if sched_in else None
+        if seq_id and new_dt:
+            old_dt = _dt_from_action_sched(act.get("scheduled_at"))
+            if old_dt is not None:
+                delta = new_dt - old_dt
+                my_step = int(act.get("sequence_step") or 0)
+                sid = act.get("session_id")
+                if sid and delta.total_seconds() != 0:
+                    for st in get_sequence_actions(int(sid), seq_id):
+                        st_step = int(st.get("sequence_step") or 0)
+                        if st_step <= my_step:
+                            continue
+                        odt = _dt_from_action_sched(st.get("scheduled_at"))
+                        if odt is None:
+                            continue
+                        nid = st.get("id")
+                        if nid:
+                            update_action(int(nid), scheduled_at=(odt + delta).isoformat())
+
     if not patch:
         raise HTTPException(status_code=400, detail="No fields")
     update_action(action_id, **patch)

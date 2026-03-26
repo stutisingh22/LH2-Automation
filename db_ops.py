@@ -1462,7 +1462,9 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
             # so SPOC/company actions logged without a specific contact still show up.
             q = q.filter(or_(Session.contact_id == contact_id, Session.contact_id.is_(None)))
         results = []
-        for a in q.order_by(Action.created_at.desc()).limit(limit).all():
+        for a in q.order_by(
+            func.coalesce(Action.scheduled_at, Action.created_at).desc(),
+        ).limit(limit).all():
             d = _act_dict(a)
             u = s.get(User, a.user_id)
             if u:

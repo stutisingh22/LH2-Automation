@@ -13,6 +13,7 @@ saved to Gmail with injection applied.
 
 import re
 import sys
+from datetime import datetime, timedelta
 
 # This module is imported by FastAPI routers on startup.
 # Streamlit imports produce noisy runtime warnings under uvicorn.
@@ -41,6 +42,19 @@ from integrations import parse_email_content, create_gmail_draft
 from services.deck_links import inject_deck_links_into_email_body
 from services.ui_data_loader import clear_ui_cache
 from ui_helpers import get_add_to_action_labels, display_full_name
+
+# Days between Email 1 → 2 → 3 when adding a strategist sequence (calendar + timeline).
+STRATEGIST_SEQUENCE_DAY_GAP = 3
+
+
+def _schedule_base_utc_noon() -> datetime:
+    return datetime.utcnow().replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+def scheduled_at_iso_for_strategist_step(step_index_zero_based: int) -> str:
+    base = _schedule_base_utc_noon()
+    when = base + timedelta(days=int(step_index_zero_based) * STRATEGIST_SEQUENCE_DAY_GAP)
+    return when.isoformat()
 
 
 def get_cleaned_draft_for_save(draft_content):
@@ -260,6 +274,7 @@ def add_draft_as_new_sequence(session_id, sender_id, draft_content, channel="Ema
             "status": "planned",
             "content_sent": draft_content,
             "context_note": None,
+            "scheduled_at": scheduled_at_iso_for_strategist_step(0),
         }
     ]
     ids, seq_id = bulk_log_actions(session_id, sender_id, actions_list)
@@ -324,7 +339,6 @@ def add_step_to_existing_sequence(session_id, sender_id, seq_id, draft_content, 
                     email_date_by_num[num] = datetime.fromisoformat(str(sched))
 
             if email_date_by_num:
-                from datetime import timedelta
                 target = email_num
                 lower_nums = [n for n in email_date_by_num.keys() if n < target]
                 higher_nums = [n for n in email_date_by_num.keys() if n > target]
@@ -377,7 +391,7 @@ def add_sequence_to_timeline(session_id, sender_id, steps, offering_label=None):
     if not steps or not session_id or not sender_id:
         return [], None
     actions_list = []
-    for s in steps:
+    for idx, s in enumerate(steps):
         cleaned = get_cleaned_draft_for_save(s.get("content_draft") or "")
         base_desc = s.get("description") or f"Email {s.get('email_num', '?')}"
         if offering_label:
@@ -391,6 +405,7 @@ def add_sequence_to_timeline(session_id, sender_id, steps, offering_label=None):
             "status": "planned",
             "content_sent": cleaned or (s.get("content_draft") or "").strip(),
             "context_note": None,
+            "scheduled_at": scheduled_at_iso_for_strategist_step(idx),
         })
     if not actions_list:
         return [], None

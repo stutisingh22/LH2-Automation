@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react'
 import { apiFetch } from '../api/client'
 import { useSelection } from '../state/SelectionContext'
 
+function timelineDisplayDate(a: Record<string, unknown>): string {
+  const sa = a.scheduled_at
+  if (sa != null && String(sa).trim()) return String(sa).slice(0, 10)
+  return String((a.created_at as string) || '').slice(0, 10)
+}
+
 export default function TimelinePage() {
   const { selection } = useSelection()
   const [rows, setRows] = useState<Record<string, unknown>[]>([])
@@ -32,7 +38,7 @@ export default function TimelinePage() {
         {rows.length === 0 && <li className="muted">No entries.</li>}
         {rows.map((a, i) => (
           <li key={i}>
-            <span className="tl-date">{String((a.created_at as string) || '').slice(0, 10)}</span>
+            <span className="tl-date">{timelineDisplayDate(a)}</span>
             <span className="tl-body">
               {String(a.action_type)} via {String(a.channel)} — {String(a.description || '').slice(0, 200)}
             </span>

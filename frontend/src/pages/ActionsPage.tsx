@@ -29,6 +29,19 @@ function stepDraftText(st: Step): string {
   return ''
 }
 
+function dateSliceFromScheduled(st: Step): string {
+  const r = st.scheduled_at
+  if (r == null || r === undefined) return ''
+  return String(r).slice(0, 10)
+}
+
+/** Calendar date → ISO instant (noon UTC) for stable planned-day storage */
+function ymdToScheduledIso(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map((x) => parseInt(x, 10))
+  if (!y || !m || !d) return ''
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).toISOString()
+}
+
 export default function ActionsPage() {
   const { selection } = useSelection()
   const meta = useMeta()
@@ -113,6 +126,25 @@ export default function ActionsPage() {
   async function patchStatus(id: number, status: string) {
     await apiFetch(`/api/actions/${id}`, { method: 'PATCH', json: { status } })
     refreshBoard()
+  }
+
+  async function patchPlannedDate(id: number, ymd: string, shiftFollowingInSequence: boolean) {
+    if (!ymd) return
+    setErr('')
+    try {
+      await apiFetch(`/api/actions/${id}`, {
+        method: 'PATCH',
+        silent: true,
+        json: {
+          scheduled_at: ymdToScheduledIso(ymd),
+          shift_following_in_sequence: shiftFollowingInSequence,
+        },
+      })
+      setUiMsg(shiftFollowingInSequence ? 'Date updated; later steps shifted by the same amount.' : 'Date updated.')
+      refreshBoard()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not update date')
+    }
   }
 
   async function bulkDel() {
@@ -416,10 +448,27 @@ export default function ActionsPage() {
                                 <strong>
                                   #{String(st.sequence_step)} {String(st.channel)} — {String(st.status)}
                                 </strong>
+                                {dateSliceFromScheduled(st) ? (
+                                  <span className="muted small"> · {dateSliceFromScheduled(st)}</span>
+                                ) : null}
                               </span>
                             </summary>
                             <div className="step-detail-body">
                               <div className="muted small">{String(st.description || '').slice(0, 220)}</div>
+                              <label className="step-plan-date">
+                                <span className="muted small">Planned date</span>
+                                <input
+                                  type="date"
+                                  aria-label={`Planned date step ${String(st.sequence_step)}`}
+                                  value={dateSliceFromScheduled(st)}
+                                  onChange={(e) =>
+                                    void patchPlannedDate(id, e.target.value, true)
+                                  }
+                                />
+                              </label>
+                              <p className="muted small step-plan-date-shift-hint">
+                                Changing this moves later steps with dates by the same number of days.
+                              </p>
                               {stepDraftText(st) ? (
                                 <pre className="action-step-draft-preview">{stepDraftText(st)}</pre>
                               ) : (
@@ -489,6 +538,15 @@ export default function ActionsPage() {
                             </summary>
                             <div className="step-detail-body">
                               <div className="muted small">{String(st.description || '').slice(0, 220)}</div>
+                              <label className="step-plan-date">
+                                <span className="muted small">Planned date</span>
+                                <input
+                                  type="date"
+                                  aria-label="Planned date standalone action"
+                                  value={dateSliceFromScheduled(st)}
+                                  onChange={(e) => void patchPlannedDate(id, e.target.value, false)}
+                                />
+                              </label>
                               {stepDraftText(st) ? (
                                 <pre className="action-step-draft-preview">{stepDraftText(st)}</pre>
                               ) : (
@@ -543,6 +601,27 @@ export default function ActionsPage() {
                   Close
                 </button>
               </div>
+              <label className="step-plan-date">
+                <span className="muted small">Planned date</span>
+                <input
+                  type="date"
+                  aria-label="Planned date for selected action"
+                  value={dateSliceFromScheduled(detailStep)}
+                  onChange={(e) =>
+                    void patchPlannedDate(
+                      detailId,
+                      e.target.value,
+                      Boolean(
+                        detailStep.sequence_id != null &&
+                          String(detailStep.sequence_id || '').trim(),
+                      ),
+                    )
+                  }
+                />
+              </label>
+              {(detailStep.sequence_id != null && String(detailStep.sequence_id || '').trim()) ? (
+                <p className="muted small">Later dated steps in this sequence shift together.</p>
+              ) : null}
               <label>
                 Body / draft
                 <textarea rows={14} value={bodyDraft} onChange={(e) => setBodyDraft(e.target.value)} />

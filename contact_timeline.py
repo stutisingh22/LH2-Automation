@@ -87,7 +87,7 @@ def build_contact_timeline(company_id, contact_id, user_id, company_domain=None,
     # —— Actions (and outcomes / context notes) ——
     actions = get_timeline_actions(company_id=company_id, contact_id=contact_id, limit=200)
     for a in actions:
-        ts = a.get("created_at") or a.get("scheduled_at")
+        ts = a.get("scheduled_at") or a.get("created_at")
         atype = (a.get("action_type") or "Other").strip()
         channel = (a.get("channel") or "").strip() or "—"
         status = a.get("status")

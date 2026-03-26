@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from db_ops import bulk_log_actions, get_contact, get_session, get_company
+from services.strategist_add_to_action import scheduled_at_iso_for_strategist_step
 from api.company_resolve import enrich_company_for_strategist
 from integrations.ai.ai_engine import generate_outreach_plan, replan_on_response
 from api.helpers import research_notes_from_company
@@ -108,16 +109,19 @@ def commit_outreach_plan(
     elif _pk == "acquisition":
         _offering_label = "Acquisition"
     actions_for_db = []
-    for step in body.steps:
+    for idx, step in enumerate(body.steps):
         base_desc = f"Step {step.get('step')}: {step.get('description', '')}"
         desc = f"{base_desc} — {_offering_label}" if _offering_label else base_desc
+        sched = step.get("scheduled_at")
+        if not sched:
+            sched = scheduled_at_iso_for_strategist_step(idx)
         actions_for_db.append(
             {
                 "action_type": "Outreach",
                 "channel": step.get("channel", "Email"),
                 "description": desc,
                 "status": "planned",
-                "scheduled_at": step.get("scheduled_at"),
+                "scheduled_at": sched,
                 "content_sent": step.get("content_draft"),
                 "context_note": step.get("timing_note"),
             }

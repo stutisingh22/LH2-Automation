@@ -1126,6 +1126,19 @@ button.sel-pill-clear:hover {
   margin-top: 0.45rem;
   padding-left: 0.15rem;
 }
+.step-plan-date {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+.step-plan-date input[type='date'] {
+  max-width: 11rem;
+}
+.step-plan-date-shift-hint {
+  margin-top: 0.25rem;
+}
 .action-step-draft-preview {
   margin: 0.5rem 0 0;
   padding: 0.6rem 0.7rem;
