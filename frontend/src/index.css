@@ -2097,23 +2097,39 @@ button.sel-pill-clear:hover {
   background: var(--surface);
 }
 .strategist-rules-panel {
-  margin-top: 0.6rem;
+  margin-top: 0.45rem;
+  padding: 0.6rem 0.7rem;
 }
 .strategist-rules-row {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.strategist-rules-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 1.55rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  border: 1px solid rgba(42, 186, 122, 0.5);
+  color: #8ce0b6;
+  background: rgba(42, 186, 122, 0.12);
+}
+.strategist-rules-helper {
+  margin: 0.42rem 0 0;
 }
 .strategist-rules-preview {
-  margin-top: 0.45rem;
-  max-height: 10rem;
+  margin-top: 0.42rem;
+  max-height: 7.5rem;
   overflow: auto;
   white-space: pre-wrap;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.55rem 0.65rem;
+  padding: 0.48rem 0.58rem;
   background: var(--surface-2, var(--surface));
-  font-size: 0.78rem;
+  font-size: 0.75rem;
 }
 .strategist-add-popup {
   width: min(560px, calc(100vw - 2rem));

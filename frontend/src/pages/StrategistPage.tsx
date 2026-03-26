@@ -68,6 +68,7 @@ export default function StrategistPage() {
   const [showRulesPopup, setShowRulesPopup] = useState(false)
   const [strategistRules, setStrategistRules] = useState('')
   const [draftStrategistRules, setDraftStrategistRules] = useState('')
+  const [showRulesPreview, setShowRulesPreview] = useState(false)
 
   const boardKey = (r: ContactsBoardRow) => `${(r.name || '').trim().toLowerCase()}|${(r.linkedin_url || '').trim()}`
 
@@ -624,6 +625,7 @@ export default function StrategistPage() {
         setErr(ex instanceof Error ? ex.message : 'Could not save strategist rules to memory')
       }
     }
+    setShowRulesPreview(false)
     setShowRulesPopup(false)
   }
 
@@ -1003,15 +1005,26 @@ export default function StrategistPage() {
 
           <section className="panel strategist-rules-panel">
             <div className="strategist-rules-row">
-              <button type="button" className="primary sm" onClick={openRulesPopup}>
-                Set chat rules
+              <button type="button" className="secondary sm" onClick={openRulesPopup}>
+                {strategistRules ? 'Edit chat rules' : 'Set chat rules'}
               </button>
-              {!!strategistRules && <span className="ok small">Rules active for this context</span>}
+              {!!strategistRules && <span className="strategist-rules-pill">Rules active</span>}
+              {!!strategistRules && (
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={() => setShowRulesPreview((v) => !v)}
+                >
+                  {showRulesPreview ? 'Hide' : 'View'}
+                </button>
+              )}
             </div>
-            <p className="muted small">
-              Add instructions the strategist must follow for this ongoing chat context.
-            </p>
-            {!!strategistRules && (
+            {!strategistRules && (
+              <p className="muted small strategist-rules-helper">
+                Add instructions the strategist must follow for this ongoing chat context.
+              </p>
+            )}
+            {!!strategistRules && showRulesPreview && (
               <pre className="strategist-rules-preview">
                 {strategistRules}
               </pre>
