@@ -710,6 +710,8 @@ The RESEARCH section shows programmatic/core revenue is the primary driver (e.g.
         strategist_rules_block = (
             "\n== USER CUSTOM STRATEGIST RULES (NON-NEGOTIABLE FOR THIS CONTEXT) ==\n"
             + cleaned_rules
+            + "\nMANDATORY: DO NOT WRITE VERY LONG EMAILS EVER. AN OPERATOR IS TALKING TO ANOTHER OPERATOR."
+            + "\nMANDATORY: ALWAYS FOLLOW WHAT THE USER SAYS IN THEIR PROMPTS AND THE RULES."
             + "\nThese rules OVERRIDE default stylistic/template preferences in this prompt."
             + "\nYou MUST explicitly follow these rules for this ongoing chat context across recommendations and sequence drafts."
             + "\nOnly deviate when a rule conflicts with hard grounding/safety constraints."
