@@ -131,41 +131,30 @@ def _effective_action_draft_for_adapt(act: dict) -> str:
     return str(act.get("content_sent") or "").strip()
 
 
-@router.post("/actions/{action_id}/adapt-following-drafts")
-def adapt_following_drafts_endpoint(
-    action_id: int,
-    body: AdaptFollowingIn,
-    user: dict = Depends(get_current_user),
+def _adapt_following_steps_for_anchor(
+    act: dict,
+    anchor_text: str,
+    user_note: Optional[str] = None,
 ):
-    if not user_has_perm(user, "can_log_outcomes"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    act = get_action_by_id(action_id)
-    if not act:
-        raise HTTPException(status_code=404, detail="Action not found")
+    """Align later sequence steps with anchor step updates; returns (updated_rows, count)."""
     seq_id = (act.get("sequence_id") or "").strip()
-    if not seq_id:
-        raise HTTPException(status_code=400, detail="Action is not part of a sequence")
     sid = act.get("session_id")
-    if not sid:
-        raise HTTPException(status_code=400, detail="Invalid session")
-
+    if not seq_id or not sid:
+        return [], 0
     anchor_step = int(act.get("sequence_step") or 0)
-    anchor_text = (body.anchor_body or "").strip() if body.anchor_body is not None else ""
-    if not anchor_text:
-        anchor_text = _effective_action_draft_for_adapt(act)
-    if not anchor_text:
-        raise HTTPException(status_code=400, detail="No anchor draft text")
+    if anchor_step <= 0 or not (anchor_text or "").strip():
+        return [], 0
 
     all_steps = get_sequence_actions(int(sid), seq_id)
     following_raw = [s for s in all_steps if int(s.get("sequence_step") or 0) > anchor_step]
     if not following_raw:
-        return {"ok": True, "updated": [], "count": 0, "message": "No later steps in this sequence"}
+        return [], 0
 
     results = adapt_following_sequence_drafts(
         anchor_step,
-        anchor_text,
+        (anchor_text or "").strip(),
         following_raw,
-        user_note=(body.instruction or "").strip() or None,
+        user_note=(user_note or "").strip() or None,
     )
     updated = []
     for row in results:
@@ -183,7 +172,31 @@ def adapt_following_drafts_endpoint(
             "id": int(aid),
             "change_reason": row.get("change_reason") or "",
         })
-    return {"ok": True, "updated": updated, "count": len(updated)}
+    return updated, len(updated)
+
+
+@router.post("/actions/{action_id}/adapt-following-drafts")
+def adapt_following_drafts_endpoint(
+    action_id: int,
+    body: AdaptFollowingIn,
+    user: dict = Depends(get_current_user),
+):
+    if not user_has_perm(user, "can_log_outcomes"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    act = get_action_by_id(action_id)
+    if not act:
+        raise HTTPException(status_code=404, detail="Action not found")
+    if not (act.get("sequence_id") or "").strip():
+        raise HTTPException(status_code=400, detail="Action is not part of a sequence")
+    anchor_text = (body.anchor_body or "").strip() if body.anchor_body is not None else ""
+    if not anchor_text:
+        anchor_text = _effective_action_draft_for_adapt(act)
+    if not anchor_text:
+        raise HTTPException(status_code=400, detail="No anchor draft text")
+    updated, count = _adapt_following_steps_for_anchor(act, anchor_text, user_note=body.instruction or "")
+    if count == 0:
+        return {"ok": True, "updated": [], "count": 0, "message": "No later steps in this sequence"}
+    return {"ok": True, "updated": updated, "count": count}
 
 
 @router.get("/gmail/status")
@@ -300,9 +313,17 @@ def strategist_draft_to_actions(
         act = get_action_by_id(body.target_action_id)
         if not act or act.get("session_id") != session_id:
             raise HTTPException(status_code=404, detail="Action not found")
-        if not overwrite_sequence_step(body.target_action_id, draft):
+        cleaned = get_cleaned_draft_for_save(draft) or draft
+        if not overwrite_sequence_step(body.target_action_id, cleaned):
             raise HTTPException(status_code=400, detail="Overwrite failed")
-        return {"ok": True, "mode": "overwrite", "action_id": body.target_action_id}
+        updated, count = _adapt_following_steps_for_anchor(act, cleaned)
+        return {
+            "ok": True,
+            "mode": "overwrite",
+            "action_id": body.target_action_id,
+            "adapted_following_count": count,
+            "adapted_following": updated,
+        }
 
     if body.mode == "append_sequence":
         seq_id = (body.sequence_id or "").strip()

@@ -2114,6 +2114,22 @@ button.sel-pill-clear:hover {
   margin-top: 0.45rem;
   font-size: 0.82rem;
 }
+.strategist-add-popup select,
+.strategist-add-popup input {
+  background: #1c1f28;
+  color: var(--text);
+  border: 1px solid #323646;
+  border-radius: 8px;
+}
+.strategist-add-popup select:focus,
+.strategist-add-popup input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.22);
+}
+.strategist-add-popup .btn-row {
+  margin-top: 0.7rem;
+}
 .strategist-add-overlay {
   position: fixed;
   inset: 0;
@@ -2123,6 +2139,11 @@ button.sel-pill-clear:hover {
   align-items: center;
   justify-content: center;
   padding: 1rem;
+}
+:root[data-theme='light'] .strategist-add-popup select,
+:root[data-theme='light'] .strategist-add-popup input {
+  background: var(--surface);
+  border-color: var(--border);
 }
 
 /* ── Dashboard: Publisher CRM ───────────────────────────────────────── */
