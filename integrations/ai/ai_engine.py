@@ -707,11 +707,20 @@ The RESEARCH section shows programmatic/core revenue is the primary driver (e.g.
         # Keep rule context bounded to avoid slowing first-token latency.
         if len(cleaned_rules) > 900:
             cleaned_rules = cleaned_rules[:900].rstrip() + "..."
+        _query_lower = (query or "").lower()
+        _user_explicitly_requested_asset = ("cheatsheet" in _query_lower) or ("inquisitr" in _query_lower)
+        _asset_guard = (
+            "\nMANDATORY: Do NOT mention or draft opening/follow-up lines around Cheatsheet or Inquisitr unless the user explicitly requested that asset by name in this message."
+            if not _user_explicitly_requested_asset
+            else "\nUser explicitly requested a named asset in this turn; you may reference only what they requested."
+        )
         strategist_rules_block = (
             "\n== USER CUSTOM STRATEGIST RULES (NON-NEGOTIABLE FOR THIS CONTEXT) ==\n"
             + cleaned_rules
             + "\nMANDATORY: DO NOT WRITE VERY LONG EMAILS EVER. AN OPERATOR IS TALKING TO ANOTHER OPERATOR."
             + "\nMANDATORY: ALWAYS FOLLOW WHAT THE USER SAYS IN THEIR PROMPTS AND THE RULES."
+            + _asset_guard
+            + "\nRULE PRECEDENCE: If any default template/style guidance anywhere in this prompt conflicts with user rules or this section, ignore the default guidance and obey this section."
             + "\nThese rules OVERRIDE default stylistic/template preferences in this prompt."
             + "\nYou MUST explicitly follow these rules for this ongoing chat context across recommendations and sequence drafts."
             + "\nOnly deviate when a rule conflicts with hard grounding/safety constraints."
@@ -779,6 +788,18 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
    - These user rules override default template/style instructions in this prompt.
    - Before finalizing any output, run a compliance check against the user rules and revise until fully compliant.
    - If any line conflicts (example: template suggests mentioning a job posting, but user rule forbids job-posting references), follow the user rule.
+
+0.5 LH2 IDENTITY + FIRST-TOUCH POSITIONING (mandatory for Emails 1-2):
+   - LH2 is a digital media operating company, NOT a hiring/staffing agency. Never position LH2 as recruiting, staffing, outsourcing labor, or placement.
+   - Position LH2 as running full editorial operations end-to-end: content strategy, SEO, distribution, and content operations.
+   - You may use this credibility line naturally when helpful: "4,000+ vetted writer bench; 100+ authors actively writing across 20+ owned brands."
+   - Do NOT mention founders, leadership backgrounds, or company origin stories in Emails 1-2.
+   - Do NOT reference revenue figures, monetization mechanics, revenue share, financial upside, or what the partner will earn in Emails 1-2.
+   - Tone for Emails 1-2: one operator to another (peer-to-peer), concise, trust-building, no fluff, no arrogance, no self-congratulatory phrasing.
+   - Length for Emails 1-2: keep short. Trust-building intro only; do not over-explain.
+   - Portfolio trust signal for Emails 1-2: include only 1-2 contextually relevant LH2 brands, briefly (1-2 sentences each max), then move on. Never dump a long list.
+   - Brand fit guidance: entertainment -> Showbiz CheatSheet or Inquisitr; aviation/niche -> The Aviationist or Vintage Aviation News; film/indie -> NoFilmSchool.
+   - Never turn Emails 1-2 into a sales pitch; they should read like a warm, informed operator introduction.
 
 1. GROUNDING (mandatory for all outputs):
    - Use ONLY information from the RESEARCH and DRIVE RESEARCH sections above. Do not hallucinate. Do not invent stats, companies, or comparisons.
