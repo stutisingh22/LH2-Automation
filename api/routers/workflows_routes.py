@@ -19,6 +19,7 @@ from services.strategist_add_to_action import (
     add_draft_as_new_sequence,
     add_sequence_to_timeline,
     add_step_to_existing_sequence,
+    get_cleaned_draft_for_save,
     overwrite_sequence_step,
     parse_multi_email_sequence,
 )
@@ -195,19 +196,29 @@ def strategist_draft_to_actions(
 
     offering = body.offering_label or _offering_from_product_key(body.product_key)
 
+    multi_steps = parse_multi_email_sequence(draft)
+
+    if body.mode in ("new_sequence", "multi_sequence") and len(multi_steps) >= 2:
+        ids, seq_id = add_sequence_to_timeline(
+            session_id, body.sender_user_id, multi_steps, offering_label=offering
+        )
+        return {"ok": True, "mode": "multi_sequence", "action_ids": ids, "sequence_id": seq_id}
+
     if body.parse_multi or body.mode == "multi_sequence":
-        steps = parse_multi_email_sequence(draft)
-        if len(steps) >= 2:
-            ids, seq_id = add_sequence_to_timeline(
-                session_id, body.sender_user_id, steps, offering_label=offering
-            )
-            return {"ok": True, "mode": "multi_sequence", "action_ids": ids, "sequence_id": seq_id}
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Multi-email mode needs at least two sections. Start each email with its own line, e.g. "
+                '"Email 1:", "Email 2:", or "Email 1 — …".'
+            ),
+        )
 
     if body.mode == "new_sequence":
+        cleaned = get_cleaned_draft_for_save(draft) or draft
         ids, seq_id = add_draft_as_new_sequence(
             session_id,
             body.sender_user_id,
-            draft,
+            cleaned,
             channel=body.channel or "Email",
             offering_label=offering,
         )

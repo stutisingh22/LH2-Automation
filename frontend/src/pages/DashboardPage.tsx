@@ -222,7 +222,7 @@ function formatSpocSummary(spocs: { name: string }[]): string {
 }
 
 export default function DashboardPage() {
-  const { selection, setSelection, clearWorkspace } = useSelection()
+  const { selection, setSelection } = useSelection()
   const meta = useMeta()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -1378,7 +1378,6 @@ export default function DashboardPage() {
                       type="button"
                       className="secondary sm"
                       onClick={() => {
-                        clearWorkspace()
                         const nextSel = {
                           source: 'independent' as const,
                           companyId: selectedGroup.company_id ?? null,
@@ -1399,7 +1398,6 @@ export default function DashboardPage() {
                         type="button"
                         className="secondary sm"
                         onClick={() => {
-                          clearWorkspace()
                           const nextSel = {
                             source: 'independent' as const,
                             companyId: selectedGroup.company_id ?? null,
@@ -1594,7 +1592,6 @@ export default function DashboardPage() {
                       type="button"
                       className="secondary sm"
                       onClick={() => {
-                        clearWorkspace()
                         const nextSel = {
                           source: 'media' as const,
                           companyId: null,
@@ -1615,7 +1612,6 @@ export default function DashboardPage() {
                         type="button"
                         className="secondary sm"
                         onClick={() => {
-                          clearWorkspace()
                           const nextSel = {
                             source: 'media' as const,
                             companyId: null,

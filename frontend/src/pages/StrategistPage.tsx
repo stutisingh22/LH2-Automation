@@ -727,14 +727,17 @@ export default function StrategistPage() {
           {sid && senderId && (
             <section className="panel strategist-add-draft">
               <h2>To timeline</h2>
-              <p className="muted small">New sequence or multi-email parse.</p>
+              <p className="muted small">
+                Multiple emails split automatically when the draft has lines like <code>Email 1:</code>,{' '}
+                <code>Email 2:</code>, or <code>Email 1 — …</code>. Each step saves as subject + body only.
+              </p>
               <div className="btn-row">
                 <button type="button" className="secondary sm" onClick={fillDraftFromLastAssistant}>
                   Last reply
                 </button>
                 <label className="chk-inline">
                   <input type="checkbox" checked={parseMulti} onChange={(e) => setParseMulti(e.target.checked)} />
-                  Multi-email
+                  Require multi-email (error if fewer than 2 sections)
                 </label>
               </div>
               <textarea

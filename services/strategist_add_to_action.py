@@ -133,38 +133,109 @@ def get_latest_assistant_draft_content(chat_messages):
     return content if content else None
 
 
+def _normalize_line_for_email_header(raw_line):
+    """Strip markdown heading/bold wrappers so '### Email 1:' and '**Email 1 —**' match."""
+    s = (raw_line or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^#{1,6}\s+", "", s)
+    s = re.sub(r"^\*\*\s*", "", s)
+    s = re.sub(r"\s*\*\*$", "", s)
+    return s.strip()
+
+
+def _parse_email_section_header_line(raw_line):
+    """
+    If raw_line starts a strategist email section, return (email_num, title_tail) or None.
+    Supports: Email 1 — ..., Email 1 - ..., Email 1: ..., Email 1 (line ends with number only).
+    """
+    s = _normalize_line_for_email_header(raw_line)
+    if not s:
+        return None
+    m = re.match(r"^Email\s+(\d+)\s*$", s, re.IGNORECASE)
+    if m:
+        try:
+            n = int(m.group(1))
+        except Exception:
+            return None
+        return (n, "")
+    m = re.match(r"^Email\s+(\d+)\s*[—\-–]\s*(.*)$", s, re.IGNORECASE)
+    if m:
+        try:
+            n = int(m.group(1))
+        except Exception:
+            return None
+        return (n, (m.group(2) or "").strip())
+    m = re.match(r"^Email\s+(\d+)\s*:\s*(.*)$", s, re.IGNORECASE)
+    if m:
+        try:
+            n = int(m.group(1))
+        except Exception:
+            return None
+        return (n, (m.group(2) or "").strip())
+    return None
+
+
 def parse_multi_email_sequence(draft_content):
     """
-    If the draft contains multiple emails (e.g. "Email 1 — ...", "Email 2 — ..."),
+    If the draft contains multiple emails (e.g. "Email 1 — ...", "Email 2:", per strategist prompts),
     split into a list of steps. Returns list of dicts: {step, email_num, content_draft, description}.
-    step is 2 for Email 1, 3 for Email 2, etc. (for deck_links step_index). Empty list if single or no emails.
+    step is 2 for Email 1, 3 for Email 2, etc. (for deck_links step_index). Empty list if fewer than 2 sections.
     """
     if not (draft_content or "").strip():
         return []
     text = (draft_content or "").strip()
-    # Match line that starts with optional ** then "Email N —" or "Email N -"
-    pattern = re.compile(r"^(?:\*\*)?\s*Email\s+(\d+)\s*[—\-]\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-    matches = list(pattern.finditer(text))
-    if len(matches) < 2:
-        return []
-    steps = []
-    for i, m in enumerate(matches):
-        email_num = int(m.group(1))
-        if email_num < 1 or email_num > 5:
+    lines = text.split("\n")
+    boundaries = []
+    for i, line in enumerate(lines):
+        parsed = _parse_email_section_header_line(line)
+        if not parsed:
             continue
-        # step_index for deck_links: Email 1 = 2, Email 2 = 3, ...
+        email_num, title = parsed
+        if email_num < 1 or email_num > 10:
+            continue
+        if title:
+            description = f"Email {email_num} — {title}"[:240]
+        else:
+            description = f"Email {email_num}"
+        boundaries.append((i, email_num, description))
+
+    if len(boundaries) < 2:
+        # Legacy: single-line pattern where headers were only recognized with — / -
+        legacy = re.compile(
+            r"^(?:\*\*)?\s*Email\s+(\d+)\s*[—\-]\s*(.+)$", re.IGNORECASE | re.MULTILINE
+        )
+        matches = list(legacy.finditer(text))
+        if len(matches) < 2:
+            return []
+        steps = []
+        for i, m in enumerate(matches):
+            email_num = int(m.group(1))
+            if email_num < 1 or email_num > 10:
+                continue
+            step = email_num + 1
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            block = text[start:end].strip()
+            desc_line = re.sub(r"^\*\*\s*|\s*\*\*$", "", m.group(0).strip())
+            steps.append({
+                "step": step,
+                "email_num": email_num,
+                "content_draft": block,
+                "description": desc_line,
+            })
+        return steps
+
+    steps = []
+    for j, (i, email_num, desc) in enumerate(boundaries):
+        end_i = boundaries[j + 1][0] if j + 1 < len(boundaries) else len(lines)
+        block = "\n".join(lines[i:end_i]).strip()
         step = email_num + 1
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        block = text[start:end].strip()
-        desc_line = m.group(0).strip()
-        # Strip leading ** if present for description
-        description = re.sub(r"^\*\*\s*|\s*\*\*$", "", desc_line)
         steps.append({
             "step": step,
             "email_num": email_num,
             "content_draft": block,
-            "description": description,
+            "description": desc,
         })
     return steps
 
@@ -342,7 +413,15 @@ def _strip_strategist_draft_headers_and_footer(body):
     i = 0
     while i < len(lines):
         s = (lines[i] or "").strip()
-        if re.match(r"^Email\s+\d+\s*—\s*.+", s, re.IGNORECASE):
+        if re.match(r"^Email\s+\d+\s*[—\-–]\s*.*", s, re.IGNORECASE):
+            start = i + 1
+            i += 1
+            continue
+        if re.match(r"^Email\s+\d+\s*:\s*.*$", s, re.IGNORECASE):
+            start = i + 1
+            i += 1
+            continue
+        if re.match(r"^Email\s+\d+\s*$", s, re.IGNORECASE):
             start = i + 1
             i += 1
             continue
