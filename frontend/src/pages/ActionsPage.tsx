@@ -55,6 +55,8 @@ export default function ActionsPage() {
   const [bodyDraft, setBodyDraft] = useState('')
   const [refineInstr, setRefineInstr] = useState('')
   const [refineBusy, setRefineBusy] = useState(false)
+  const [adaptFocus, setAdaptFocus] = useState('')
+  const [adaptBusy, setAdaptBusy] = useState(false)
   const [replanResp, setReplanResp] = useState('')
   const [replanTrigger, setReplanTrigger] = useState<number | ''>('')
   const [replanOut, setReplanOut] = useState('')
@@ -183,6 +185,41 @@ export default function ActionsPage() {
       setErr(e instanceof Error ? e.message : 'Refine failed')
     } finally {
       setRefineBusy(false)
+    }
+  }
+
+  async function runAdaptFollowing() {
+    if (detailId == null || !detailStep) return
+    const sq = detailStep.sequence_id != null && String(detailStep.sequence_id || '').trim()
+    if (!sq) {
+      setErr('Open a step that belongs to a sequence.')
+      return
+    }
+    if (!bodyDraft.trim()) {
+      setErr('Add draft text for this step first.')
+      return
+    }
+    setAdaptBusy(true)
+    setErr('')
+    try {
+      const r = await apiFetch<{ count: number }>(`/api/actions/${detailId}/adapt-following-drafts`, {
+        method: 'POST',
+        silent: true,
+        json: {
+          instruction: adaptFocus.trim(),
+          anchor_body: bodyDraft.trim(),
+        },
+      })
+      setUiMsg(
+        r.count > 0
+          ? `Aligned ${r.count} later step(s). Review those drafts next.`
+          : 'No later steps updated — add draft text on following steps, or try an optional focus hint.',
+      )
+      refreshBoard()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Align later steps failed')
+    } finally {
+      setAdaptBusy(false)
     }
   }
 
@@ -680,6 +717,30 @@ export default function ActionsPage() {
                   {refineBusy ? '…' : 'Refine'}
                 </button>
               </div>
+              {detailStep.sequence_id != null && String(detailStep.sequence_id || '').trim() ? (
+                <div className="refine-row adapt-following-block">
+                  <label>
+                    Optional focus for later emails
+                    <input
+                      value={adaptFocus}
+                      onChange={(e) => setAdaptFocus(e.target.value)}
+                      placeholder="e.g. Emphasize rev share; keep consultative tone"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    onClick={() => void runAdaptFollowing()}
+                    disabled={adaptBusy || refineBusy || !bodyDraft.trim()}
+                  >
+                    {adaptBusy ? '…' : 'Align later steps'}
+                  </button>
+                  <p className="muted small adapt-following-hint">
+                    Uses the draft in the editor (saved or not) as the source of truth so tone and new topics
+                    carry into the next steps naturally.
+                  </p>
+                </div>
+              ) : null}
             </section>
           ) : (
             <section className="panel action-detail-placeholder">

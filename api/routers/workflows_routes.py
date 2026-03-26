@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.deps import get_current_user, user_has_perm
-from db_ops import get_action_by_id, get_session, get_session_actions, update_action
-from integrations.ai.ai_engine import refine_email_draft
+from db_ops import get_action_by_id, get_session, get_sequence_actions, get_session_actions, update_action
+from integrations.ai.ai_engine import adapt_following_sequence_drafts, refine_email_draft
 from integrations.ai.recipient_research import research_recipient
 from integrations.gmail.auth import gmail_compose_token_exists
 from integrations.gmail.service import create_gmail_draft, parse_email_content
@@ -30,6 +30,12 @@ router = APIRouter(tags=["workflows"])
 class RefineDraftIn(BaseModel):
     instruction: str = ""
     draft_type: str = "email"
+
+
+class AdaptFollowingIn(BaseModel):
+    """Optional focus text (e.g. emphasize rev share). anchor_body overrides DB when set (e.g. unsaved editor)."""
+    instruction: str = ""
+    anchor_body: Optional[str] = None
 
 
 class GmailDraftIn(BaseModel):
@@ -114,6 +120,70 @@ def refine_action_draft(
 
     update_action(action_id, **kwargs)
     return {"revised": revised.strip(), "draft_revisions": revisions}
+
+
+def _effective_action_draft_for_adapt(act: dict) -> str:
+    revs = act.get("draft_revisions") or []
+    if isinstance(revs, list) and revs:
+        last = revs[-1]
+        if last is not None and str(last).strip():
+            return str(last).strip()
+    return str(act.get("content_sent") or "").strip()
+
+
+@router.post("/actions/{action_id}/adapt-following-drafts")
+def adapt_following_drafts_endpoint(
+    action_id: int,
+    body: AdaptFollowingIn,
+    user: dict = Depends(get_current_user),
+):
+    if not user_has_perm(user, "can_log_outcomes"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    act = get_action_by_id(action_id)
+    if not act:
+        raise HTTPException(status_code=404, detail="Action not found")
+    seq_id = (act.get("sequence_id") or "").strip()
+    if not seq_id:
+        raise HTTPException(status_code=400, detail="Action is not part of a sequence")
+    sid = act.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=400, detail="Invalid session")
+
+    anchor_step = int(act.get("sequence_step") or 0)
+    anchor_text = (body.anchor_body or "").strip() if body.anchor_body is not None else ""
+    if not anchor_text:
+        anchor_text = _effective_action_draft_for_adapt(act)
+    if not anchor_text:
+        raise HTTPException(status_code=400, detail="No anchor draft text")
+
+    all_steps = get_sequence_actions(int(sid), seq_id)
+    following_raw = [s for s in all_steps if int(s.get("sequence_step") or 0) > anchor_step]
+    if not following_raw:
+        return {"ok": True, "updated": [], "count": 0, "message": "No later steps in this sequence"}
+
+    results = adapt_following_sequence_drafts(
+        anchor_step,
+        anchor_text,
+        following_raw,
+        user_note=(body.instruction or "").strip() or None,
+    )
+    updated = []
+    for row in results:
+        aid = row.get("id")
+        rev = (row.get("revised_content") or "").strip()
+        if not aid or not rev:
+            continue
+        update_action(
+            int(aid),
+            content_sent=rev,
+            draft_revisions=[],
+            draft_original="",
+        )
+        updated.append({
+            "id": int(aid),
+            "change_reason": row.get("change_reason") or "",
+        })
+    return {"ok": True, "updated": updated, "count": len(updated)}
 
 
 @router.get("/gmail/status")

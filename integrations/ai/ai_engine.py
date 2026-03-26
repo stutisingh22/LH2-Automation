@@ -2473,6 +2473,130 @@ def rewrite_sequence_steps_with_research(
         return []
 
 
+def adapt_following_sequence_drafts(
+    anchor_sequence_step: int,
+    anchor_content: str,
+    following_steps: list,
+    user_note: str | None = None,
+):
+    """
+    After the user revises an earlier step, rewrite only *later* steps so the thread stays
+    coherent: same tone/voice, natural references to new topics from the anchor, forward
+    momentum without repeating the anchor verbatim.
+
+    following_steps: dicts with id, sequence_step, channel, description, content_sent.
+
+    Returns list of dicts: [{"id": int, "revised_content": str, "change_reason": str}, ...]
+    """
+    anchor_content = (anchor_content or "").strip()
+    if not anchor_content or not following_steps:
+        return []
+
+    compact_steps = []
+    for s in following_steps:
+        try:
+            aid = int(s.get("id"))
+        except (TypeError, ValueError):
+            continue
+        st_step = s.get("sequence_step")
+        try:
+            st_step_int = int(st_step) if st_step is not None else 0
+        except (TypeError, ValueError):
+            st_step_int = 0
+        if st_step_int <= int(anchor_sequence_step or 0):
+            continue
+        raw = (s.get("content_sent") or "").strip()
+        if not raw:
+            continue
+        compact_steps.append({
+            "id": aid,
+            "sequence_step": st_step_int,
+            "channel": (s.get("channel") or ""),
+            "description": (s.get("description") or "")[:400],
+            "content_sent": raw[:15000],
+        })
+
+    if not compact_steps:
+        return []
+
+    note = (user_note or "").strip()
+    note_block = f"\n\nUSER FOCUS (optional):\n{note}\n" if note else ""
+
+    system = """You synchronize a multi-touch outreach sequence after one email was revised.
+
+Goals for EACH following step you rewrite:
+1) Match the TONE, formality, and voice of the ANCHOR email (warm, human, professional; not pushy).
+2) If the anchor introduces new topics, asks, or framing (e.g. revenue share, partnership structure), weave light, natural references in later steps where it fits the step's role—do not parrot the anchor; advance the conversation.
+3) One coherent thread: acknowledgements like "as I mentioned" or "following up on rev share" only when natural; avoid robotic repetition.
+4) Preserve format: emails must keep a Subject: line if the current draft has one. LinkedIn/connection notes: max 300 characters.
+5) Do not invent specific facts about the recipient or company. Stay within what's already implied in the drafts.
+6) Return JSON only—an array of objects for steps you actually changed. Skip a step if no improvement is needed."""
+
+    prompt = (
+        f"ANCHOR (revised email — sequence step {int(anchor_sequence_step)}):\n"
+        f"{anchor_content}\n"
+        f"{note_block}\n"
+        "FOLLOWING STEPS to update (only these ids):\n"
+        f"{json.dumps(compact_steps, ensure_ascii=True, indent=2)}\n\n"
+        "Return ONLY JSON (no markdown, no prose), array shape:\n"
+        '[{"id": 123, "revised_content": "full replacement text...", '
+        '"change_reason": "one short sentence"}, ...]\n'
+        "Include only ids you revised. revised_content must be the full new draft for that step."
+    )
+
+    try:
+        r = create_with_retry(
+            model=AI_MODEL,
+            max_tokens=AI_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = (r.content[0].text or "").strip()
+        if not raw:
+            return []
+
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            m = re.search(r"\[\s*\{.*\}\s*\]", raw, flags=re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    parsed = None
+        if not isinstance(parsed, list):
+            return []
+
+        allowed_ids = {int(x["id"]) for x in compact_steps}
+        out = []
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            try:
+                rid = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if rid not in allowed_ids:
+                continue
+            revised = (row.get("revised_content") or "").strip()
+            if not revised:
+                continue
+            reason = (row.get("change_reason") or "").strip()
+            step_meta = next((x for x in compact_steps if int(x["id"]) == rid), None)
+            if step_meta and "linkedin" in (step_meta.get("channel") or "").lower() and len(revised) > 300:
+                revised = revised[:297].rstrip() + "..."
+            out.append({
+                "id": rid,
+                "revised_content": revised,
+                "change_reason": reason or "Aligned with revised earlier step.",
+            })
+        return out
+    except Exception as e:
+        log.error("adapt_following_sequence_drafts failed: %s", e)
+        return []
+
+
 def refine_email_draft(current_draft, instruction, draft_type="email"):
     """
     Revise an email or LinkedIn draft based on user instruction. Returns the revised draft text only.

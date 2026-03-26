@@ -1136,6 +1136,19 @@ button.sel-pill-clear:hover {
 .step-plan-date input[type='date'] {
   max-width: 11rem;
 }
+.actions-page .step-plan-date input[type='date'],
+.actions-page .step-actions select {
+  background: #1c1f28;
+  color: var(--text);
+  border: 1px solid #323646;
+  border-radius: 8px;
+}
+.actions-page .step-plan-date input[type='date']:focus,
+.actions-page .step-actions select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.22);
+}
 .step-plan-date-shift-hint {
   margin-top: 0.25rem;
 }
@@ -1160,11 +1173,47 @@ button.sel-pill-clear:hover {
   align-items: center;
   margin-top: 0.45rem;
 }
+:root[data-theme='light'] .actions-page .step-plan-date input[type='date'],
+:root[data-theme='light'] .actions-page .step-actions select {
+  background: var(--surface);
+  border-color: var(--border);
+}
 .action-detail textarea {
   width: 100%;
   min-height: 240px;
   font-family: var(--mono);
   font-size: 0.82rem;
+}
+.action-detail input,
+.action-detail select,
+.action-detail textarea {
+  background: #1c1f28;
+  color: var(--text);
+  border: 1px solid #323646;
+  border-radius: 8px;
+}
+.action-detail textarea {
+  padding: 0.65rem 0.7rem;
+  line-height: 1.45;
+}
+.action-detail input::placeholder {
+  color: #8b90a2;
+}
+.action-detail input:focus,
+.action-detail select:focus,
+.action-detail textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.22);
+}
+.action-detail .btn-row {
+  margin-top: 0.4rem;
+}
+:root[data-theme='light'] .action-detail input,
+:root[data-theme='light'] .action-detail select,
+:root[data-theme='light'] .action-detail textarea {
+  background: var(--surface);
+  border-color: var(--border);
 }
 .action-detail-placeholder {
   min-height: 180px;
@@ -1221,6 +1270,10 @@ button.sel-pill-clear:hover {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
+}
+.adapt-following-hint {
+  flex-basis: 100%;
+  margin: 0;
 }
 .linkish {
   background: none;
