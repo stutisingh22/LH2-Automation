@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -60,6 +60,13 @@ def _dt_from_action_sched(raw: Any) -> Optional[datetime]:
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    """DB often stores naive times; client may send Zulu. Make subtraction safe."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 class BulkDeleteIn(BaseModel):
@@ -145,7 +152,7 @@ def patch_action(
         if seq_id and new_dt:
             old_dt = _dt_from_action_sched(act.get("scheduled_at"))
             if old_dt is not None:
-                delta = new_dt - old_dt
+                delta = _as_naive_utc(new_dt) - _as_naive_utc(old_dt)
                 my_step = int(act.get("sequence_step") or 0)
                 sid = act.get("session_id")
                 if sid and delta.total_seconds() != 0:
@@ -158,7 +165,10 @@ def patch_action(
                             continue
                         nid = st.get("id")
                         if nid:
-                            update_action(int(nid), scheduled_at=(odt + delta).isoformat())
+                            update_action(
+                                int(nid),
+                                scheduled_at=(_as_naive_utc(odt) + delta).isoformat(),
+                            )
 
     if not patch:
         raise HTTPException(status_code=400, detail="No fields")
