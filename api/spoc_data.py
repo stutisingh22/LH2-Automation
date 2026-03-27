@@ -185,7 +185,9 @@ def _derive_relevance_from_extra(extra) -> str:
     if override in ("relevant", "irrelevant"):
         return override
     auto = str(ed.get("relevance_auto") or "").strip().lower()
-    if auto in ("relevant", "irrelevant", "-"):
+    # Backward compatibility: older saved rows may have "-" even when research text
+    # now clearly implies pass/fail. Only treat explicit relevant/irrelevant as final.
+    if auto in ("relevant", "irrelevant"):
         return auto
     if not _extra_has_research(ed):
         return "-"
