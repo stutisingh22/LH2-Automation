@@ -11,8 +11,13 @@ JWT_SECRET = (os.getenv("JWT_SECRET") or os.getenv("LH2_JWT_SECRET") or "dev-cha
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))  # 7 days default
 
+_DEFAULT_CORS = (
+    "http://127.0.0.1:5173,http://localhost:5173,"
+    "http://127.0.0.1:3000,http://localhost:3000,"
+    "http://127.0.0.1:3002,http://localhost:3002"
+)
 CORS_ORIGINS = [
     o.strip()
-    for o in (os.getenv("CORS_ORIGINS") or "http://127.0.0.1:5173,http://localhost:5173").split(",")
+    for o in (os.getenv("CORS_ORIGINS") or _DEFAULT_CORS).split(",")
     if o.strip()
 ]

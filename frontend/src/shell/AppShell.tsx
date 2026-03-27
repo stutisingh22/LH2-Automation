@@ -16,6 +16,7 @@ import {
   type LucideIcon,
   Upload,
   X,
+  Mail,
 } from 'lucide-react'
 import { NavLink, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
@@ -37,6 +38,7 @@ const NAV: { to: string; label: string; Icon: LucideIcon }[] = [
   { to: '/intelligence', label: 'Intelligence', Icon: Sparkles },
   { to: '/strategist', label: 'Strategist', Icon: Target },
   { to: '/actions', label: 'Actions', Icon: ListTodo },
+  { to: '/gmail-inbox', label: 'Gmail inbox', Icon: Mail },
   { to: '/timeline', label: 'Timeline', Icon: CalendarClock },
   { to: '/calendar', label: 'Calendar', Icon: Calendar },
   { to: '/history', label: 'History', Icon: History },

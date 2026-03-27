@@ -865,37 +865,14 @@ NOTE_SECTIONS = [
 
 def _split_extra_sections(body):
     """
-    Split the last section body into content before '8.', '9.', etc. and extra (title, body) pairs.
-    Only numbers >= 8 are treated as user-appended sections; 6 and 7 are part of the template
-    (6-Final: Outreach & Strategic Wedge). Returns (first_part_text, [(title, body), ...]).
+    Strict mode: do not infer extra top-level sections from numbered lines.
+    Numbered bullets (e.g. people lists) must remain inside the parent section.
     """
-    import re
-    if not (body or "").strip():
-        return "", []
-    lines = body.split("\n")
-    extra = []
-    current_title = None
-    current_body = []
-    first_part_lines = []
-    for line in lines:
-        m = re.match(r"^\s*(\d+)[.:]\s+(.+)$", line)
-        if m and int(m.group(1)) >= 8:
-            if current_title is not None:
-                extra.append((current_title, "\n".join(current_body).strip()))
-            current_title = m.group(2).strip()
-            current_body = []
-        else:
-            if current_title is not None:
-                current_body.append(line)
-            else:
-                first_part_lines.append(line)
-    if current_title is not None:
-        extra.append((current_title, "\n".join(current_body).strip()))
-    return "\n".join(first_part_lines).strip(), extra
+    return (body or "").strip(), []
 
 
 def _split_research(text):
-    """Split research text into 5 fixed sections plus any 8., 9., ... user-appended sections for expanders."""
+    """Split research text into the 5 fixed top-level sections only."""
     import re
     lines = text.split("\n")
 
@@ -963,7 +940,7 @@ def _split_research(text):
 
 
 def split_research_into_sections(text):
-    """Split full research text into 5 Notion-style sections plus any 8., 9., ... user-appended sections. Returns list of (section_title, body)."""
+    """Split full research text into 5 Notion-style top-level sections only."""
     if not (text or "").strip():
         return [(NOTE_SECTIONS[i][0], "") for i in range(len(NOTE_SECTIONS))]
     return _split_research(text)

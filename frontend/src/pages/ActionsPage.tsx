@@ -23,10 +23,71 @@ function flattenSteps(board: { sequences: Seq[]; standalone: Step[] } | null): S
 
 function stepDraftText(st: Step): string {
   const raw = String(st.content_sent || '').trim()
-  if (raw) return raw
+  if (raw) return normalizeEmailLikeText(raw)
   const revs = Array.isArray(st.draft_revisions) ? (st.draft_revisions as unknown[]) : []
-  if (revs.length > 0) return String(revs[revs.length - 1] || '').trim()
+  if (revs.length > 0) return normalizeEmailLikeText(String(revs[revs.length - 1] || '').trim())
   return ''
+}
+
+function stepReplyText(st: Step): string {
+  return normalizeEmailLikeText(String(st.response_content || '').trim())
+}
+
+function stepOutcomeText(st: Step): string {
+  return String(st.outcome || '').trim()
+}
+
+function hasGmailSyncMeta(st: Step): boolean {
+  const m = st.outreach_sync_meta as Record<string, unknown> | null | undefined
+  return m != null && typeof m === 'object' && String(m.source || '') === 'gmail_sync'
+}
+
+function normalizeEmailLikeText(input: string): string {
+  let t = (input || '').replace(/\r/g, '').trim()
+  if (!t) return ''
+
+  // If legacy full-thread blob is present, show only first outbound message block.
+  const firstMarker = t.match(/--- Message 1 \|[^\n]*---\n?/i)
+  if (firstMarker && firstMarker.index != null) {
+    const start = firstMarker.index + firstMarker[0].length
+    const rest = t.slice(start)
+    const nextIdx = rest.search(/\n--- Message \d+ \|/i)
+    t = (nextIdx >= 0 ? rest.slice(0, nextIdx) : rest).trim()
+  }
+
+  // Remove quoted history sections.
+  const cutPatterns = [
+    /(^|\n)\s*>?\s*On .+ wrote:\s*$/im,
+    /(^|\n)\s*>?\s*On .+\n\s*>?\s*wrote:\s*$/im,
+    /\nFrom:\s.+\nSent:\s.+\nTo:\s.+\nSubject:\s.+/im,
+    /\nFrom:\s.+\nDate:\s.+\nSubject:\s.+/im,
+    /\n-{2,}\s*Original Message\s*-{2,}/im,
+    /\nBegin forwarded message:/im,
+    /\nForwarded message:/im,
+  ]
+  for (const p of cutPatterns) {
+    const idx = t.search(p)
+    if (idx >= 0) {
+      t = t.slice(0, idx).trim()
+      break
+    }
+  }
+
+  // Strip quote prefixes from copied email text.
+  t = t
+    .split('\n')
+    .map((line) => line.replace(/^\s*>+\s?/, ''))
+    .filter((line, i, arr) => {
+      // Drop noisy empty runs; keep intentional paragraph gaps.
+      if (line.trim()) return true
+      const prev = i > 0 ? arr[i - 1].trim() : ''
+      const next = i < arr.length - 1 ? arr[i + 1].trim() : ''
+      return !!prev && !!next
+    })
+    .join('\n')
+    .trim()
+
+  return t
 }
 
 function dateSliceFromScheduled(st: Step): string {
@@ -485,6 +546,11 @@ export default function ActionsPage() {
                                 <strong>
                                   #{String(st.sequence_step)} {String(st.channel)} — {String(st.status)}
                                 </strong>
+                                {hasGmailSyncMeta(st) ? (
+                                  <span className="outreach-sync-badge" title="Status/outcome updated from Gmail sync">
+                                    Gmail sync
+                                  </span>
+                                ) : null}
                                 {dateSliceFromScheduled(st) ? (
                                   <span className="muted small"> · {dateSliceFromScheduled(st)}</span>
                                 ) : null}
@@ -511,6 +577,18 @@ export default function ActionsPage() {
                               ) : (
                                 <p className="muted small">No draft text saved for this step yet.</p>
                               )}
+                              {stepReplyText(st) ? (
+                                <>
+                                  <div className="muted small">Reply captured</div>
+                                  <pre className="action-step-draft-preview">{stepReplyText(st)}</pre>
+                                </>
+                              ) : null}
+                              {stepOutcomeText(st) ? (
+                                <>
+                                  <div className="muted small">Outcome</div>
+                                  <pre className="action-step-draft-preview">{stepOutcomeText(st)}</pre>
+                                </>
+                              ) : null}
                               <div className="step-actions">
                                 <label className="sr-only" htmlFor={`act-st-seq-${id}`}>
                                   Status
@@ -571,6 +649,11 @@ export default function ActionsPage() {
                                 <strong>
                                   {String(st.action_type)} · {String(st.channel)} — {String(st.status)}
                                 </strong>
+                                {hasGmailSyncMeta(st) ? (
+                                  <span className="outreach-sync-badge" title="Status/outcome updated from Gmail sync">
+                                    Gmail sync
+                                  </span>
+                                ) : null}
                               </span>
                             </summary>
                             <div className="step-detail-body">
@@ -589,6 +672,18 @@ export default function ActionsPage() {
                               ) : (
                                 <p className="muted small">No draft text saved for this action yet.</p>
                               )}
+                              {stepReplyText(st) ? (
+                                <>
+                                  <div className="muted small">Reply captured</div>
+                                  <pre className="action-step-draft-preview">{stepReplyText(st)}</pre>
+                                </>
+                              ) : null}
+                              {stepOutcomeText(st) ? (
+                                <>
+                                  <div className="muted small">Outcome</div>
+                                  <pre className="action-step-draft-preview">{stepOutcomeText(st)}</pre>
+                                </>
+                              ) : null}
                               <div className="step-actions">
                                 <label className="sr-only" htmlFor={`act-st-sa-${id}`}>
                                   Status

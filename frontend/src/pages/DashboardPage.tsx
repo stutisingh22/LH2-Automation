@@ -46,6 +46,7 @@ function SyndicationBadges({ syndication }: { syndication: string[] | undefined 
 }
 
 type KpiKey = 'total' | 'in_campaign' | 'responded' | 'no_response' | 'won' | 'due'
+type RelevanceValue = 'relevant' | 'irrelevant' | '-'
 
 const DEFAULT_PAGE_SIZE = 50
 const MIN_PAGE_SIZE = 10
@@ -221,6 +222,91 @@ function formatSpocSummary(spocs: { name: string }[]): string {
   return `${cleaned[0]} +${cleaned.length - 1}`
 }
 
+function normalizeRelevance(raw: unknown): RelevanceValue {
+  const v = String(raw || '').trim().toLowerCase()
+  if (v === 'relevant') return 'relevant'
+  if (v === 'irrelevant') return 'irrelevant'
+  return '-'
+}
+
+function nextRelevance(v: RelevanceValue): RelevanceValue {
+  if (v === '-') return 'relevant'
+  if (v === 'relevant') return 'irrelevant'
+  return '-'
+}
+
+function relevanceClassSuffix(v: RelevanceValue): 'relevant' | 'irrelevant' | 'none' {
+  if (v === 'relevant') return 'relevant'
+  if (v === 'irrelevant') return 'irrelevant'
+  return 'none'
+}
+
+function normalizeReasonText(reason: unknown): string {
+  let r = String(reason || '').trim()
+  if (!r) return ''
+  r = r
+    .replace(/^marked\s+(relevant|irrelevant)\s+from\s+research\s+verdict\.?\s*/i, '')
+    .replace(/^research\s+(said|says|verdict:?|flags?:?)\s*/i, '')
+    .replace(/^because\s+/i, '')
+    .trim()
+  return r
+}
+
+function shortReason(reason: string, max = 88): string {
+  if (!reason) return ''
+  const oneLine = reason.replace(/\s+/g, ' ').trim()
+  if (oneLine.length <= max) return oneLine
+  return `${oneLine.slice(0, max - 1).trimEnd()}…`
+}
+
+function reasonPointers(reason: unknown, relevance: RelevanceValue): string[] {
+  const normalized = normalizeReasonText(reason)
+  if (normalized) {
+    const chunks = normalized
+      .split(/\n|;|\||\u2022|\.\s+/)
+      .map((c) => c.trim())
+      .filter(Boolean)
+    const cleaned = chunks
+      .map((c) => c.replace(/^[\-*]\s*/, '').trim())
+      .filter(Boolean)
+      .map((c) => shortReason(c, 70))
+    if (cleaned.length) return cleaned.slice(0, 3)
+  }
+  if (relevance === 'relevant') {
+    return [
+      'Fits LH2 strategic profile.',
+      'No major blockers flagged.',
+      'Worth prioritizing for outreach.',
+    ]
+  }
+  if (relevance === 'irrelevant') {
+    return [
+      'Weak fit with current focus.',
+      'Potential blockers or low upside.',
+      'Lower priority for outreach.',
+    ]
+  }
+  return []
+}
+
+function relevanceReasonText(relevance: unknown, reason: unknown): string {
+  const rel = String(relevance || '').trim().toLowerCase()
+  if (rel !== 'relevant' && rel !== 'irrelevant') return ''
+  const pointers = reasonPointers(reason, rel as RelevanceValue)
+  return pointers[0] || (rel === 'relevant' ? 'Strong strategic fit.' : 'Low strategic fit.')
+}
+
+function relevanceTooltipText(relevance: unknown, reason: unknown): string {
+  const rel = normalizeRelevance(relevance)
+  if (rel === '-') return 'Relevance unset. Click to cycle: -, relevant, irrelevant.'
+  const label = rel === 'relevant' ? 'Relevant' : 'Irrelevant'
+  const pointers = reasonPointers(reason, rel)
+  const whyBlock = pointers.length
+    ? `Why:\n${pointers.map((p) => `• ${p}`).join('\n')}`
+    : 'Why:\n• No specific rationale available yet.'
+  return `Relevance: ${label}\n${whyBlock}\nClick to cycle: -, relevant, irrelevant.`
+}
+
 export default function DashboardPage() {
   const { selection, setSelection } = useSelection()
   const meta = useMeta()
@@ -289,6 +375,7 @@ export default function DashboardPage() {
 
   const [drawerHasResearch, setDrawerHasResearch] = useState<boolean | null>(null)
   const [drawerResearchBusy, setDrawerResearchBusy] = useState(false)
+  const [savingRelevanceKey, setSavingRelevanceKey] = useState('')
 
   const [crmSearchInput, setCrmSearchInput] = useState(initialDash.crmSearchInput)
   const [debouncedSearch, setDebouncedSearch] = useState(initialDash.debouncedSearch)
@@ -744,6 +831,51 @@ export default function DashboardPage() {
     }
   }
 
+  const patchRelevance = async (
+    source: 'independent' | 'media',
+    id: number,
+    relevance: RelevanceValue,
+    parentKey?: string,
+  ) => {
+    const key = `${source}:${id}`
+    setSavingRelevanceKey(key)
+    setErr('')
+    const patch = { relevance_override: relevance === '-' ? null : relevance }
+    try {
+      if (source === 'media') {
+        await apiFetch(`/api/advisor/companies/${id}/extra`, {
+          method: 'PATCH',
+          json: { patch },
+          silent: true,
+        })
+        setCompanyGroups((prev) =>
+          prev.map((g) => {
+            if (g.source !== 'media' || (parentKey && g.key !== parentKey)) return g
+            const nextBrands = (g.brands || []).map((b) =>
+              b.advisor_company_id === id ? { ...b, relevance } : b,
+            )
+            return { ...g, brands: nextBrands }
+          }),
+        )
+      } else {
+        await apiFetch(`/api/companies/${id}/extra`, {
+          method: 'PATCH',
+          json: { patch },
+          silent: true,
+        })
+        setCompanyGroups((prev) =>
+          prev.map((g) =>
+            g.source === 'independent' && g.company_id === id ? { ...g, relevance } : g,
+          ),
+        )
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save relevance')
+    } finally {
+      setSavingRelevanceKey('')
+    }
+  }
+
   async function openActionFromPreview(actionId: number, fallbackSource: 'independent' | 'media') {
     try {
       const ctx = await apiFetch<{
@@ -1051,6 +1183,7 @@ export default function DashboardPage() {
                     <th>Brands</th>
                     <th>Contacted</th>
                     <th>CEO / Decision Maker</th>
+                    <th>Relevance</th>
                     <th>Total Traffic</th>
                     <th>Syndication</th>
                   </tr>
@@ -1061,6 +1194,7 @@ export default function DashboardPage() {
                     <th>SPOC name</th>
                     <th>Status</th>
                     <th>Next step</th>
+                    <th>Relevance</th>
                     <th>Traffic</th>
                     <th>Syndication</th>
                   </tr>
@@ -1069,7 +1203,7 @@ export default function DashboardPage() {
               <tbody>
                           {visibleGroups.length === 0 && (
                   <tr>
-                    <td className="muted" colSpan={crmSource === 'media' ? 6 : 7}>
+                    <td className="muted" colSpan={crmSource === 'media' ? 7 : 8}>
                       No companies match this view{debouncedSearch.trim() ? ' / search' : ''}.
                     </td>
                   </tr>
@@ -1141,6 +1275,9 @@ export default function DashboardPage() {
                           <td>
                             <div>{ceoLabel}</div>
                           </td>
+                          <td>
+                            <span className="muted small">—</span>
+                          </td>
                           <td>{fmtVisits(g.monthly_visits)}</td>
                           <td>
                             <SyndicationBadges syndication={g.syndication} />
@@ -1149,7 +1286,7 @@ export default function DashboardPage() {
 
                         {expanded && (
                           <tr>
-                            <td colSpan={6} style={{ padding: 0 }}>
+                            <td colSpan={7} style={{ padding: 0 }}>
                               <div className="crm-media-children-wrap">
                                 {brandsLoading ? (
                                   <p className="muted small" style={{ padding: '0.75rem 1rem', margin: 0 }}>
@@ -1172,6 +1309,7 @@ export default function DashboardPage() {
                                       <th>SPOC name</th>
                                       <th>Status</th>
                                       <th>Next step</th>
+                                      <th>Relevance</th>
                                       <th>Traffic</th>
                                       <th>Syndication</th>
                                     </tr>
@@ -1217,6 +1355,28 @@ export default function DashboardPage() {
                                           <td>
                                             <div>{b.next_step_date}</div>
                                             {b.due_today ? <div className="crm-due-today">Due</div> : null}
+                                          </td>
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(b.relevance))}`}
+                                              disabled={savingRelevanceKey === `media:${b.advisor_company_id || 0}` || !b.advisor_company_id}
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (!b.advisor_company_id) return
+                                                const next = nextRelevance(normalizeRelevance(b.relevance))
+                                                void patchRelevance('media', b.advisor_company_id, next, g.key)
+                                              }}
+                                              title={
+                                                relevanceTooltipText(b.relevance, b.relevance_reason)
+                                              }
+                                            >
+                                              {savingRelevanceKey === `media:${b.advisor_company_id || 0}`
+                                                ? 'Saving…'
+                                                : normalizeRelevance(b.relevance) === '-'
+                                                  ? '-'
+                                                  : normalizeRelevance(b.relevance)}
+                                            </button>
                                           </td>
                                           <td>{fmtVisits(b.monthly_visits)}</td>
                                           <td>
@@ -1296,6 +1456,28 @@ export default function DashboardPage() {
                       <td>
                         <div>{g.next_step_date}</div>
                         {g.due_today ? <div className="crm-due-today">Due</div> : null}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(g.relevance))}`}
+                          disabled={savingRelevanceKey === `independent:${g.company_id || 0}` || !g.company_id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (!g.company_id) return
+                            const next = nextRelevance(normalizeRelevance(g.relevance))
+                            void patchRelevance('independent', g.company_id, next)
+                          }}
+                          title={
+                            relevanceTooltipText(g.relevance, g.relevance_reason)
+                          }
+                        >
+                          {savingRelevanceKey === `independent:${g.company_id || 0}`
+                            ? 'Saving…'
+                            : normalizeRelevance(g.relevance) === '-'
+                              ? '-'
+                              : normalizeRelevance(g.relevance)}
+                        </button>
                       </td>
                       <td>{fmtVisits(g.monthly_visits)}</td>
                       <td>
@@ -1449,6 +1631,11 @@ export default function DashboardPage() {
                 <div className="crm-detail-row">
                   <div className="muted small">Current status</div>
                   <div>{selectedGroup.status_label}</div>
+                </div>
+
+                <div className="crm-detail-row">
+                  <div className="muted small">Relevance reason</div>
+                  <div>{relevanceReasonText(selectedGroup.relevance, selectedGroup.relevance_reason) || '—'}</div>
                 </div>
 
                 <div className="crm-detail-row">
@@ -1694,6 +1881,11 @@ export default function DashboardPage() {
                       <div className="crm-detail-row">
                         <div className="muted small">Current status</div>
                         <div>{brand.status_label}</div>
+                      </div>
+
+                      <div className="crm-detail-row">
+                        <div className="muted small">Relevance reason</div>
+                        <div>{relevanceReasonText(brand.relevance, brand.relevance_reason) || '—'}</div>
                       </div>
 
                       <div className="crm-detail-row">

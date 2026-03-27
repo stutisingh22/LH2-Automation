@@ -11,6 +11,8 @@ from api.routers import (
     chat,
     companies,
     dashboard,
+    gmail_inbox,
+    google_oauth,
     history_routes,
     intelligence_routes,
     meta,
@@ -37,6 +39,9 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(google_oauth.router, prefix="/api")
+app.include_router(google_oauth.gmail_callback_router, prefix="/api")
+app.include_router(gmail_inbox.router, prefix="/api")
 app.include_router(meta.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(notion_routes.router, prefix="/api")

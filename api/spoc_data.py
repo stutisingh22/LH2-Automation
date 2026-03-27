@@ -51,6 +51,253 @@ def _extra_has_research(extra) -> bool:
     return bool(rf or rdh or rs)
 
 
+def _normalize_extra_dict(extra) -> dict:
+    ed = extra
+    if isinstance(ed, str) and ed.strip():
+        try:
+            ed = json.loads(ed)
+        except Exception:
+            ed = {}
+    return ed if isinstance(ed, dict) else {}
+
+
+def _parse_md_row(line: str) -> list[str]:
+    s = (line or "").strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _is_md_separator_row(line: str) -> bool:
+    s = (line or "").strip()
+    if not s:
+        return False
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    cells = [c.strip() for c in s.split("|")]
+    if not cells:
+        return False
+    for c in cells:
+        if not re.match(r"^:?-{3,}:?$", c):
+            return False
+    return True
+
+
+def _extract_first_markdown_table(text: str) -> tuple[list[str], list[list[str]]] | tuple[None, None]:
+    lines = (text or "").splitlines()
+    n = len(lines)
+    for i in range(n - 1):
+        if "|" not in lines[i]:
+            continue
+        if not _is_md_separator_row(lines[i + 1]):
+            continue
+        header = _parse_md_row(lines[i])
+        rows: list[list[str]] = []
+        j = i + 2
+        while j < n:
+            ln = lines[j]
+            if not ln.strip() or "|" not in ln:
+                break
+            rows.append(_parse_md_row(ln))
+            j += 1
+        if header and rows:
+            return header, rows
+    return None, None
+
+
+def _relevance_reasons_from_first_table(text: str) -> tuple[list[str], list[str]]:
+    header, rows = _extract_first_markdown_table(text)
+    if not header or not rows:
+        return [], []
+
+    h = [str(x or "").strip().lower() for x in header]
+
+    def _find_idx(candidates: tuple[str, ...]) -> int:
+        for idx, col in enumerate(h):
+            if any(c in col for c in candidates):
+                return idx
+        return -1
+
+    status_idx = _find_idx(("status", "result", "verdict", "outcome", "pass/fail", "pass fail"))
+    reason_idx = _find_idx(("reason", "rationale", "why", "evidence", "note", "explanation"))
+    label_idx = _find_idx(("criterion", "criteria", "check", "factor", "signal", "dimension"))
+    if label_idx < 0:
+        label_idx = 0
+
+    pass_reasons: list[str] = []
+    fail_reasons: list[str] = []
+
+    for row in rows:
+        if not row:
+            continue
+        padded = row + [""] * (len(h) - len(row))
+        status_text = ""
+        if status_idx >= 0 and status_idx < len(padded):
+            status_text = str(padded[status_idx] or "")
+        if not status_text:
+            status_text = " ".join(str(c or "") for c in padded)
+        st = status_text.strip().lower()
+
+        is_pass = bool(re.search(r"\bpass(ed)?\b", st))
+        is_fail = bool(re.search(r"\bfail(ed)?\b", st))
+        if not is_pass and not is_fail:
+            continue
+
+        label = str(padded[label_idx] or "").strip() if 0 <= label_idx < len(padded) else ""
+        reason = str(padded[reason_idx] or "").strip() if 0 <= reason_idx < len(padded) else ""
+
+        if not reason:
+            for c in padded:
+                cst = str(c or "").strip()
+                if cst and cst != label and not re.search(r"\bpass(ed)?\b|\bfail(ed)?\b", cst, re.I):
+                    reason = cst
+                    break
+        if not reason:
+            reason = label
+
+        line = f"{label}: {reason}" if label and reason and label.lower() != reason.lower() else (reason or label)
+        line = re.sub(r"\s+", " ", line).strip(" -:;")
+        if not line:
+            continue
+        if is_pass:
+            pass_reasons.append(line)
+        if is_fail:
+            fail_reasons.append(line)
+
+    return pass_reasons[:3], fail_reasons[:3]
+
+
+def _derive_relevance_from_extra(extra) -> str:
+    """
+    Relevance rules:
+    - Manual override wins: relevance_override in {relevant, irrelevant}
+    - No saved research => "-"
+    - Saved research + verdict-like "proceed" => relevant
+    - Saved research + verdict-like "stop/no/do not proceed/not fit" => irrelevant
+    - Else => "-"
+    """
+    ed = _normalize_extra_dict(extra)
+    override = str(ed.get("relevance_override") or ed.get("relevance") or "").strip().lower()
+    if override in ("relevant", "irrelevant"):
+        return override
+    auto = str(ed.get("relevance_auto") or "").strip().lower()
+    if auto in ("relevant", "irrelevant", "-"):
+        return auto
+    if not _extra_has_research(ed):
+        return "-"
+    rf = (ed.get("research_full") or "") if isinstance(ed.get("research_full"), str) else ""
+    rdh = (ed.get("research_display_html") or "") if isinstance(ed.get("research_display_html"), str) else ""
+    combined = f"{rf}\n{rdh}".strip().lower()
+    if re.search(r"\b(do not|don't|not)\s+proceed\b", combined):
+        return "irrelevant"
+    if re.search(r"\b(stop|no-go|not a fit|do not pursue|don't pursue)\b", combined):
+        return "irrelevant"
+    if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", combined):
+        return "relevant"
+    return "-"
+
+
+def _derive_relevance_reason_from_extra(extra) -> str:
+    ed = _normalize_extra_dict(extra)
+    saved = str(ed.get("relevance_reason_auto") or "").strip()
+    saved_l = saved.lower()
+    _generic_saved = {
+        "research verdict indicates do not proceed.",
+        "research indicates outreach should stop.",
+        "research indicates weak strategic fit.",
+        "marked irrelevant from research verdict.",
+        "do not proceed.",
+        "outreach should stop.",
+        "weak strategic fit.",
+        "strong strategic fit.",
+    }
+    if saved and saved_l not in _generic_saved:
+        return saved
+    if not _extra_has_research(ed):
+        return ""
+    rf = (ed.get("research_full") or "") if isinstance(ed.get("research_full"), str) else ""
+    rdh = (ed.get("research_display_html") or "") if isinstance(ed.get("research_display_html"), str) else ""
+    combined = f"{rf}\n{rdh}".strip().lower()
+    p, f = _relevance_reasons_from_first_table(f"{rf}\n{rdh}".strip())
+    if f:
+        return "; ".join(f[:3])
+    if p:
+        return "; ".join(p[:3])
+    if re.search(r"\b(do not|don't|not)\s+proceed\b", combined):
+        return "Do not proceed."
+    if re.search(r"\b(stop|no-go|do not pursue|don't pursue)\b", combined):
+        return "Outreach should stop."
+    if re.search(r"\b(not a fit|poor fit|bad fit)\b", combined):
+        return "Weak strategic fit."
+    if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", combined):
+        return "Strong strategic fit."
+    return ""
+
+
+def _merge_relevance(*values: str) -> str:
+    vals = [str(v or "").strip().lower() for v in values if str(v or "").strip()]
+    if "relevant" in vals:
+        return "relevant"
+    if "irrelevant" in vals:
+        return "irrelevant"
+    return "-"
+
+
+def _merge_relevance_reason(relevance: str, *values: str) -> str:
+    rel = str(relevance or "").strip().lower()
+    if rel not in ("relevant", "irrelevant"):
+        return ""
+    for v in values:
+        txt = str(v or "").strip()
+        if txt:
+            return txt
+    return "Strong strategic fit." if rel == "relevant" else "Weak strategic fit."
+
+
+def _has_outreach_activity(actions: list[dict] | None) -> bool:
+    """
+    Treat active outreach work as an explicit "relevant" signal.
+    This covers drafted/planned/sent workflows regardless of initial research verdict.
+    """
+    if not actions:
+        return False
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        status = str(a.get("status") or "").strip().lower()
+        channel = str(a.get("channel") or "").strip().lower()
+        action_type = str(a.get("action_type") or "").strip().lower()
+        has_draft_content = bool(
+            str(a.get("description") or "").strip()
+            or str(a.get("content_sent") or "").strip()
+            or str(a.get("draft_original") or "").strip()
+            or (a.get("draft_revisions") if isinstance(a.get("draft_revisions"), list) else [])
+        )
+        if channel in ("email", "linkedin", "phone", "in-person"):
+            return True
+        if action_type in ("outreach", "follow-up", "meeting"):
+            return True
+        if status in (
+            "planned",
+            "sent",
+            "completed",
+            "no_response",
+            "replied_positive",
+            "replied_negative",
+            "meeting_booked",
+            "deal_closed",
+            "deal_lost",
+        ):
+            return True
+        if has_draft_content:
+            return True
+    return False
+
+
 def build_spoc_tracking_rows() -> list[dict]:
     _today = datetime.utcnow().date()
     all_comp = get_all_companies(exclude_advisor_shadows=True)
@@ -420,9 +667,21 @@ def build_publisher_crm_rows(
                 contacts_use = contacts_summary
                 extra_media = {"platform_presence": platform_presence}
 
-            has_research_media = _extra_has_research(ch.get("extra_data")) or _extra_has_research(
-                (shadow_company or {}).get("extra_data")
+            ch_extra = _normalize_extra_dict(ch.get("extra_data"))
+            shadow_extra = _normalize_extra_dict((shadow_company or {}).get("extra_data"))
+            has_research_media = _extra_has_research(ch_extra) or _extra_has_research(shadow_extra)
+            relevance_media = _merge_relevance(
+                _derive_relevance_from_extra(ch_extra),
+                _derive_relevance_from_extra(shadow_extra),
             )
+            relevance_reason_media = _merge_relevance_reason(
+                relevance_media,
+                _derive_relevance_reason_from_extra(ch_extra),
+                _derive_relevance_reason_from_extra(shadow_extra),
+            )
+            if _has_outreach_activity(actions):
+                relevance_media = "relevant"
+                relevance_reason_media = ""
             media_row = {
                 "row_type": "publisher",
                 "company_id": shadow_company_id or 0,
@@ -432,6 +691,8 @@ def build_publisher_crm_rows(
                 "parent_name": parent_name,
                 "source": src,
                 "has_research": has_research_media,
+                "relevance": relevance_media,
+                "relevance_reason": relevance_reason_media,
                 "spoc_name": (ctd or {}).get("name") or "Leadership",
                 "spoc_role": (ctd or {}).get("role") or "Leadership",
                 "spoc_email": (ctd or {}).get("email") or "",
@@ -611,7 +872,7 @@ def build_publisher_crm_rows(
 
             # Traffic + syndication for the publisher row
             monthly_visits = cd.get("monthly_visits")
-            extra = cd.get("extra_data") or {}
+            extra = _normalize_extra_dict(cd.get("extra_data"))
             platform_presence = extra.get("platform_presence") or {}
             if not platform_presence or not any(
                 bool(platform_presence.get(k))
@@ -654,6 +915,14 @@ def build_publisher_crm_rows(
                 contacts_use = contacts_summary_full or []
                 extra_ind = {"platform_presence": platform_presence}
 
+            relevance_ind = _derive_relevance_from_extra(extra)
+            relevance_reason_ind = _merge_relevance_reason(
+                relevance_ind,
+                _derive_relevance_reason_from_extra(extra),
+            )
+            if _has_outreach_activity(actions):
+                relevance_ind = "relevant"
+                relevance_reason_ind = ""
             ind_row = {
                 "row_type": "publisher",
                 "company_id": company_id,
@@ -663,6 +932,8 @@ def build_publisher_crm_rows(
                 "parent_name": parent_name,
                 "source": src,
                 "has_research": _extra_has_research(cd.get("extra_data")),
+                "relevance": relevance_ind,
+                "relevance_reason": relevance_reason_ind,
                 "spoc_name": _nm,
                 "spoc_role": _role,
                 "spoc_email": _em,
@@ -849,6 +1120,11 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                             n = (c.get("name") or "").strip()
                             if n and n != "—" and n not in spoc_names_brand:
                                 spoc_names_brand.append(n)
+                brand_rel = _merge_relevance(*[str(x.get("relevance") or "") for x in br_arr])
+                brand_reason = _merge_relevance_reason(
+                    brand_rel,
+                    *[str(x.get("relevance_reason") or "") for x in br_arr],
+                )
                 brand_list.append(
                     {
                         "company_domain": bk,
@@ -866,6 +1142,8 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                         "advisor_company_id": best.get("advisor_company_id"),
                         "spoc_names": spoc_names_brand,
                         "has_research": any(bool(x.get("has_research")) for x in br_arr),
+                        "relevance": brand_rel,
+                        "relevance_reason": brand_reason,
                     }
                 )
             brand_list.sort(key=lambda b: (not bool(b.get("due_today")), str(b.get("company_domain") or "")))
@@ -874,6 +1152,11 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
         spoc_name = status_best.get("spoc_name") or (primary_contact or {}).get("name") or display_title
         ceo_contact = next((c for c in deduped_contacts if c.get("kind") == "contact"), None)
 
+        group_rel = _merge_relevance(*[str(x.get("relevance") or "") for x in arr])
+        group_reason = _merge_relevance_reason(
+            group_rel,
+            *[str(x.get("relevance_reason") or "") for x in arr],
+        )
         groups.append(
             {
                 "key": key,
@@ -882,6 +1165,8 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                 "parent_name": (arr[0].get("parent_name") or "") if crm_source == "media" else None,
                 "company_id": int(arr[0]["company_id"]) if crm_source != "media" and arr[0].get("company_id") else None,
                 "has_research": any(bool(x.get("has_research")) for x in arr),
+                "relevance": group_rel,
+                "relevance_reason": group_reason,
                 "status": status_best.get("status"),
                 "status_label": status_best.get("status_label"),
                 "due_today": due_today,
@@ -936,6 +1221,8 @@ def _slim_media_list_group(g: dict) -> dict:
         "syndication": list(g.get("syndication") or []),
         "spoc_name": g.get("spoc_name"),
         "ceo_display_name": g.get("ceo_display_name"),
+        "relevance": g.get("relevance") or "-",
+        "relevance_reason": g.get("relevance_reason") or "",
         "brands": [],
         "brand_count": g.get("brand_count"),
         "contacted_brand_count": g.get("contacted_brand_count"),
@@ -951,6 +1238,8 @@ def _slim_independent_list_group(g: dict) -> dict:
         "parent_name": g.get("parent_name"),
         "company_id": g.get("company_id"),
         "has_research": bool(g.get("has_research")),
+        "relevance": g.get("relevance") or "-",
+        "relevance_reason": g.get("relevance_reason") or "",
         "status": g.get("status"),
         "status_label": g.get("status_label"),
         "due_today": g.get("due_today"),

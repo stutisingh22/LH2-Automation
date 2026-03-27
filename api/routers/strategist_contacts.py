@@ -11,12 +11,14 @@ from pydantic import BaseModel
 from db_ops import (
     get_advisor_company,
     get_company,
+    get_contact,
     get_contacts,
     get_enrichment_result,
     get_session_summary,
     get_spoc_contacts_by_company,
     merge_advisor_company_extra_data,
     merge_company_extra_data,
+    update_contact,
     upsert_contact,
 )
 from integrations.ai.research import fetch_research_from_notion
@@ -59,6 +61,16 @@ class EnsureContactIn(BaseModel):
     role: str = ""
     email: str = ""
     linkedin_url: str = ""
+
+
+class UpdateContactEmailIn(BaseModel):
+    company_id: int
+    advisor_company_id: Optional[int] = None
+    row_id: Optional[int] = None
+    name: str = ""
+    role: str = ""
+    linkedin_url: str = ""
+    email: str = ""
 
 
 def _linkedin_result_matches_company(result_company: Optional[str], comp: dict) -> bool:
@@ -362,4 +374,45 @@ def post_ensure_contact(body: EnsureContactIn, user: dict = Depends(get_current_
         linkedin=(body.linkedin_url or "").strip() or None,
     )
     return {"ok": True, "contact_id": cid}
+
+
+@router.patch("/update-contact-email")
+def patch_update_contact_email(body: UpdateContactEmailIn, user: dict = Depends(get_current_user)):
+    if not user_has_perm(user, "can_use_strategist"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not body.company_id:
+        raise HTTPException(status_code=400, detail="company_id required")
+    email_clean = (body.email or "").strip()
+    if body.row_id:
+        ct = get_contact(body.row_id)
+        if ct and int(ct.get("company_id") or 0) == int(body.company_id):
+            update_contact(body.row_id, email=(email_clean or None))
+    else:
+        nm = (body.name or "").strip()
+        if nm:
+            upsert_contact(
+                body.company_id,
+                nm,
+                role=(body.role or "").strip() or None,
+                email=(email_clean or None),
+                linkedin=(body.linkedin_url or "").strip() or None,
+            )
+
+    saved = list(_saved_lookup_list(body.company_id, body.advisor_company_id))
+    if saved:
+        nm_l = (body.name or "").strip().lower()
+        li = (body.linkedin_url or "").strip()
+        updated = False
+        for row in saved:
+            r_id = row.get("id")
+            r_nm_l = str(row.get("name") or "").strip().lower()
+            r_li = str(row.get("linkedin_url") or "").strip()
+            if (body.row_id and r_id and int(r_id) == int(body.row_id)) or ((not body.row_id) and nm_l and r_nm_l == nm_l and r_li == li):
+                row["email"] = email_clean
+                row["enrichment_status"] = "saved" if email_clean else (row.get("enrichment_status") or "—")
+                updated = True
+                break
+        if updated:
+            _persist_lookup_list(body.company_id, body.advisor_company_id, saved)
+    return {"ok": True, "email": email_clean}
 

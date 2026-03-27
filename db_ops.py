@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 import threading
 
@@ -18,13 +18,14 @@ from passlib.hash import pbkdf2_sha256
 from sqlalchemy import create_engine, or_, text, func
 from sqlalchemy.orm import load_only, sessionmaker, scoped_session
 from sqlalchemy.pool import QueuePool, StaticPool, NullPool
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, IntegrityError
 
 from config import DATABASE_URL, CONTACT_STATUSES, normalize_domain
 from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
     ProcessedGmailMessage, SpocContact, CachedContext, AdvisorCompany,
+    GmailAccount, EmailThread, InboxEmail, GmailOutreachSyncEvent,
 )
 from sqlite_db_connection import get_local_db_directory, create_platform_engine
 
@@ -109,6 +110,39 @@ def init_db():
                     pass
                 else:
                     log.warning("Migration %s: %s", col, e)
+        for col, typ in (
+            ("outcome_reason", "TEXT"),
+            ("outreach_sync_meta", "TEXT" if is_sqlite else "JSON"),
+        ):
+            try:
+                with engine.connect() as conn:
+                    with conn.begin():
+                        conn.execute(text(f"ALTER TABLE actions ADD COLUMN {col} {typ}"))
+            except Exception as e:
+                err = str(e).lower()
+                if "duplicate column" in err or "already exists" in err:
+                    pass
+                else:
+                    log.warning("Migration %s: %s", col, e)
+        try:
+            GmailOutreachSyncEvent.__table__.create(bind=engine, checkfirst=True)
+        except Exception as e:
+            log.warning("gmail_outreach_sync_events table: %s", e)
+        for col, typ in (
+            ("last_sync_at", "DATETIME" if is_sqlite else "TIMESTAMP"),
+            ("last_sync_error", "TEXT"),
+            ("last_sync_stats", "TEXT" if is_sqlite else "JSON"),
+        ):
+            try:
+                with engine.connect() as conn:
+                    with conn.begin():
+                        conn.execute(text(f"ALTER TABLE gmail_accounts ADD COLUMN {col} {typ}"))
+            except Exception as e:
+                err = str(e).lower()
+                if "duplicate column" in err or "already exists" in err:
+                    pass
+                else:
+                    log.warning("Migration gmail_accounts.%s: %s", col, e)
         ensure_performance_indexes(engine)
         db_type = "PostgreSQL" if "postgresql" in (engine.url.drivername or "") else "SQLite"
         print(f"DB connected successfully ({db_type})")
@@ -206,12 +240,17 @@ def _act_dict(a):
     if revs is None:
         revs = []
     orig = getattr(a, "draft_original", None)
+    sync_meta = getattr(a, "outreach_sync_meta", None)
+    if sync_meta is not None and not isinstance(sync_meta, dict):
+        sync_meta = dict(sync_meta) if sync_meta else None
     return {
         "id": a.id, "session_id": a.session_id, "user_id": a.user_id,
         "action_type": a.action_type, "channel": a.channel,
         "description": a.description, "content_sent": a.content_sent,
         "response_content": a.response_content, "response_type": a.response_type,
         "status": a.status, "outcome": a.outcome,
+        "outcome_reason": getattr(a, "outcome_reason", None),
+        "outreach_sync_meta": sync_meta,
         "context_note": a.context_note,
         "sequence_id": a.sequence_id, "sequence_step": a.sequence_step,
         "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else None,
@@ -1103,6 +1142,30 @@ def delete_spoc_contact(spoc_contact_id: int):
         return True
 
 
+def update_spoc_contact(spoc_contact_id: int, *, email=None, role=None, linkedin_url=None, phone=None, name=None):
+    """Update editable fields on a SPOC contact row. Returns False when row missing."""
+    if not spoc_contact_id:
+        return False
+    with db() as s:
+        _ensure_spoc_contacts_table(s)
+        row = s.get(SpocContact, spoc_contact_id)
+        if not row:
+            return False
+        if email is not None:
+            row.email = (str(email).strip() or None)
+        if role is not None:
+            row.role = (str(role).strip() or None)
+        if linkedin_url is not None:
+            row.linkedin_url = (str(linkedin_url).strip() or None)
+        if phone is not None:
+            row.phone = (str(phone).strip() or None)
+        if name is not None:
+            row.name = str(name).strip()
+        row.updated_at = datetime.utcnow()
+        s.flush()
+        return True
+
+
 # ── Sessions ──────────────────────────────────────────────────
 
 def get_or_create_session(company_id, contact_id, user_id, score=0):
@@ -1328,6 +1391,58 @@ def mark_gmail_message_processed(user_id, gmail_message_id):
             pass  # ignore duplicate
 
 
+def gmail_outreach_sync_already_applied(gmail_account_id: int, gmail_message_id: str) -> bool:
+    """Idempotency for Outreach State Engine (per connected Gmail account)."""
+    mid = (gmail_message_id or "").strip()
+    if not mid:
+        return True
+    with db() as s:
+        return (
+            s.query(GmailOutreachSyncEvent)
+            .filter_by(gmail_account_id=int(gmail_account_id), gmail_message_id=mid)
+            .first()
+            is not None
+        )
+
+
+def record_gmail_outreach_sync_event(
+    *,
+    gmail_account_id: int,
+    gmail_message_id: str,
+    user_id: int,
+    action_id: int | None,
+    event_kind: str,
+    applied_status: str | None,
+    outcome_reason: str | None = None,
+) -> None:
+    try:
+        with db() as s:
+            s.add(
+                GmailOutreachSyncEvent(
+                    gmail_account_id=int(gmail_account_id),
+                    gmail_message_id=str(gmail_message_id).strip(),
+                    user_id=int(user_id),
+                    action_id=int(action_id) if action_id is not None else None,
+                    event_kind=str(event_kind),
+                    applied_status=(applied_status or None),
+                    outcome_reason=outcome_reason,
+                )
+            )
+    except IntegrityError:
+        pass  # concurrent / duplicate sync — idempotent
+
+
+def get_session_id_for_contact_owner(contact_id: int, owner_user_id: int) -> int | None:
+    with db() as s:
+        sess = (
+            s.query(Session)
+            .filter_by(contact_id=int(contact_id), owner_user_id=int(owner_user_id))
+            .order_by(Session.updated_at.desc())
+            .first()
+        )
+        return int(sess.id) if sess else None
+
+
 def record_sent_email(sender_email, recipient_email, subject, body, gmail_message_id, sent_at=None):
     """
     When a Command Center user (sender_email) sends an email to a contact (recipient_email):
@@ -1487,17 +1602,33 @@ def get_timeline_actions(company_id=None, contact_id=None, limit=100):
 
 def update_action(aid, status=None, outcome=None, response_content=None, response_type=None,
                   description=None, scheduled_at=None, action_type=None, channel=None, content_sent=None,
-                  draft_revisions=None, draft_original=None):
+                  draft_revisions=None, draft_original=None, outcome_reason=None, outreach_sync_meta=None,
+                  completed_at=None):
     with db() as s:
         a = s.get(Action, aid)
         if not a:
             return
         if status is not None:
             a.status = status
-            if status in ("completed", "deal_closed", "meeting_booked"):
+            if completed_at is not None:
+                try:
+                    if isinstance(completed_at, datetime):
+                        ca = completed_at
+                    else:
+                        ca = datetime.fromisoformat(str(completed_at).replace("Z", "+00:00"))
+                    if getattr(ca, "tzinfo", None) is not None:
+                        ca = ca.astimezone(timezone.utc).replace(tzinfo=None)
+                    a.completed_at = ca
+                except Exception:
+                    a.completed_at = datetime.utcnow()
+            elif status in ("completed", "deal_closed", "meeting_booked"):
                 a.completed_at = datetime.utcnow()
         if outcome is not None:
             a.outcome = outcome
+        if outcome_reason is not None and hasattr(a, "outcome_reason"):
+            a.outcome_reason = outcome_reason
+        if outreach_sync_meta is not None and hasattr(a, "outreach_sync_meta"):
+            a.outreach_sync_meta = outreach_sync_meta if isinstance(outreach_sync_meta, dict) else dict(outreach_sync_meta)
         if response_content is not None:
             a.response_content = response_content
         if response_type is not None:
@@ -2288,3 +2419,402 @@ def get_advisor_parents_with_children():
             by_parent[p] = []
         by_parent[p].append(row)
     return [{"parent_name": p, "children": kids} for p, kids in sorted(by_parent.items())]
+
+
+# ── Gmail multi-user inbox (OAuth + sync) ─────────────────────
+
+def _thread_out(t: EmailThread, gmail_email: str | None = None) -> dict:
+    return {
+        "id": t.id,
+        "gmail_thread_id": t.thread_id,
+        "subject": t.subject,
+        "snippet": t.snippet,
+        "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
+        "gmail_account_id": t.gmail_account_id,
+        "connected_email": (gmail_email or "").strip() or None,
+    }
+
+
+def _inbox_email_out(e: InboxEmail, include_body: bool = False) -> dict:
+    d = {
+        "id": e.id,
+        "gmail_message_id": e.gmail_message_id,
+        "thread_id": e.thread_id,
+        "from_email": e.from_email,
+        "to_emails": e.to_emails or [],
+        "subject": e.subject,
+        "body_snippet": e.body_snippet,
+        "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+        "is_sent": bool(e.is_sent),
+        "thread_label": e.thread_label,
+    }
+    if include_body:
+        d["body_full"] = e.body_full
+    return d
+
+
+def get_known_contact_emails() -> set[str]:
+    """All known contact emails from core contacts + SPOC contacts."""
+    out: set[str] = set()
+    with db() as s:
+        for (em,) in s.query(Contact.email).filter(Contact.email.isnot(None)).all():
+            v = (em or "").strip().lower()
+            if v:
+                out.add(v)
+        for (em,) in s.query(SpocContact.email).filter(SpocContact.email.isnot(None)).all():
+            v = (em or "").strip().lower()
+            if v:
+                out.add(v)
+    return out
+
+
+def email_matches_known_contacts(
+    from_email: str | None,
+    to_emails: list | None,
+    known_emails: set[str],
+    connected_email: str | None = None,
+) -> bool:
+    if not known_emails:
+        return True
+    participants = set()
+    frm = (from_email or "").strip().lower()
+    if frm:
+        participants.add(frm)
+    for e in to_emails or []:
+        v = (str(e or "").strip().lower())
+        if v:
+            participants.add(v)
+    mine = (connected_email or "").strip().lower()
+    if mine:
+        participants.discard(mine)
+    return bool(participants & known_emails)
+
+
+def upsert_gmail_account(user_id: int, email: str, access_token_enc: str, refresh_token_enc: str | None, token_expiry):
+    """Create or update a connected Gmail row; tokens must already be encrypted.
+    If refresh_token_enc is falsy on update, the previous refresh_token_enc is kept.
+    """
+    norm = (email or "").strip().lower()
+    if not norm:
+        raise ValueError("email required")
+    with db() as s:
+        row = s.query(GmailAccount).filter_by(user_id=user_id, email=norm).first()
+        if row:
+            row.access_token_enc = access_token_enc
+            if refresh_token_enc:
+                row.refresh_token_enc = refresh_token_enc
+            row.token_expiry = token_expiry
+            row.updated_at = datetime.utcnow()
+        else:
+            row = GmailAccount(
+                user_id=user_id,
+                email=norm,
+                access_token_enc=access_token_enc,
+                refresh_token_enc=refresh_token_enc,
+                token_expiry=token_expiry,
+            )
+            s.add(row)
+        s.flush()
+        return row.id
+
+
+def get_gmail_account_by_id(account_id: int) -> dict | None:
+    with db() as s:
+        r = s.get(GmailAccount, account_id)
+        if not r:
+            return None
+        return {
+            "id": r.id,
+            "user_id": r.user_id,
+            "email": r.email,
+            "access_token_enc": r.access_token_enc,
+            "refresh_token_enc": r.refresh_token_enc,
+            "token_expiry": r.token_expiry,
+        }
+
+
+def list_gmail_accounts() -> list[dict]:
+    """All connections (for global sync jobs)."""
+    with db() as s:
+        rows = s.query(GmailAccount).order_by(GmailAccount.id).all()
+        return [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "email": r.email,
+                "access_token_enc": r.access_token_enc,
+                "refresh_token_enc": r.refresh_token_enc,
+                "token_expiry": r.token_expiry,
+            }
+            for r in rows
+        ]
+
+
+def list_gmail_accounts_for_user(user_id: int) -> list[dict]:
+    """Public-safe list (no tokens)."""
+    with db() as s:
+        rows = (
+            s.query(GmailAccount)
+            .filter_by(user_id=user_id)
+            .order_by(GmailAccount.email)
+            .all()
+        )
+        return [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "email": r.email,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "last_sync_at": r.last_sync_at.isoformat() if getattr(r, "last_sync_at", None) else None,
+                "last_sync_error": getattr(r, "last_sync_error", None),
+                "last_sync_stats": getattr(r, "last_sync_stats", None),
+            }
+            for r in rows
+        ]
+
+
+def update_gmail_account_tokens(account_id: int, access_token_enc: str, refresh_token_enc: str | None, token_expiry) -> bool:
+    with db() as s:
+        r = s.get(GmailAccount, account_id)
+        if not r:
+            return False
+        r.access_token_enc = access_token_enc
+        if refresh_token_enc:
+            r.refresh_token_enc = refresh_token_enc
+        r.token_expiry = token_expiry
+        r.updated_at = datetime.utcnow()
+        return True
+
+
+def update_gmail_account_sync_run(
+    account_id: int,
+    *,
+    ok: bool,
+    error: str | None = None,
+    stats: dict | None = None,
+) -> None:
+    """Persist last sync outcome for operational diagnostics."""
+    with db() as s:
+        r = s.get(GmailAccount, int(account_id))
+        if not r:
+            return
+        r.last_sync_at = datetime.utcnow()
+        r.last_sync_error = (error or None) if not ok else None
+        if hasattr(r, "last_sync_stats"):
+            r.last_sync_stats = stats if isinstance(stats, dict) else stats
+        r.updated_at = datetime.utcnow()
+
+
+def get_inbox_email_by_gmail_id(gmail_account_id: int, gmail_message_id: str) -> bool:
+    with db() as s:
+        q = (
+            s.query(InboxEmail)
+            .filter_by(gmail_account_id=gmail_account_id, gmail_message_id=gmail_message_id)
+            .first()
+        )
+        return q is not None
+
+
+def upsert_email_thread(
+    user_id: int,
+    gmail_account_id: int,
+    gmail_thread_id: str,
+    subject: str | None,
+    snippet: str | None,
+    last_message_at,
+) -> int:
+    def _as_naive_utc(dt):
+        """Normalize datetimes so comparisons don't mix aware/naive values."""
+        if not dt:
+            return dt
+        tzinfo = getattr(dt, "tzinfo", None)
+        if tzinfo is not None:
+            # Convert aware -> UTC naive for stable DB comparisons across SQLite/Postgres.
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+
+    if not gmail_thread_id:
+        gmail_thread_id = "_orphan_"
+    last_message_at = _as_naive_utc(last_message_at)
+    with db() as s:
+        t = (
+            s.query(EmailThread)
+            .filter_by(gmail_account_id=gmail_account_id, thread_id=gmail_thread_id)
+            .first()
+        )
+        if not t:
+            t = EmailThread(
+                user_id=user_id,
+                gmail_account_id=gmail_account_id,
+                thread_id=gmail_thread_id,
+                subject=subject,
+                snippet=snippet,
+                last_message_at=last_message_at,
+            )
+            s.add(t)
+            s.flush()
+            return t.id
+        existing_last = _as_naive_utc(t.last_message_at)
+        is_newer = bool(last_message_at and (existing_last is None or last_message_at >= existing_last))
+        if is_newer:
+            t.last_message_at = last_message_at
+        # Keep thread preview metadata tied to the latest message only.
+        if subject and (is_newer or not (t.subject or "").strip()):
+            t.subject = subject
+        if snippet and (is_newer or not (t.snippet or "").strip()):
+            t.snippet = snippet
+        t.updated_at = datetime.utcnow()
+        s.flush()
+        return t.id
+
+
+def upsert_inbox_email(
+    gmail_message_id: str,
+    thread_pk: int,
+    user_id: int,
+    gmail_account_id: int,
+    from_email: str | None,
+    to_emails: list | None,
+    subject: str | None,
+    body_snippet: str | None,
+    body_full: str | None,
+    timestamp,
+    is_sent: bool,
+    thread_label: str | None = None,
+) -> int:
+    if timestamp is not None and getattr(timestamp, "tzinfo", None) is not None:
+        timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+    with db() as s:
+        existing = (
+            s.query(InboxEmail)
+            .filter_by(gmail_account_id=gmail_account_id, gmail_message_id=gmail_message_id)
+            .first()
+        )
+        if existing:
+            return existing.id
+        row = InboxEmail(
+            gmail_message_id=gmail_message_id,
+            thread_id=thread_pk,
+            user_id=user_id,
+            gmail_account_id=gmail_account_id,
+            from_email=from_email,
+            to_emails=to_emails or [],
+            subject=subject,
+            body_snippet=body_snippet,
+            body_full=body_full,
+            timestamp=timestamp,
+            is_sent=is_sent,
+            thread_label=thread_label,
+        )
+        s.add(row)
+        s.flush()
+        return row.id
+
+
+def list_inbox_threads_for_user(
+    user_id: int,
+    limit: int = 200,
+    *,
+    known_emails: set[str] | None = None,
+) -> list[dict]:
+    with db() as s:
+        allowed_thread_ids: set[int] | None = None
+        if known_emails is not None:
+            allowed_thread_ids = set()
+            rows = (
+                s.query(
+                    InboxEmail.thread_id,
+                    InboxEmail.from_email,
+                    InboxEmail.to_emails,
+                    GmailAccount.email,
+                )
+                .join(GmailAccount, InboxEmail.gmail_account_id == GmailAccount.id)
+                .filter(InboxEmail.user_id == user_id)
+                .all()
+            )
+            for tid, frm, tos, connected in rows:
+                if email_matches_known_contacts(frm, tos, known_emails, connected):
+                    allowed_thread_ids.add(tid)
+            if not allowed_thread_ids:
+                return []
+        q = (
+            s.query(EmailThread, GmailAccount.email)
+            .join(GmailAccount, EmailThread.gmail_account_id == GmailAccount.id)
+            .filter(EmailThread.user_id == user_id)
+        )
+        if allowed_thread_ids is not None:
+            q = q.filter(EmailThread.id.in_(allowed_thread_ids))
+        q = q.order_by(EmailThread.last_message_at.desc()).limit(limit)
+        return [_thread_out(t, ga) for t, ga in q.all()]
+
+
+def list_inbox_emails_for_user(
+    user_id: int,
+    limit: int = 300,
+    thread_pk: int | None = None,
+    *,
+    known_emails: set[str] | None = None,
+) -> list[dict]:
+    with db() as s:
+        allowed_thread_ids: set[int] | None = None
+        if known_emails is not None:
+            allowed_thread_ids = set()
+            rows = (
+                s.query(
+                    InboxEmail.thread_id,
+                    InboxEmail.from_email,
+                    InboxEmail.to_emails,
+                    GmailAccount.email,
+                )
+                .join(GmailAccount, InboxEmail.gmail_account_id == GmailAccount.id)
+                .filter(InboxEmail.user_id == user_id)
+                .all()
+            )
+            for tid, frm, tos, connected in rows:
+                if email_matches_known_contacts(frm, tos, known_emails, connected):
+                    allowed_thread_ids.add(tid)
+            if not allowed_thread_ids:
+                return []
+        qq = (
+            s.query(InboxEmail, GmailAccount.email)
+            .join(GmailAccount, InboxEmail.gmail_account_id == GmailAccount.id)
+            .filter(InboxEmail.user_id == user_id)
+        )
+        if allowed_thread_ids is not None:
+            qq = qq.filter(InboxEmail.thread_id.in_(allowed_thread_ids))
+        if thread_pk is not None:
+            qq = qq.filter(InboxEmail.thread_id == thread_pk)
+        rows = qq.order_by(InboxEmail.timestamp.desc()).limit(limit).all()
+        return [_inbox_email_out(e, include_body=False) for e, _connected in rows]
+
+
+def get_inbox_thread_detail(
+    thread_pk: int,
+    user_id: int,
+    *,
+    known_emails: set[str] | None = None,
+) -> dict | None:
+    with db() as s:
+        t = s.query(EmailThread).filter_by(id=thread_pk, user_id=user_id).first()
+        if not t:
+            return None
+        ga = s.get(GmailAccount, t.gmail_account_id)
+        conn_email = ga.email if ga else None
+        msgs = (
+            s.query(InboxEmail)
+            .filter_by(thread_id=thread_pk, user_id=user_id)
+            .order_by(InboxEmail.timestamp.asc())
+            .all()
+        )
+        if known_emails is not None:
+            # Thread-level filtering only: once thread matches a known contact, return full conversation.
+            has_match = any(
+                email_matches_known_contacts(m.from_email, m.to_emails, known_emails, conn_email)
+                for m in msgs
+            )
+            if not has_match:
+                return None
+        return {
+            "thread": _thread_out(t, conn_email),
+            "messages": [_inbox_email_out(m, include_body=True) for m in msgs],
+        }

@@ -14,6 +14,7 @@ const CalendarPage = lazy(() => import('./pages/CalendarPage'))
 const HistoryPage = lazy(() => import('./pages/HistoryPage'))
 const AdvisorPage = lazy(() => import('./pages/AdvisorPage'))
 const BulkImportPage = lazy(() => import('./pages/BulkImportPage'))
+const GmailInboxPage = lazy(() => import('./pages/GmailInboxPage'))
 
 function SuspenseWrap({ children }: { children: ReactNode }) {
   return <Suspense fallback={<div className="page-wide muted">Loading…</div>}>{children}</Suspense>
@@ -123,6 +124,14 @@ export default function App() {
           element={
             <SuspenseWrap>
               <BulkImportPage />
+            </SuspenseWrap>
+          }
+        />
+        <Route
+          path="/gmail-inbox"
+          element={
+            <SuspenseWrap>
+              <GmailInboxPage />
             </SuspenseWrap>
           }
         />

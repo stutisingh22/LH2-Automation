@@ -40,7 +40,11 @@ export default function TimelinePage() {
           <li key={i}>
             <span className="tl-date">{timelineDisplayDate(a)}</span>
             <span className="tl-body">
+              <span className="tl-status-pill">{String(a.status || '')}</span>{' '}
               {String(a.action_type)} via {String(a.channel)} — {String(a.description || '').slice(0, 200)}
+              {(a.outreach_sync_meta as { source?: string } | undefined)?.source === 'gmail_sync' ? (
+                <span className="outreach-sync-badge">Gmail</span>
+              ) : null}
             </span>
           </li>
         ))}

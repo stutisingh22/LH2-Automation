@@ -114,6 +114,8 @@ class Action(Base):
     response_type = Column(String(50))
     status = Column(String(50), default="planned")
     outcome = Column(Text)
+    outcome_reason = Column(Text)  # deterministic rule path / explainability (Gmail sync)
+    outreach_sync_meta = Column(JSON)  # {source, gmail_message_id, event_kind, synced_at, ...}
     context_note = Column(Text)
     sequence_id = Column(String(20))
     sequence_step = Column(Integer)
@@ -229,4 +231,86 @@ class ProcessedGmailMessage(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     gmail_message_id = Column(String(64), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GmailAccount(Base):
+    """
+    Connected Gmail (OAuth) per app user. Tokens encrypted at rest.
+    """
+    __tablename__ = "gmail_accounts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    access_token_enc = Column(Text, nullable=False)
+    refresh_token_enc = Column(Text)
+    token_expiry = Column(DateTime)
+    last_sync_at = Column(DateTime)
+    last_sync_error = Column(Text)
+    last_sync_stats = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("user_id", "email", name="uq_gmail_account_user_email"),)
+
+
+class EmailThread(Base):
+    """Aggregated Gmail thread metadata per connected account."""
+    __tablename__ = "email_threads"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    gmail_account_id = Column(Integer, ForeignKey("gmail_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    thread_id = Column(String(64), nullable=False)
+    subject = Column(String(1024))
+    snippet = Column(Text)
+    last_message_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("gmail_account_id", "thread_id", name="uq_gmail_thread_account"),
+        Index("ix_email_threads_user_last", "user_id", "last_message_at"),
+    )
+
+
+class InboxEmail(Base):
+    """Individual messages pulled from Gmail API (inbox + sent)."""
+    __tablename__ = "emails"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gmail_message_id = Column(String(64), nullable=False, index=True)
+    thread_id = Column(Integer, ForeignKey("email_threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    gmail_account_id = Column(Integer, ForeignKey("gmail_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_email = Column(String(255))
+    to_emails = Column(JSON)
+    subject = Column(String(1024))
+    body_snippet = Column(Text)
+    body_full = Column(Text)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    is_sent = Column(Boolean, default=False, nullable=False, index=True)
+    thread_label = Column(String(32))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("gmail_account_id", "gmail_message_id", name="uq_inbox_email_account_msg"),
+        Index("ix_emails_user_ts", "user_id", "timestamp"),
+        Index("ix_emails_thread_ts", "thread_id", "timestamp"),
+    )
+
+
+class GmailOutreachSyncEvent(Base):
+    """
+    Idempotency: one sync-side transition per Gmail message per connected account.
+    Prevents duplicate Action updates when sync runs repeatedly.
+    """
+    __tablename__ = "gmail_outreach_sync_events"
+    __table_args__ = (
+        UniqueConstraint("gmail_account_id", "gmail_message_id", name="uq_gmail_outreach_msg"),
+        Index("ix_gmail_outreach_action", "action_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gmail_account_id = Column(Integer, ForeignKey("gmail_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    gmail_message_id = Column(String(64), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    action_id = Column(Integer, ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_kind = Column(String(24), nullable=False)  # sent_sync | reply_sync
+    applied_status = Column(String(50))
+    outcome_reason = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)

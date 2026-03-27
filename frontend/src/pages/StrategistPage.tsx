@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch, getToken, streamStrategist, type ChatMessage, type Contact, type User } from '../api/client'
 import { apiLoadingBegin, apiLoadingEnd } from '../api/loadingBus'
 import { useSelection } from '../state/SelectionContext'
@@ -62,6 +62,8 @@ export default function StrategistPage() {
   const [boardRows, setBoardRows] = useState<ContactsBoardRow[]>([])
   const [fromExtraction, setFromExtraction] = useState(false)
   const [contactsBusy, setContactsBusy] = useState('')
+  const [savingEmailKey, setSavingEmailKey] = useState('')
+  const [draftEmailByRowKey, setDraftEmailByRowKey] = useState<Record<string, string>>({})
   const [lookupName, setLookupName] = useState('')
   const [lookupRole, setLookupRole] = useState('')
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set())
@@ -69,6 +71,7 @@ export default function StrategistPage() {
   const [strategistRules, setStrategistRules] = useState('')
   const [draftStrategistRules, setDraftStrategistRules] = useState('')
   const [showRulesPreview, setShowRulesPreview] = useState(false)
+  const emailSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   const boardKey = (r: ContactsBoardRow) => `${(r.name || '').trim().toLowerCase()}|${(r.linkedin_url || '').trim()}`
 
@@ -106,6 +109,21 @@ export default function StrategistPage() {
     }
     loadContactsBoard().catch(() => setBoardRows([]))
   }, [cid, loadContactsBoard])
+
+  useEffect(() => {
+    const next: Record<string, string> = {}
+    for (const r of boardRows) {
+      next[boardKey(r)] = (r.email || '').trim() === '—' ? '' : (r.email || '')
+    }
+    setDraftEmailByRowKey(next)
+  }, [boardRows])
+
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(emailSaveTimersRef.current)) clearTimeout(t)
+      emailSaveTimersRef.current = {}
+    }
+  }, [])
 
   useEffect(() => {
     apiFetch<User[]>('/api/users', { silent: true }).then((u) => {
@@ -466,6 +484,46 @@ export default function StrategistPage() {
     } finally {
       setContactsBusy('')
     }
+  }
+
+  async function saveBoardRowEmail(r: ContactsBoardRow, emailOverride?: string) {
+    if (!cid) return
+    const key = boardKey(r)
+    setSavingEmailKey(key)
+    setErr('')
+    try {
+      const nextEmail = (emailOverride ?? draftEmailByRowKey[key] ?? '').trim()
+      await apiFetch('/api/strategist/update-contact-email', {
+        method: 'PATCH',
+        json: {
+          company_id: cid,
+          advisor_company_id: selection.source === 'media' ? selection.advisorCompanyId : null,
+          row_id: r.id || null,
+          name: r.name || '',
+          role: r.role || '',
+          linkedin_url: r.linkedin_url || '',
+          email: nextEmail,
+        },
+      })
+      await Promise.all([loadContactsBoard({ silent: true }), loadWorkspace({ silent: true })])
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : 'Could not save email')
+    } finally {
+      setSavingEmailKey('')
+    }
+  }
+
+  function queueAutoSaveBoardRowEmail(r: ContactsBoardRow, rawValue: string) {
+    const key = boardKey(r)
+    const current = (r.email || '').trim() === '—' ? '' : (r.email || '').trim()
+    const next = rawValue.trim()
+    const existing = emailSaveTimersRef.current[key]
+    if (existing) clearTimeout(existing)
+    if (next === current) return
+    emailSaveTimersRef.current[key] = setTimeout(() => {
+      delete emailSaveTimersRef.current[key]
+      void saveBoardRowEmail(r, rawValue)
+    }, 700)
   }
 
   async function enrichSelectedContacts() {
@@ -951,7 +1009,24 @@ export default function StrategistPage() {
                               <span className="lh2-dt-readonly">{r.linkedin_url}</span>
                             )}
                           </td>
-                          <td>{r.email}</td>
+                          <td>
+                            <div className="strategist-lookup-row">
+                              <input
+                                type="email"
+                                className="intel-cmd-input"
+                                placeholder="name@email.com"
+                                value={draftEmailByRowKey[boardKey(r)] || ''}
+                                onChange={(e) => {
+                                  const key = boardKey(r)
+                                  const v = e.target.value
+                                  setDraftEmailByRowKey((prev) => ({ ...prev, [key]: v }))
+                                  queueAutoSaveBoardRowEmail(r, v)
+                                }}
+                                aria-label={`Email for ${r.name}`}
+                              />
+                              {savingEmailKey === boardKey(r) && <span className="muted small">Saving…</span>}
+                            </div>
+                          </td>
                           <td>{r.phone}</td>
                           <td>{r.status}</td>
                         </tr>

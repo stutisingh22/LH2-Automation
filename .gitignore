@@ -1,4 +1,5 @@
 keys.env
+client_secret*.json
 token.pickle
 .venv/
 venv/

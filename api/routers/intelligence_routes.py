@@ -306,6 +306,135 @@ def _pct_from_chars(chars: int) -> int:
     return min(94, int((chars / _ESTIMATED_RESEARCH_CHARS) * 100)) if _ESTIMATED_RESEARCH_CHARS else 0
 
 
+def _parse_md_row(line: str) -> list[str]:
+    s = (line or "").strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _is_md_separator_row(line: str) -> bool:
+    s = (line or "").strip()
+    if not s:
+        return False
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    cells = [c.strip() for c in s.split("|")]
+    if not cells:
+        return False
+    for c in cells:
+        if not re.match(r"^:?-{3,}:?$", c):
+            return False
+    return True
+
+
+def _extract_first_markdown_table(text: str) -> tuple[list[str], list[list[str]]] | tuple[None, None]:
+    lines = (text or "").splitlines()
+    n = len(lines)
+    for i in range(n - 1):
+        if "|" not in lines[i]:
+            continue
+        if not _is_md_separator_row(lines[i + 1]):
+            continue
+        header = _parse_md_row(lines[i])
+        rows: list[list[str]] = []
+        j = i + 2
+        while j < n:
+            ln = lines[j]
+            if not ln.strip() or "|" not in ln:
+                break
+            rows.append(_parse_md_row(ln))
+            j += 1
+        if header and rows:
+            return header, rows
+    return None, None
+
+
+def _relevance_reasons_from_first_table(text: str) -> tuple[list[str], list[str]]:
+    header, rows = _extract_first_markdown_table(text)
+    if not header or not rows:
+        return [], []
+
+    h = [str(x or "").strip().lower() for x in header]
+
+    def _find_idx(candidates: tuple[str, ...]) -> int:
+        for idx, col in enumerate(h):
+            if any(c in col for c in candidates):
+                return idx
+        return -1
+
+    status_idx = _find_idx(("status", "result", "verdict", "outcome", "pass/fail", "pass fail"))
+    reason_idx = _find_idx(("reason", "rationale", "why", "evidence", "note", "explanation"))
+    label_idx = _find_idx(("criterion", "criteria", "check", "factor", "signal", "dimension"))
+    if label_idx < 0:
+        label_idx = 0
+
+    pass_reasons: list[str] = []
+    fail_reasons: list[str] = []
+
+    for row in rows:
+        if not row:
+            continue
+        padded = row + [""] * (len(h) - len(row))
+        status_text = ""
+        if status_idx >= 0 and status_idx < len(padded):
+            status_text = str(padded[status_idx] or "")
+        if not status_text:
+            status_text = " ".join(str(c or "") for c in padded)
+        st = status_text.strip().lower()
+
+        is_pass = bool(re.search(r"\bpass(ed)?\b", st))
+        is_fail = bool(re.search(r"\bfail(ed)?\b", st))
+        if not is_pass and not is_fail:
+            continue
+
+        label = str(padded[label_idx] or "").strip() if 0 <= label_idx < len(padded) else ""
+        reason = str(padded[reason_idx] or "").strip() if 0 <= reason_idx < len(padded) else ""
+        if not reason:
+            for c in padded:
+                cst = str(c or "").strip()
+                if cst and cst != label and not re.search(r"\bpass(ed)?\b|\bfail(ed)?\b", cst, re.I):
+                    reason = cst
+                    break
+        if not reason:
+            reason = label
+
+        line = f"{label}: {reason}" if label and reason and label.lower() != reason.lower() else (reason or label)
+        line = re.sub(r"\s+", " ", line).strip(" -:;")
+        if not line:
+            continue
+        if is_pass:
+            pass_reasons.append(line)
+        if is_fail:
+            fail_reasons.append(line)
+
+    return pass_reasons[:3], fail_reasons[:3]
+
+
+def _derive_saved_relevance_from_research(text: str) -> tuple[str, str]:
+    s = (text or "").strip().lower()
+    if not s:
+        return "-", ""
+    p, f = _relevance_reasons_from_first_table(text or "")
+    if f:
+        return "irrelevant", "; ".join(f[:3])
+    if p:
+        return "relevant", "; ".join(p[:3])
+    if re.search(r"\b(do not|don't|not)\s+proceed\b", s):
+        return "irrelevant", "Do not proceed."
+    if re.search(r"\b(stop|no-go|do not pursue|don't pursue)\b", s):
+        return "irrelevant", "Outreach should stop."
+    if re.search(r"\b(not a fit|poor fit|bad fit)\b", s):
+        return "irrelevant", "Weak strategic fit."
+    if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", s):
+        return "relevant", "Strong strategic fit."
+    return "-", ""
+
+
 def _finalize_deep_research(
     session_id: int,
     comp: dict,
@@ -332,12 +461,15 @@ def _finalize_deep_research(
             "updated_at": datetime.utcnow().isoformat(),
         }
     _disp_html = research_display_to_editor_html(result) if result else ""
+    _rel, _rel_reason = _derive_saved_relevance_from_research(result)
     merge_fn(
         {
             "research_full": result,
             "research_full_updated_at": datetime.utcnow().isoformat(),
             "platform_presence_analytics": platform_analytics_snapshot,
             "research_display_html": _disp_html,
+            "relevance_auto": _rel,
+            "relevance_reason_auto": _rel_reason,
         }
     )
     return _disp_html, result
@@ -608,10 +740,13 @@ def intelligence_workspace(
     # If workspace is currently relying on session summary fallback, persist it to company/advisor
     # so refresh/tab switches remain stable even when session_id changes.
     if used_session_fallback and rf:
+        _rel, _rel_reason = _derive_saved_relevance_from_research(rf)
         patch = {
             "research_full": rf,
             "research_full_updated_at": datetime.utcnow().isoformat(),
             "research_display_html": rdh or research_display_to_editor_html(rf),
+            "relevance_auto": _rel,
+            "relevance_reason_auto": _rel_reason,
         }
         if rs:
             patch["research_sections"] = rs
@@ -781,11 +916,14 @@ def post_save_research(body: SaveResearchIn, user: dict = Depends(get_current_us
             else:
                 body_html = (chunk or "").strip()
             _sections.append({"title": title or "Section", "body_html": body_html})
+    _rel, _rel_reason = _derive_saved_relevance_from_research(_research_for_db)
     _patch = {
         "research_full": _research_for_db,
         "research_full_updated_at": datetime.utcnow().isoformat(),
         "research_display_html": _disp_html,
         "research_sections": _sections,
+        "relevance_auto": _rel,
+        "relevance_reason_auto": _rel_reason,
     }
     if body.advisor_company_id is not None:
         merged_ok = merge_advisor_company_extra_data(body.advisor_company_id, _patch)
@@ -825,6 +963,8 @@ def post_delete_research(body: DeleteResearchIn, user: dict = Depends(get_curren
                 "research_full_updated_at": datetime.utcnow().isoformat(),
                 "research_display_html": "",
                 "research_sections": [],
+                "relevance_auto": "-",
+                "relevance_reason_auto": "",
             },
         )
         )
@@ -839,6 +979,8 @@ def post_delete_research(body: DeleteResearchIn, user: dict = Depends(get_curren
                 "research_full_updated_at": datetime.utcnow().isoformat(),
                 "research_display_html": "",
                 "research_sections": [],
+                "relevance_auto": "-",
+                "relevance_reason_auto": "",
             },
         )
         )
@@ -905,11 +1047,14 @@ def post_research_append(body: ResearchAppendIn, user: dict = Depends(get_curren
         _disp_html = merged
     else:
         _disp_html = research_display_to_editor_html(merged)
+    _rel, _rel_reason = _derive_saved_relevance_from_research(merged)
     _merge(
         {
             "research_full": merged,
             "research_full_updated_at": datetime.utcnow().isoformat(),
             "research_display_html": _disp_html,
+            "relevance_auto": _rel,
+            "relevance_reason_auto": _rel_reason,
         }
     )
     _plain_session = html_to_plain_text(merged) if is_html_content(merged) else merged

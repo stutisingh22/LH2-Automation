@@ -25,7 +25,11 @@ export default function CalendarPage() {
         {items.map((it, i) => (
           <li key={i}>
             <strong>{it.at.slice(0, 10)}</strong>{' '}
+            <span className="tl-status-pill">{String(it.action.status || '')}</span>
             {String(it.action.description || '').slice(0, 120)}
+            {(it.action.outreach_sync_meta as { source?: string } | undefined)?.source === 'gmail_sync' ? (
+              <span className="outreach-sync-badge">Gmail</span>
+            ) : null}
           </li>
         ))}
       </ul>

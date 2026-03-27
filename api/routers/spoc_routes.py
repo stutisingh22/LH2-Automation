@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from db_ops import delete_spoc_contact, update_action
+from db_ops import delete_spoc_contact, update_action, update_spoc_contact
 from api.spoc_data import build_spoc_tracking_rows
 from api.deps import get_current_user
 
@@ -13,6 +13,10 @@ router = APIRouter(prefix="/spoc", tags=["spoc"])
 class RescheduleIn(BaseModel):
     contact_id: int
     new_date: str  # YYYY-MM-DD
+
+
+class SpocContactPatchIn(BaseModel):
+    email: str = ""
 
 
 @router.get("/rows")
@@ -32,6 +36,18 @@ def spoc_rows(
 def remove_spoc(spoc_contact_id: int, user: dict = Depends(get_current_user)):
     del user
     if delete_spoc_contact(spoc_contact_id):
+        return {"ok": True}
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@router.patch("/contacts/{spoc_contact_id}")
+def patch_spoc_contact(
+    spoc_contact_id: int,
+    body: SpocContactPatchIn,
+    user: dict = Depends(get_current_user),
+):
+    del user
+    if update_spoc_contact(spoc_contact_id, email=(body.email or "").strip()):
         return {"ok": True}
     raise HTTPException(status_code=404, detail="Not found")
 
