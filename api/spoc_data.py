@@ -159,7 +159,9 @@ def _relevance_reasons_from_first_table(text: str) -> tuple[list[str], list[str]
         if not reason:
             reason = label
 
-        line = f"{label}: {reason}" if label and reason and label.lower() != reason.lower() else (reason or label)
+        # Prefer the explanation text itself for human-readable tooltips.
+        # Fall back to the criterion label only when no explicit reason exists.
+        line = reason or label
         line = re.sub(r"\s+", " ", line).strip(" -:;")
         if not line:
             continue
@@ -200,7 +202,9 @@ def _derive_relevance_from_extra(extra) -> str:
         return "irrelevant"
     if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", combined):
         return "relevant"
-    return "-"
+    # If research exists but no explicit keyword/table verdict is detected,
+    # default to relevant so the CRM always shows a visible state.
+    return "relevant"
 
 
 def _derive_relevance_reason_from_extra(extra) -> str:
@@ -237,7 +241,7 @@ def _derive_relevance_reason_from_extra(extra) -> str:
         return "Weak strategic fit."
     if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", combined):
         return "Strong strategic fit."
-    return ""
+    return "Research completed; no explicit pass/fail marker found."
 
 
 def _merge_relevance(*values: str) -> str:
@@ -258,6 +262,19 @@ def _merge_relevance_reason(relevance: str, *values: str) -> str:
         if txt:
             return txt
     return "Strong strategic fit." if rel == "relevant" else "Weak strategic fit."
+
+
+def _is_meaningful_person_name(name: str, company_domain: str = "") -> bool:
+    n = str(name or "").strip()
+    if not n or n == "—":
+        return False
+    d = str(company_domain or "").strip().lower().replace("www.", "")
+    n_norm = n.lower().replace("www.", "")
+    if d and (n_norm == d or n_norm == d.split(".")[0]):
+        return False
+    if "@" in n_norm:
+        return False
+    return True
 
 
 def _has_outreach_activity(actions: list[dict] | None) -> bool:
@@ -770,6 +787,14 @@ def build_publisher_crm_rows(
                 n = (srow.get("name") or "").strip()
                 if n and n != "—":
                     company_spoc_names.append(n)
+            # Fallback for freshly extracted LinkedIn/company rows where nested SPOC rows
+            # may not exist yet: show meaningful contact names in the SPOC column.
+            if not company_spoc_names:
+                company_domain = (cd.get("domain") or cd.get("name") or "").strip()
+                for b in raw_contacts:
+                    n = (b.get("name") or "").strip()
+                    if _is_meaningful_person_name(n, company_domain) and n not in company_spoc_names:
+                        company_spoc_names.append(n)
 
         contacts_summary_full: list[dict] | None = None
         if not lite:

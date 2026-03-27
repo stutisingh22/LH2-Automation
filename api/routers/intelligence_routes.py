@@ -403,7 +403,9 @@ def _relevance_reasons_from_first_table(text: str) -> tuple[list[str], list[str]
         if not reason:
             reason = label
 
-        line = f"{label}: {reason}" if label and reason and label.lower() != reason.lower() else (reason or label)
+        # Prefer the explanation text itself for human-readable tooltips.
+        # Fall back to the criterion label only when no explicit reason exists.
+        line = reason or label
         line = re.sub(r"\s+", " ", line).strip(" -:;")
         if not line:
             continue
@@ -432,7 +434,8 @@ def _derive_saved_relevance_from_research(text: str) -> tuple[str, str]:
         return "irrelevant", "Weak strategic fit."
     if re.search(r"\b(proceed|go ahead|good fit|recommended to proceed)\b", s):
         return "relevant", "Strong strategic fit."
-    return "-", ""
+    # Keep relevance visible for researched companies even without explicit keyword hits.
+    return "relevant", "Research completed; no explicit pass/fail marker found."
 
 
 def _finalize_deep_research(

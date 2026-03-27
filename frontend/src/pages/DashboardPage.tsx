@@ -252,24 +252,16 @@ function normalizeReasonText(reason: unknown): string {
   return r
 }
 
-function shortReason(reason: string, max = 88): string {
-  if (!reason) return ''
-  const oneLine = reason.replace(/\s+/g, ' ').trim()
-  if (oneLine.length <= max) return oneLine
-  return `${oneLine.slice(0, max - 1).trimEnd()}…`
-}
-
 function reasonPointers(reason: unknown, relevance: RelevanceValue): string[] {
   const normalized = normalizeReasonText(reason)
   if (normalized) {
     const chunks = normalized
-      .split(/\n|;|\||\u2022|\.\s+/)
+      .split(/\n|;|\||\u2022/)
       .map((c) => c.trim())
       .filter(Boolean)
     const cleaned = chunks
       .map((c) => c.replace(/^[\-*]\s*/, '').trim())
       .filter(Boolean)
-      .map((c) => shortReason(c, 70))
     if (cleaned.length) return cleaned.slice(0, 3)
   }
   if (relevance === 'relevant') {
@@ -305,6 +297,13 @@ function relevanceTooltipText(relevance: unknown, reason: unknown): string {
     ? `Why:\n${pointers.map((p) => `• ${p}`).join('\n')}`
     : 'Why:\n• No specific rationale available yet.'
   return `Relevance: ${label}\n${whyBlock}\nClick to cycle: -, relevant, irrelevant.`
+}
+
+function relevanceTooltipLines(relevance: unknown, reason: unknown): string[] {
+  return relevanceTooltipText(relevance, reason)
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean)
 }
 
 export default function DashboardPage() {
@@ -1357,26 +1356,32 @@ export default function DashboardPage() {
                                             {b.due_today ? <div className="crm-due-today">Due</div> : null}
                                           </td>
                                           <td>
-                                            <button
-                                              type="button"
-                                              className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(b.relevance))}`}
-                                              disabled={savingRelevanceKey === `media:${b.advisor_company_id || 0}` || !b.advisor_company_id}
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                if (!b.advisor_company_id) return
-                                                const next = nextRelevance(normalizeRelevance(b.relevance))
-                                                void patchRelevance('media', b.advisor_company_id, next, g.key)
-                                              }}
-                                              title={
-                                                relevanceTooltipText(b.relevance, b.relevance_reason)
-                                              }
-                                            >
-                                              {savingRelevanceKey === `media:${b.advisor_company_id || 0}`
-                                                ? 'Saving…'
-                                                : normalizeRelevance(b.relevance) === '-'
-                                                  ? '-'
-                                                  : normalizeRelevance(b.relevance)}
-                                            </button>
+                                            <span className="crm-relevance-tooltip-wrap">
+                                              <button
+                                                type="button"
+                                                className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(b.relevance))}`}
+                                                disabled={savingRelevanceKey === `media:${b.advisor_company_id || 0}` || !b.advisor_company_id}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  if (!b.advisor_company_id) return
+                                                  const next = nextRelevance(normalizeRelevance(b.relevance))
+                                                  void patchRelevance('media', b.advisor_company_id, next, g.key)
+                                                }}
+                                              >
+                                                {savingRelevanceKey === `media:${b.advisor_company_id || 0}`
+                                                  ? 'Saving…'
+                                                  : normalizeRelevance(b.relevance) === '-'
+                                                    ? '-'
+                                                    : normalizeRelevance(b.relevance)}
+                                              </button>
+                                              <span className="crm-relevance-tooltip" role="tooltip">
+                                                {relevanceTooltipLines(b.relevance, b.relevance_reason).map((line, idx) => (
+                                                  <span key={`${line}-${idx}`} className="crm-relevance-tooltip-line">
+                                                    {line}
+                                                  </span>
+                                                ))}
+                                              </span>
+                                            </span>
                                           </td>
                                           <td>{fmtVisits(b.monthly_visits)}</td>
                                           <td>
@@ -1458,26 +1463,32 @@ export default function DashboardPage() {
                         {g.due_today ? <div className="crm-due-today">Due</div> : null}
                       </td>
                       <td>
-                        <button
-                          type="button"
-                          className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(g.relevance))}`}
-                          disabled={savingRelevanceKey === `independent:${g.company_id || 0}` || !g.company_id}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (!g.company_id) return
-                            const next = nextRelevance(normalizeRelevance(g.relevance))
-                            void patchRelevance('independent', g.company_id, next)
-                          }}
-                          title={
-                            relevanceTooltipText(g.relevance, g.relevance_reason)
-                          }
-                        >
-                          {savingRelevanceKey === `independent:${g.company_id || 0}`
-                            ? 'Saving…'
-                            : normalizeRelevance(g.relevance) === '-'
-                              ? '-'
-                              : normalizeRelevance(g.relevance)}
-                        </button>
+                        <span className="crm-relevance-tooltip-wrap">
+                          <button
+                            type="button"
+                            className={`crm-relevance-chip crm-relevance-chip--${relevanceClassSuffix(normalizeRelevance(g.relevance))}`}
+                            disabled={savingRelevanceKey === `independent:${g.company_id || 0}` || !g.company_id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!g.company_id) return
+                              const next = nextRelevance(normalizeRelevance(g.relevance))
+                              void patchRelevance('independent', g.company_id, next)
+                            }}
+                          >
+                            {savingRelevanceKey === `independent:${g.company_id || 0}`
+                              ? 'Saving…'
+                              : normalizeRelevance(g.relevance) === '-'
+                                ? '-'
+                                : normalizeRelevance(g.relevance)}
+                          </button>
+                          <span className="crm-relevance-tooltip" role="tooltip">
+                            {relevanceTooltipLines(g.relevance, g.relevance_reason).map((line, idx) => (
+                              <span key={`${line}-${idx}`} className="crm-relevance-tooltip-line">
+                                {line}
+                              </span>
+                            ))}
+                          </span>
+                        </span>
                       </td>
                       <td>{fmtVisits(g.monthly_visits)}</td>
                       <td>

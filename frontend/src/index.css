@@ -2524,6 +2524,52 @@ td.crm-research-col {
   color: var(--muted);
 }
 
+.crm-relevance-tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.crm-relevance-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%) translateY(4px);
+  min-width: 260px;
+  max-width: 360px;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, #000 8%);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  z-index: 70;
+}
+
+:root[data-theme='light'] .crm-relevance-tooltip {
+  background: color-mix(in srgb, var(--surface) 95%, #f3f4f6 5%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+}
+
+.crm-relevance-tooltip-line {
+  display: block;
+}
+
+.crm-relevance-tooltip-wrap:hover .crm-relevance-tooltip,
+.crm-relevance-tooltip-wrap:focus-within .crm-relevance-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
 .crm-due-today {
   color: var(--accent);
   font-size: 0.75rem;
@@ -2710,8 +2756,8 @@ td.crm-research-col {
   justify-content: space-between;
   align-items: center;
   gap: 0.6rem;
-  user-select: none;
   -webkit-user-select: none;
+  user-select: none;
 }
 
 .crm-brand-title {
