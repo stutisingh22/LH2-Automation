@@ -105,10 +105,10 @@ export default function GmailInboxPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<{ thread: ThreadRow; messages: MsgRow[] } | null>(null)
   const [connections, setConnections] = useState<{ id: number; email: string }[]>([])
-  const [onlyKnownContacts, setOnlyKnownContacts] = useState(true)
   const [err, setErr] = useState('')
   const [syncMsg, setSyncMsg] = useState('')
   const [syncBusy, setSyncBusy] = useState(false)
+  const onlyKnownContacts = true
 
   const isAdmin = (me?.role || '').trim() === 'admin'
   const effectiveUser = filterUserId ?? me?.id ?? null
@@ -254,16 +254,7 @@ export default function GmailInboxPage() {
           <button type="button" className="ghost" disabled={syncBusy} onClick={() => void runSync()}>
             {syncBusy ? 'Syncing…' : 'Sync now'}
           </button>
-          <label className="gmail-inbox-filter">
-            <span className="muted">Visibility</span>
-            <select
-              value={onlyKnownContacts ? 'known' : 'all'}
-              onChange={(e) => setOnlyKnownContacts(e.target.value === 'known')}
-            >
-              <option value="known">Known DB contacts only</option>
-              <option value="all">All mailbox emails</option>
-            </select>
-          </label>
+          <span className="subh muted">Sync scope: Known DB contacts only</span>
           {isAdmin ? (
             <label className="gmail-inbox-filter">
               <span className="muted">SPOC / user</span>
