@@ -13,8 +13,17 @@ import os
 import logging
 from datetime import datetime
 
-from config import GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_DRIVE_FOLDER_ID, MAIN_FOLDER_ID, CONTEXT_FOLDER_ID, MAX_DRIVE_TOKENS
+from config import (
+    GOOGLE_SERVICE_ACCOUNT_JSON,
+    GOOGLE_DRIVE_FOLDER_ID,
+    MAIN_FOLDER_ID,
+    CONTEXT_FOLDER_ID,
+    MAX_DRIVE_TOKENS,
+    MAX_CONTEXT_FOLDER_CHARS,
+    MAX_CONTEXT_FILE_CHARS,
+)
 from db_ops import get_cached_context, save_cached_context, delete_cached_contexts_with_prefix
+from services.drive_context_merge import merge_context_folder_documents
 
 log = logging.getLogger(__name__)
 
@@ -383,11 +392,19 @@ def _set_cached_company_context(cache_key: str, text: str):
 
 
 def refresh_all_drive_contexts():
-    """Force refresh of global knowledge and clear company Drive caches."""
+    """Force refresh of global LH2 knowledge, context folder, and clear company Drive caches."""
+    global _CONTEXT_CACHE, _CONTEXT_CACHE_AT
     cleared = delete_cached_contexts_with_prefix(_COMPANY_CONTEXT_CACHE_KEY_PREFIX)
     _company_context_cache.clear()
+    _CONTEXT_CACHE = {}
+    _CONTEXT_CACHE_AT = None
     text = get_lh2_knowledge_context(force_refresh=True)
-    return {"cleared_company_caches": cleared, "lh2_chars": len(text or "")}
+    ctx = get_context_folder_files(force_refresh=True)
+    return {
+        "cleared_company_caches": cleared,
+        "lh2_chars": len(text or ""),
+        "context_folder_chars": len(ctx or ""),
+    }
 
 
 def build_drive_context(company_name, company_domain=None):
@@ -615,27 +632,35 @@ def get_context_folder_files(force_refresh=False):
             log.info("No files found in Context folder")
             return ""
         
-        # Fetch text from each file
-        parts = []
-        for f in files:
+        # Fetch text from each file (sorted by name for stable, reviewable ordering)
+        named = []
+        for f in sorted(files, key=lambda x: (x.get("name") or "").lower()):
             mime = f.get("mimeType", "")
             if "document" not in mime and mime != "application/pdf":
-                continue  # Skip non-doc/PDF files
-            
+                continue
             text = fetch_doc_text(f["id"], mime)
             if not text or len(text) < 50:
                 continue
-            
-            parts.append(f"--- {f['name']} ---\n{text}")
-        
-        out = "\n\n".join(parts) if parts else ""
-        
-        # Cache the result
+            named.append((f.get("name") or "?", text))
+
+        out, n_blocks = merge_context_folder_documents(
+            named,
+            max_total_chars=MAX_CONTEXT_FOLDER_CHARS,
+            max_per_file_chars=MAX_CONTEXT_FILE_CHARS,
+        )
+
         _CONTEXT_CACHE["text"] = out
         _CONTEXT_CACHE_AT = now
         save_cached_context(_CONTEXT_CACHE_KEY, out)
-        
-        log.info("Context folder loaded: %d files, %d chars", len(parts), len(out))
+
+        log.info(
+            "Context folder loaded: %d source files, %d blocks in prompt, %d chars (caps: total=%s per_file=%s)",
+            len(named),
+            n_blocks,
+            len(out),
+            MAX_CONTEXT_FOLDER_CHARS,
+            MAX_CONTEXT_FILE_CHARS,
+        )
         return out
     
     except Exception as e:

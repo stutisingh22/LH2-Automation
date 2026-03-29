@@ -2235,6 +2235,76 @@ button.sel-pill-clear:hover {
   margin: 0.2rem 0 0;
 }
 
+.crm-add-publisher-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.crm-add-publisher-modal {
+  width: min(26rem, 100%);
+  max-height: min(90vh, 32rem);
+  overflow: auto;
+}
+.crm-add-publisher-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+}
+.crm-add-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+.crm-add-field input {
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.crm-add-publisher-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.crm-add-spoc-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.crm-add-spoc-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  margin-top: 0.5rem;
+  background: rgba(0, 0, 0, 0.04);
+}
+:root[data-theme='light'] .crm-add-spoc-block {
+  background: rgba(0, 0, 0, 0.03);
+}
+.crm-add-spoc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+.crm-add-spoc-head .ghost.sm {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+}
+
 .crm-controls {
   display: flex;
   flex-wrap: wrap;

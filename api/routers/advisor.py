@@ -4,8 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from config import normalize_domain
 from db_ops import (
     get_advisor_company,
+    get_advisor_company_by_domain_and_parent,
     get_advisor_parents_with_children,
     merge_advisor_company_extra_data,
     get_company,
@@ -13,15 +15,129 @@ from db_ops import (
     get_or_create_session,
     get_or_create_shadow_company_for_advisor,
     search_advisor_companies,
+    update_contact,
+    upsert_advisor_company,
+    upsert_contact,
 )
 from integrations.ai.ai_engine import compute_lead_score
-from api.deps import get_current_user
+from api.deps import get_current_user, user_has_perm
+from api.routers.companies import PublisherContactIn
 
 router = APIRouter(prefix="/advisor", tags=["advisor"])
+
+_MAX_BRAND_CONTACTS = 25
 
 
 class AdvisorExtraPatch(BaseModel):
     patch: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateAdvisorBrandIn(BaseModel):
+    domain: str = Field(..., min_length=1)
+    parent_name: str = Field(default="", description="Media house name; empty → (No parent)")
+    leadership_name: str | None = None
+    leadership_email: str | None = None
+    leadership_role: str | None = None
+    leadership_linkedin: str | None = None
+    contacts: list[PublisherContactIn] = Field(
+        default_factory=list,
+        description="SPOCs for shadow workspace: first maps to Leadership row, rest are additional contacts.",
+    )
+
+
+def _media_brand_contact_rows(body: CreateAdvisorBrandIn) -> list[PublisherContactIn]:
+    rows = list(body.contacts or [])
+    if not rows and (
+        (body.leadership_name or "").strip()
+        or (body.leadership_email or "").strip()
+        or (body.leadership_role or "").strip()
+        or (body.leadership_linkedin or "").strip()
+    ):
+        rows = [
+            PublisherContactIn(
+                name=(body.leadership_name or "").strip() or "Leadership",
+                email=(body.leadership_email or "").strip() or None,
+                role=(body.leadership_role or "").strip() or None,
+                linkedin=(body.leadership_linkedin or "").strip() or None,
+            )
+        ]
+    out: list[PublisherContactIn] = []
+    for c in rows[:_MAX_BRAND_CONTACTS]:
+        nm = (c.name or "").strip()
+        if not nm:
+            continue
+        out.append(c)
+    return out
+
+
+@router.post("/companies")
+def create_advisor_brand(
+    body: CreateAdvisorBrandIn,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Create a media child brand (advisor_companies row) + shadow company + Leadership contact.
+    Duplicate (domain, parent_name) → 409.
+    """
+    if not user_has_perm(user, "can_edit_company"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    raw = (body.domain or "").strip()
+    dom = normalize_domain(raw) or raw.strip().lower().lstrip(".")
+    if not dom or dom.startswith("__"):
+        raise HTTPException(status_code=400, detail="Invalid domain")
+    p = (body.parent_name or "").strip() or "(No parent)"
+    existing = get_advisor_company_by_domain_and_parent(dom, p)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"advisor_domain_exists": True, "advisor_company_id": existing.get("id")},
+        )
+    advisor_id = upsert_advisor_company(dom, p)
+    merge_advisor_company_extra_data(
+        advisor_id,
+        {"pipeline_status": "not_contacted"},
+    )
+    cid, ctid = get_or_create_shadow_company_for_advisor(advisor_id)
+    if not cid or not ctid:
+        raise HTTPException(status_code=500, detail="Could not create shadow workspace")
+    contact_rows = _media_brand_contact_rows(body)
+    contact_ids: list[int] = [int(ctid)]
+    for i, c in enumerate(contact_rows):
+        nm = (c.name or "").strip()
+        em = (c.email or "").strip() or None
+        role = (c.role or "").strip() or None
+        li = (c.linkedin or "").strip() or None
+        if i == 0:
+            patch = {k: v for k, v in {"name": nm, "email": em, "role": role, "linkedin": li}.items() if v is not None}
+            if patch:
+                update_contact(ctid, **patch)
+        else:
+            new_id = upsert_contact(
+                cid,
+                nm,
+                role=role,
+                email=em,
+                linkedin=li,
+            )
+            contact_ids.append(int(new_id))
+    score = 0
+    try:
+        comp = get_company(cid)
+        ct = get_contact(ctid)
+        if comp and ct:
+            score = compute_lead_score(comp, ct)
+    except Exception:
+        pass
+    session_id = get_or_create_session(cid, ctid, user["id"], score=score)
+    return {
+        "ok": True,
+        "advisor_company_id": advisor_id,
+        "company_id": cid,
+        "contact_id": ctid,
+        "contact_ids": contact_ids,
+        "session_id": session_id,
+        "parent_key": f"parent:{p}",
+    }
 
 
 @router.get("/media-houses")

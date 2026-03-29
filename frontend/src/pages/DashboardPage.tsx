@@ -209,6 +209,18 @@ function uniqueBy<T>(items: T[], keyFn: (t: T) => string) {
   return out
 }
 
+const MAX_ADD_PUBLISHER_SPOCS = 25
+
+type AddPublisherSpocRow = { key: string; name: string; email: string; role: string }
+
+function newSpocRow(): AddPublisherSpocRow {
+  const key =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `spoc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  return { key, name: '', email: '', role: '' }
+}
+
 function formatSpocSummary(spocs: { name: string }[]): string {
   // UI rule:
   // - 0 SPOCs => "-"
@@ -378,6 +390,15 @@ export default function DashboardPage() {
 
   const [crmSearchInput, setCrmSearchInput] = useState(initialDash.crmSearchInput)
   const [debouncedSearch, setDebouncedSearch] = useState(initialDash.debouncedSearch)
+  const [addPublisherOpen, setAddPublisherOpen] = useState(false)
+  const [addPublisherBusy, setAddPublisherBusy] = useState(false)
+  const [addPubIndDomain, setAddPubIndDomain] = useState('')
+  const [addPubIndName, setAddPubIndName] = useState('')
+  const [addPubIndSpocs, setAddPubIndSpocs] = useState<AddPublisherSpocRow[]>(() => [newSpocRow()])
+  const [addPubMediaDomain, setAddPubMediaDomain] = useState('')
+  const [addPubMediaParent, setAddPubMediaParent] = useState('')
+  const [addPubMediaSpocs, setAddPubMediaSpocs] = useState<AddPublisherSpocRow[]>(() => [newSpocRow()])
+  const [mediaParentSuggestions, setMediaParentSuggestions] = useState<string[]>([])
   const lastDetailFetchKey = useRef<string | null>(null)
   const companyGroupsRef = useRef(companyGroups)
   companyGroupsRef.current = companyGroups
@@ -487,6 +508,170 @@ export default function DashboardPage() {
       setErr(e instanceof Error ? e.message : 'Failed to load dashboard')
     } finally {
       setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!addPublisherOpen || crmSource !== 'media') return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await apiFetch<{ parent_name: string }[]>('/api/advisor/media-houses', { silent: true })
+        if (!cancelled) {
+          setMediaParentSuggestions(
+            uniqueBy(
+              (rows || []).map((r) => (r.parent_name || '').trim()).filter(Boolean),
+              (x) => x,
+            ),
+          )
+        }
+      } catch {
+        if (!cancelled) setMediaParentSuggestions([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [addPublisherOpen, crmSource])
+
+  function openAddPublisherModal() {
+    setErr('')
+    setAddPubIndDomain('')
+    setAddPubIndName('')
+    setAddPubIndSpocs([newSpocRow()])
+    setAddPubMediaDomain('')
+    setAddPubMediaParent('')
+    setAddPubMediaSpocs([newSpocRow()])
+    setAddPublisherOpen(true)
+  }
+
+  function updateIndSpoc(key: string, patch: Partial<Pick<AddPublisherSpocRow, 'name' | 'email' | 'role'>>) {
+    setAddPubIndSpocs((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  }
+
+  function updateMediaSpoc(key: string, patch: Partial<Pick<AddPublisherSpocRow, 'name' | 'email' | 'role'>>) {
+    setAddPubMediaSpocs((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  }
+
+  async function submitAddPublisher() {
+    setErr('')
+    if (crmSource === 'independent') {
+      const dom = addPubIndDomain.trim()
+      if (!dom) {
+        setErr('Domain is required.')
+        return
+      }
+      const badInd = addPubIndSpocs.some(
+        (r) => ((r.email || '').trim() || (r.role || '').trim()) && !(r.name || '').trim(),
+      )
+      if (badInd) {
+        setErr('Each SPOC must have a name (add email/role only after the name).')
+        return
+      }
+      const contacts = addPubIndSpocs
+        .map((r) => ({
+          name: (r.name || '').trim(),
+          email: (r.email || '').trim() || null,
+          role: (r.role || '').trim() || null,
+        }))
+        .filter((c) => c.name.length > 0)
+      setAddPublisherBusy(true)
+      try {
+        const res = await apiFetch<{ company_id: number }>('/api/companies', {
+          method: 'POST',
+          json: {
+            domain: dom,
+            name: addPubIndName.trim() || null,
+            contacts,
+          },
+        })
+        setAddPublisherOpen(false)
+        setActiveKpiKey('total')
+        lastListFetchSig.current = ''
+        setListPage(1)
+        await fetchCrm(1)
+        if (res.company_id) {
+          lastDetailFetchKey.current = null
+          setSelectedGroup(minimalIndependentGroup(res.company_id))
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Save failed'
+        try {
+          const detail = JSON.parse(msg) as { domain_exists?: boolean; company_id?: number }
+          if (detail.domain_exists && typeof detail.company_id === 'number') {
+            setErr(
+              `This domain already exists (company id ${detail.company_id}). Open it from the list or use another domain.`,
+            )
+          } else {
+            setErr(msg)
+          }
+        } catch {
+          setErr(msg)
+        }
+      } finally {
+        setAddPublisherBusy(false)
+      }
+      return
+    }
+
+    const dom = addPubMediaDomain.trim()
+    if (!dom) {
+      setErr('Brand domain is required.')
+      return
+    }
+    const badMedia = addPubMediaSpocs.some(
+      (r) => ((r.email || '').trim() || (r.role || '').trim()) && !(r.name || '').trim(),
+    )
+    if (badMedia) {
+      setErr('Each SPOC must have a name (add email/role only after the name).')
+      return
+    }
+    const mediaContacts = addPubMediaSpocs
+      .map((r) => ({
+        name: (r.name || '').trim(),
+        email: (r.email || '').trim() || null,
+        role: (r.role || '').trim() || null,
+      }))
+      .filter((c) => c.name.length > 0)
+    setAddPublisherBusy(true)
+    try {
+      const res = await apiFetch<{
+        advisor_company_id: number
+        parent_key: string
+      }>('/api/advisor/companies', {
+        method: 'POST',
+        json: {
+          domain: dom,
+          parent_name: addPubMediaParent.trim(),
+          contacts: mediaContacts,
+        },
+      })
+      setAddPublisherOpen(false)
+      setActiveKpiKey('total')
+      lastListFetchSig.current = ''
+      setListPage(1)
+      await fetchCrm(1)
+      if (res.advisor_company_id && res.parent_key) {
+        lastDetailFetchKey.current = null
+        setExpandedMediaHouseKey(res.parent_key)
+        setSelectedMediaBrand(minimalMediaBrandSelection(res.parent_key, res.advisor_company_id))
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Save failed'
+      try {
+        const detail = JSON.parse(msg) as { advisor_domain_exists?: boolean; advisor_company_id?: number }
+        if (detail.advisor_domain_exists && typeof detail.advisor_company_id === 'number') {
+          setErr(
+            `This brand is already listed for that media house (advisor id ${detail.advisor_company_id}).`,
+          )
+        } else {
+          setErr(msg)
+        }
+      } catch {
+        setErr(msg)
+      }
+    } finally {
+      setAddPublisherBusy(false)
     }
   }
 
@@ -978,7 +1163,12 @@ export default function DashboardPage() {
           <h1>LH2 Publisher CRM</h1>
         </div>
         <div className="crm-header-right">
-          <button type="button" className="secondary sm" disabled={busy} title="UI only in this build">
+          <button
+            type="button"
+            className="secondary sm"
+            disabled={busy}
+            onClick={() => openAddPublisherModal()}
+          >
             + Add Publisher
           </button>
         </div>
@@ -2001,6 +2191,208 @@ export default function DashboardPage() {
           </aside>
         )}
       </div>
+
+      {addPublisherOpen ? (
+        <div
+          className="crm-add-publisher-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="crm-add-publisher-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAddPublisherOpen(false)
+          }}
+        >
+          <div className="panel crm-add-publisher-modal" onClick={(e) => e.stopPropagation()}>
+            <h2 id="crm-add-publisher-title" style={{ marginTop: 0 }}>
+              Add publisher
+            </h2>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              {crmSource === 'independent'
+                ? 'Creates a company and optional SPOCs (saved as contacts). Use + Add SPOC for more people. New publisher appears under Total until planned outreach matches Syndication / General-Acq labels.'
+                : 'Creates a media brand, shadow workspace, and contacts. First SPOC maps to the Leadership row; additional SPOCs are extra contacts on the same brand. Gmail and action sync use all emails you save.'}
+            </p>
+            {crmSource === 'independent' ? (
+              <div className="crm-add-publisher-fields">
+                <label className="crm-add-field">
+                  <span>Domain</span>
+                  <input
+                    type="text"
+                    value={addPubIndDomain}
+                    onChange={(e) => setAddPubIndDomain(e.target.value)}
+                    placeholder="e.g. publisher.com"
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="crm-add-field">
+                  <span>Display name (optional)</span>
+                  <input
+                    type="text"
+                    value={addPubIndName}
+                    onChange={(e) => setAddPubIndName(e.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
+                <div className="crm-add-spoc-section-head">
+                  <p className="muted small" style={{ margin: '0.35rem 0 0' }}>
+                    SPOCs / contacts (optional)
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    disabled={addPubIndSpocs.length >= MAX_ADD_PUBLISHER_SPOCS}
+                    onClick={() => setAddPubIndSpocs((s) => [...s, newSpocRow()])}
+                  >
+                    + Add SPOC
+                  </button>
+                </div>
+                {addPubIndSpocs.map((row, idx) => (
+                  <div key={row.key} className="crm-add-spoc-block">
+                    <div className="crm-add-spoc-head">
+                      <span className="muted small">
+                        {idx === 0 ? 'Primary SPOC' : `SPOC ${idx + 1}`}
+                      </span>
+                      {addPubIndSpocs.length > 1 ? (
+                        <button
+                          type="button"
+                          className="ghost sm"
+                          onClick={() => setAddPubIndSpocs((s) => s.filter((x) => x.key !== row.key))}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                    <label className="crm-add-field">
+                      <span>Name</span>
+                      <input
+                        type="text"
+                        value={row.name}
+                        onChange={(e) => updateIndSpoc(row.key, { name: e.target.value })}
+                        autoComplete="name"
+                      />
+                    </label>
+                    <label className="crm-add-field">
+                      <span>Email</span>
+                      <input
+                        type="email"
+                        value={row.email}
+                        onChange={(e) => updateIndSpoc(row.key, { email: e.target.value })}
+                        autoComplete="email"
+                      />
+                    </label>
+                    <label className="crm-add-field">
+                      <span>Role (optional)</span>
+                      <input
+                        type="text"
+                        value={row.role}
+                        onChange={(e) => updateIndSpoc(row.key, { role: e.target.value })}
+                        autoComplete="off"
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="crm-add-publisher-fields">
+                <label className="crm-add-field">
+                  <span>Media house (parent)</span>
+                  <input
+                    type="text"
+                    value={addPubMediaParent}
+                    onChange={(e) => setAddPubMediaParent(e.target.value)}
+                    placeholder="Type or pick an existing parent"
+                    list="crm-media-parent-datalist"
+                    autoComplete="off"
+                  />
+                  <datalist id="crm-media-parent-datalist">
+                    {mediaParentSuggestions.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                </label>
+                <label className="crm-add-field">
+                  <span>Brand domain</span>
+                  <input
+                    type="text"
+                    value={addPubMediaDomain}
+                    onChange={(e) => setAddPubMediaDomain(e.target.value)}
+                    placeholder="e.g. brand.com"
+                    autoComplete="off"
+                  />
+                </label>
+                <div className="crm-add-spoc-section-head">
+                  <p className="muted small" style={{ margin: '0.35rem 0 0' }}>
+                    SPOCs (optional; first = Leadership row)
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary sm"
+                    disabled={addPubMediaSpocs.length >= MAX_ADD_PUBLISHER_SPOCS}
+                    onClick={() => setAddPubMediaSpocs((s) => [...s, newSpocRow()])}
+                  >
+                    + Add SPOC
+                  </button>
+                </div>
+                {addPubMediaSpocs.map((row, idx) => (
+                  <div key={row.key} className="crm-add-spoc-block">
+                    <div className="crm-add-spoc-head">
+                      <span className="muted small">{idx === 0 ? 'Leadership / primary' : `SPOC ${idx + 1}`}</span>
+                      {addPubMediaSpocs.length > 1 ? (
+                        <button
+                          type="button"
+                          className="ghost sm"
+                          onClick={() => setAddPubMediaSpocs((s) => s.filter((x) => x.key !== row.key))}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                    <label className="crm-add-field">
+                      <span>Name</span>
+                      <input
+                        type="text"
+                        value={row.name}
+                        onChange={(e) => updateMediaSpoc(row.key, { name: e.target.value })}
+                        autoComplete="name"
+                      />
+                    </label>
+                    <label className="crm-add-field">
+                      <span>Email</span>
+                      <input
+                        type="email"
+                        value={row.email}
+                        onChange={(e) => updateMediaSpoc(row.key, { email: e.target.value })}
+                        autoComplete="email"
+                      />
+                    </label>
+                    <label className="crm-add-field">
+                      <span>Role (optional)</span>
+                      <input
+                        type="text"
+                        value={row.role}
+                        onChange={(e) => updateMediaSpoc(row.key, { role: e.target.value })}
+                        autoComplete="off"
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="crm-add-publisher-actions">
+              <button type="button" className="ghost" disabled={addPublisherBusy} onClick={() => setAddPublisherOpen(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={addPublisherBusy || busy}
+                onClick={() => void submitAddPublisher()}
+              >
+                {addPublisherBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

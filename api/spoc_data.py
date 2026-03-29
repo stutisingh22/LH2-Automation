@@ -547,6 +547,7 @@ def build_publisher_crm_rows(
 
         actions_by_session = get_session_actions_for_sessions(picked_session_ids)
         spoc_by_company = get_spoc_contacts_for_company_ids(shadow_company_ids)
+        all_contacts_by_shadow = get_contacts_for_company_ids(shadow_company_ids)
 
         domains_for_monthly: set[str] = set()
         for _, ch in worklist:
@@ -646,6 +647,17 @@ def build_publisher_crm_rows(
                     n = (srow.get("name") or "").strip()
                     if n and n != "—":
                         brand_spoc_names.append(n)
+                # Extra rows on shadow company (e.g. Add Publisher SPOCs) are plain contacts, not spoc_contacts.
+                child_domain = (ch.get("domain") or "").strip()
+                for bc in all_contacts_by_shadow.get(shadow_company_id, []) or []:
+                    n = (bc.get("name") or "").strip()
+                    if not n or n == "—":
+                        continue
+                    has_email = bool((bc.get("email") or "").strip())
+                    if n not in brand_spoc_names and (
+                        _is_meaningful_person_name(n, child_domain) or has_email
+                    ):
+                        brand_spoc_names.append(n)
                 contacts_for_row = []
                 if ctd:
                     contacts_for_row = [
@@ -682,6 +694,30 @@ def build_publisher_crm_rows(
                             "linkedin_url": (srow.get("linkedin_url") or "").strip(),
                         }
                     )
+                _seen_ct = {
+                    ((c.get("name") or "").strip().lower(), (c.get("email") or "").strip().lower())
+                    for c in contacts_summary
+                }
+                child_domain_full = (ch.get("domain") or "").strip()
+                for bc in all_contacts_by_shadow.get(shadow_company_id, []) or []:
+                    bid = bc.get("id")
+                    if ctd and bid == ctd.get("id"):
+                        continue
+                    nm = (bc.get("name") or "").strip() or "—"
+                    em = ((bc.get("email") or "").strip()).lower()
+                    key = (nm.lower(), em)
+                    if key in _seen_ct:
+                        continue
+                    contacts_summary.append(
+                        {
+                            "kind": "contact",
+                            "name": nm,
+                            "role": (bc.get("role") or "").strip() or "—",
+                            "email": (bc.get("email") or "").strip(),
+                            "linkedin_url": (bc.get("linkedin") or "").strip(),
+                        }
+                    )
+                    _seen_ct.add(key)
                 planned_use = planned_preview
                 contacts_use = contacts_summary
                 extra_media = {"platform_presence": platform_presence}
@@ -787,14 +823,18 @@ def build_publisher_crm_rows(
                 n = (srow.get("name") or "").strip()
                 if n and n != "—":
                     company_spoc_names.append(n)
-            # Fallback for freshly extracted LinkedIn/company rows where nested SPOC rows
-            # may not exist yet: show meaningful contact names in the SPOC column.
-            if not company_spoc_names:
-                company_domain = (cd.get("domain") or cd.get("name") or "").strip()
-                for b in raw_contacts:
-                    n = (b.get("name") or "").strip()
-                    if _is_meaningful_person_name(n, company_domain) and n not in company_spoc_names:
-                        company_spoc_names.append(n)
+            # Always merge contacts table names (Add Publisher, etc.). SpocContact-only rows
+            # previously blocked this fallback and hid real contact names in compact CRM.
+            company_domain = (cd.get("domain") or cd.get("name") or "").strip()
+            for b in raw_contacts:
+                n = (b.get("name") or "").strip()
+                if not n or n == "—":
+                    continue
+                has_email = bool((b.get("email") or "").strip())
+                if n not in company_spoc_names and (
+                    _is_meaningful_person_name(n, company_domain) or has_email
+                ):
+                    company_spoc_names.append(n)
 
         contacts_summary_full: list[dict] | None = None
         if not lite:

@@ -74,6 +74,13 @@ AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "4000"))
 SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "20"))
 MAX_CONTEXT_MESSAGES = 20
 MAX_DRIVE_TOKENS = 6000
+# Context folder (Drive training docs) — bounded prompt contribution (env-tunable)
+MAX_CONTEXT_FOLDER_CHARS = int(os.getenv("MAX_CONTEXT_FOLDER_CHARS", "80000"))
+MAX_CONTEXT_FILE_CHARS = int(os.getenv("MAX_CONTEXT_FILE_CHARS", "20000"))
+# Prior sent / drafted email snippets in strategist prompt (session actions)
+MAX_PRIOR_SENT_EXCERPTS = int(os.getenv("MAX_PRIOR_SENT_EXCERPTS", "4"))
+MAX_PRIOR_SENT_CHARS_EACH = int(os.getenv("MAX_PRIOR_SENT_CHARS_EACH", "1200"))
+MAX_PRIOR_SENT_CHARS_TOTAL = int(os.getenv("MAX_PRIOR_SENT_CHARS_TOTAL", "4000"))
 
 # ── Contact Pipeline ─────────────────────────────────────────
 # "Awaiting Reply" and "Replied Negative" folded into "Outreach Sent" until action is taken

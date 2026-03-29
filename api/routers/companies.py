@@ -3,8 +3,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from config import normalize_domain
 from db_ops import (
     get_company,
+    get_company_by_domain,
     get_contact,
     get_contacts,
     get_or_create_session,
@@ -12,9 +14,11 @@ from db_ops import (
     merge_company_extra_data,
     search_companies,
     search_advisor_companies,
+    upsert_company,
+    upsert_contact,
 )
 from integrations.ai.ai_engine import compute_lead_score
-from api.deps import get_current_user
+from api.deps import get_current_user, user_has_perm
 from api.schemas import SessionEnsureIn
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -22,6 +26,79 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 
 class CompanyExtraPatch(BaseModel):
     patch: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublisherContactIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    email: str | None = None
+    role: str | None = None
+    linkedin: str | None = None
+
+
+class CreatePublisherCompanyIn(BaseModel):
+    domain: str = Field(..., min_length=1)
+    name: str | None = None
+    contacts: list[PublisherContactIn] = Field(default_factory=list)
+
+
+@router.post("")
+def create_publisher_company(
+    body: CreatePublisherCompanyIn,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Create an independent publisher (Company + optional Contacts) for Publisher CRM.
+    Rejects duplicates by normalized domain (409 with existing company_id).
+    """
+    if not user_has_perm(user, "can_edit_company"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    raw = (body.domain or "").strip()
+    dom = normalize_domain(raw) or raw.strip().lower().lstrip(".")
+    if not dom:
+        raise HTTPException(status_code=400, detail="Invalid domain")
+    if dom.startswith("__advisor_"):
+        raise HTTPException(status_code=400, detail="Reserved domain pattern")
+    existing = get_company_by_domain(dom)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"domain_exists": True, "company_id": existing.get("id")},
+        )
+    display_name = (body.name or "").strip() or dom
+    company_id = upsert_company(dom, name=display_name)
+    contact_ids: list[int] = []
+    first_contact_id: int | None = None
+    for c in body.contacts:
+        nm = (c.name or "").strip()
+        if not nm:
+            continue
+        cid = upsert_contact(
+            company_id,
+            nm,
+            role=(c.role or "").strip() or None,
+            email=(c.email or "").strip() or None,
+            linkedin=(c.linkedin or "").strip() or None,
+        )
+        contact_ids.append(cid)
+        if first_contact_id is None:
+            first_contact_id = cid
+    session_id: int | None = None
+    if first_contact_id is not None:
+        score = 0
+        try:
+            comp = get_company(company_id)
+            ct = get_contact(first_contact_id)
+            if comp and ct:
+                score = compute_lead_score(comp, ct)
+        except Exception:
+            pass
+        session_id = get_or_create_session(company_id, first_contact_id, user["id"], score=score)
+    return {
+        "ok": True,
+        "company_id": company_id,
+        "contact_ids": contact_ids,
+        "session_id": session_id,
+    }
 
 
 @router.get("")

@@ -24,6 +24,7 @@ from .anthropic_limiter import create_with_retry, stream_slot
 from config import (
     ANTHROPIC_API_KEY, AI_MODEL, AI_MAX_TOKENS, SUMMARY_INTERVAL,
     MAX_CONTEXT_MESSAGES, TIMEZONE_COUNTRIES, US_TZ, normalize_domain,
+    MAX_PRIOR_SENT_EXCERPTS, MAX_PRIOR_SENT_CHARS_EACH, MAX_PRIOR_SENT_CHARS_TOTAL,
 )
 from db_ops import (
     get_message_count, get_session_summary, save_session_summary,
@@ -561,6 +562,72 @@ def _extract_painpoint_signals(research_context, platform_block, max_items=8):
     return "\n".join(out) if out else "(No explicit painpoint wording found. Infer broad + specific constraints from research facts.)"
 
 
+
+def _snippet_from_content_sent_for_prompt(raw):
+    """First body only when content_sent stores combined revision blocks."""
+    s = (raw or "").strip()
+    if "\n\n---\n\n" in s:
+        s = s.split("\n\n---\n\n", 1)[0].strip()
+    return s
+
+
+def _action_is_prior_email_snippet_candidate(action):
+    """Skip pure LinkedIn steps; allow email/gmail/blank channel (legacy rows)."""
+    ch = (action.get("channel") or "").strip().lower()
+    if ch == "linkedin":
+        return False
+    if ch and ch not in ("email", "gmail", "mail", ""):
+        if "email" not in ch and "gmail" not in ch:
+            return False
+    return True
+
+
+def _build_prior_sent_excerpts_block_from_actions(
+    actions,
+    *,
+    max_items=None,
+    max_each=None,
+    max_total=None,
+):
+    """Bounded excerpts from session actions for voice continuity (not factual grounding)."""
+    max_items = max_items if max_items is not None else MAX_PRIOR_SENT_EXCERPTS
+    max_each = max_each if max_each is not None else MAX_PRIOR_SENT_CHARS_EACH
+    max_total = max_total if max_total is not None else MAX_PRIOR_SENT_CHARS_TOTAL
+    lines = []
+    used = 0
+    n = 0
+    for a in actions or []:
+        if n >= max_items or used >= max_total:
+            break
+        if not _action_is_prior_email_snippet_candidate(a):
+            continue
+        body = _snippet_from_content_sent_for_prompt(a.get("content_sent") or "")
+        if len(body) < 80:
+            continue
+        snip = body[:max_each]
+        if len(body) > max_each:
+            snip = snip.rstrip() + "..."
+        label = (a.get("action_type") or "step").strip()
+        desc = (a.get("description") or "").strip()
+        head = f"[{label}] {desc[:120]}".strip()
+        chunk = f"{head}\n{snip}"
+        sep = 2 if lines else 0
+        if used + sep + len(chunk) > max_total:
+            break
+        lines.append(chunk)
+        used += sep + len(chunk)
+        n += 1
+    if not lines:
+        return ""
+    body_txt = "\n---\n".join(lines)
+    return (
+        "\n== PRIOR SENT / DRAFT EMAIL SNIPPETS (this session — match tone and pacing only; "
+        "do not treat as factual research) ==\n"
+        + body_txt
+        + "\n"
+    )
+
+
 # ── Build System Prompt (shared between strategist and auto-brief) ──
 
 def _build_system_prompt(comp, ct, uid, sid, research_notes=None, sender_email=None, product_key=None, recipient_research=None, query=None, strategist_rules=None):
@@ -623,6 +690,8 @@ Signature to use:
             for a in actions[:15]
         ]) or "(None.)"
     )
+
+    prior_sent_block = _build_prior_sent_excerpts_block_from_actions(actions)
 
     local_time, tz_str = get_local_time(ct.get("country", ""), ct.get("state", ""))
 
@@ -777,7 +846,7 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
 
 == ACTION HISTORY ==
 {action_history}
-
+{prior_sent_block}
 == GLOBAL PATTERNS ==
 {global_block}
 
@@ -810,6 +879,7 @@ Local Time: {local_time} ({tz_str or '?'}) | Outreach Status: {ct.get('status','
    - Syndication: Only mention or emphasize syndication for platforms explicitly marked PRESENT in PLATFORM PRESENCE above. If a platform is absent or unknown, do NOT mention it—do not assert the target has NewsBreak, MSN, or Yahoo syndication unless that platform is marked present. When multiple are present, the list there is ordered with LH2's strongest first—lead with the first in that list.
    - You must incorporate both section-level research findings and platform signals. Do not ignore any major section in RESEARCH COVERAGE.
    - Apply USER PREFERENCE MEMORY only when relevant to the current ask. Do not inject unrelated old preferences.
+   - PRIOR SENT / DRAFT EMAIL SNIPPETS (if present): use only for voice, length, and operator-to-operator rhythm. Do not import claims or stats from them; facts still come from RESEARCH and DRIVE RESEARCH.
 
    REVENUE MIX → DISTRIBUTION FOCUS (strictly from RESEARCH — never hallucinate):
    - The ratio of organic/SEO revenue to syndication revenue MUST be taken ONLY from the deep research (e.g. "1C. Business Model Breakdown", revenue stream weights, traffic or revenue breakdown). If the research does not state or clearly imply this ratio, do NOT invent it. Do not guess or infer from general knowledge.

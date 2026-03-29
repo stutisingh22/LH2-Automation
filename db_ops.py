@@ -2345,6 +2345,17 @@ def get_advisor_company_by_domain(domain):
     return None
 
 
+def get_advisor_company_by_domain_and_parent(domain: str, parent_name: str) -> dict | None:
+    """Exact match on stripped domain and parent_name (use (No parent) when parent is empty)."""
+    d = (domain or "").strip()
+    p = (parent_name or "").strip() or "(No parent)"
+    if not d:
+        return None
+    with db() as s:
+        row = s.query(AdvisorCompany).filter_by(domain=d, parent_name=p).first()
+        return _advisor_comp_dict(row) if row else None
+
+
 def get_all_advisor_companies():
     """Return all advisor companies as list of dicts."""
     with db() as s:
