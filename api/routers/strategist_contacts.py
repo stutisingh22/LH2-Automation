@@ -131,10 +131,11 @@ def _board_rows(company_id: int, advisor_company_id: Optional[int]) -> tuple[lis
     comp_like, _ = _load_intel_company(company_id, advisor_company_id)
     saved = _saved_lookup_list(company_id, advisor_company_id)
     filtered = [r for r in saved if _linkedin_result_matches_company(r.get("company"), comp_like)]
+    saved_rows: list[dict[str, Any]] = []
+    from_extraction = bool(filtered)
     if filtered:
-        out = []
         for r in filtered:
-            out.append(
+            saved_rows.append(
                 {
                     "id": r.get("id"),
                     "name": (r.get("name") or "").strip() or "—",
@@ -146,11 +147,10 @@ def _board_rows(company_id: int, advisor_company_id: Optional[int]) -> tuple[lis
                     "status": (r.get("enrichment_status") or "").strip() or "—",
                 }
             )
-        return out, True
 
     c = get_company(company_id)
     if not c:
-        return [], False
+        return saved_rows, from_extraction
     company_name = (c.get("domain") or c.get("name") or "—").strip()
     contacts = get_contacts(company_id) or []
     spocs = get_spoc_contacts_by_company(company_id) or []
@@ -182,7 +182,23 @@ def _board_rows(company_id: int, advisor_company_id: Optional[int]) -> tuple[lis
                 else "—",
             }
         )
-    return rows, False
+
+    # When extraction rows exist, we still want normal contacts to appear in the
+    # Strategist "contacts-board" table (especially after adding SPOCs from the dashboard).
+    # Merge + de-dupe by (name/email/linkedin).
+    def _norm(s: Any) -> str:
+        return str(s or "").strip().lower()
+
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for r in saved_rows + rows:
+        key = f"{_norm(r.get('name'))}|{_norm(r.get('email'))}|{_norm(r.get('linkedin_url'))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(r)
+
+    return merged, from_extraction
 
 
 @router.get("/contacts-board")

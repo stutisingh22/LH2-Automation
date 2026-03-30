@@ -16,6 +16,7 @@ from db_ops import (
     get_or_create_shadow_company_for_advisor,
     search_advisor_companies,
     update_contact,
+    upsert_spoc_contact,
     upsert_advisor_company,
     upsert_contact,
 )
@@ -43,6 +44,12 @@ class CreateAdvisorBrandIn(BaseModel):
         default_factory=list,
         description="SPOCs for shadow workspace: first maps to Leadership row, rest are additional contacts.",
     )
+
+
+class AddAdvisorBrandContactsIn(BaseModel):
+    """Add extra SPOCs/contacts to an existing media shadow workspace."""
+
+    contacts: list[PublisherContactIn] = Field(default_factory=list)
 
 
 def _media_brand_contact_rows(body: CreateAdvisorBrandIn) -> list[PublisherContactIn]:
@@ -153,6 +160,70 @@ def advisor_search(
 ):
     del user
     return search_advisor_companies(q)
+
+
+@router.post("/companies/{advisor_company_id}/contacts/add")
+def add_advisor_brand_contacts(
+    advisor_company_id: int,
+    body: AddAdvisorBrandContactsIn,
+    user: dict = Depends(get_current_user),
+):
+    if not user_has_perm(user, "can_edit_company"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if not get_advisor_company(advisor_company_id):
+        raise HTTPException(status_code=404, detail="Advisor company not found")
+
+    cid, _ctid = get_or_create_shadow_company_for_advisor(advisor_company_id)
+    if not cid:
+        raise HTTPException(status_code=404, detail="Shadow workspace not found")
+
+    comp = get_company(cid) or {}
+    added_ids: list[int] = []
+    for c in body.contacts or []:
+        nm = (c.name or "").strip()
+        if not nm:
+            continue
+        raw_email = (c.email or "").strip()
+        raw_role = (c.role or "").strip()
+        # Defensive fix: if UI accidentally sends email into "role" (contains '@'),
+        # treat it as email.
+        if (not raw_email) and raw_role and "@" in raw_role:
+            raw_email = raw_role
+            raw_role = ""
+        email = raw_email or None
+        role = raw_role or None
+        linkedin = (c.linkedin or "").strip() or None
+
+        cid_row = upsert_contact(cid, nm, role=role, email=email, linkedin=linkedin)
+        if cid_row is None:
+            continue
+        added_ids.append(int(cid_row))
+
+        score = 0
+        try:
+            ct = get_contact(int(cid_row))
+            if comp and ct:
+                score = compute_lead_score(comp, ct)
+        except Exception:
+            pass
+        get_or_create_session(cid, int(cid_row), user["id"], score=score)
+
+        # Ensure the new Contact is also represented as a SPOC in Strategist.
+        # Strategist "SPOC tracking" is driven by `spoc_contacts` rows keyed by spoc_contact_id.
+        try:
+            upsert_spoc_contact(
+                company_id=cid,
+                spoc_contact_id=int(cid_row),
+                name=nm,
+                role=role,
+                email=email,
+                linkedin_url=linkedin,
+            )
+        except Exception:
+            pass
+
+    return {"ok": True, "contact_ids": added_ids}
 
 
 @router.get("/companies/{advisor_company_id}")

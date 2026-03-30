@@ -10,6 +10,7 @@ from db_ops import (
     get_contact,
     get_contacts,
     get_or_create_session,
+    upsert_spoc_contact,
     get_spoc_contacts_by_company,
     merge_company_extra_data,
     search_companies,
@@ -38,6 +39,12 @@ class PublisherContactIn(BaseModel):
 class CreatePublisherCompanyIn(BaseModel):
     domain: str = Field(..., min_length=1)
     name: str | None = None
+    contacts: list[PublisherContactIn] = Field(default_factory=list)
+
+
+class AddPublisherContactsIn(BaseModel):
+    """Add extra SPOCs/contacts for an existing independent publisher company."""
+
     contacts: list[PublisherContactIn] = Field(default_factory=list)
 
 
@@ -128,6 +135,69 @@ def company_contacts(company_id: int, user: dict = Depends(get_current_user)):
     if not get_company(company_id):
         raise HTTPException(status_code=404, detail="Company not found")
     return get_contacts(company_id)
+
+
+@router.post("/{company_id}/contacts/add")
+def add_publisher_contacts(
+    company_id: int,
+    body: AddPublisherContactsIn,
+    user: dict = Depends(get_current_user),
+):
+    if not user_has_perm(user, "can_edit_company"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    comp = get_company(company_id)
+    if not comp:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    added_ids: list[int] = []
+    contacts = body.contacts or []
+    for c in contacts:
+        nm = (c.name or "").strip()
+        if not nm:
+            continue
+        raw_email = (c.email or "").strip()
+        raw_role = (c.role or "").strip()
+        # Defensive fix:
+        # If the UI accidentally sends the email into "role" (role contains '@'),
+        # treat it as email instead.
+        if (not raw_email) and raw_role and "@" in raw_role:
+            raw_email = raw_role
+            raw_role = ""
+        email = raw_email or None
+        role = raw_role or None
+        linkedin = (c.linkedin or "").strip() or None
+
+        cid = upsert_contact(company_id, nm, email=email, role=role, linkedin=linkedin)
+        if cid is None:
+            continue
+        added_ids.append(int(cid))
+
+        # Ensure a session exists so planned actions for that contact can surface in the dashboard.
+        score = 0
+        try:
+            ct = get_contact(int(cid))
+            if ct:
+                score = compute_lead_score(comp, ct)
+        except Exception:
+            pass
+        get_or_create_session(company_id, int(cid), user["id"], score=score)
+
+        # Ensure the new Contact is also represented as a SPOC in Strategist.
+        # Strategist "SPOC tracking" is driven by `spoc_contacts` rows keyed by spoc_contact_id.
+        try:
+            upsert_spoc_contact(
+                company_id=company_id,
+                spoc_contact_id=int(cid),
+                name=nm,
+                role=role,
+                email=email,
+                linkedin_url=linkedin,
+            )
+        except Exception:
+            # Non-fatal: contact/session still created even if spoc row insert fails.
+            pass
+
+    return {"ok": True, "contact_ids": added_ids}
 
 
 @router.get("/{company_id}/workspace")

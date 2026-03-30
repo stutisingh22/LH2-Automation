@@ -1415,6 +1415,115 @@ def filter_publisher_crm_groups_by_kpi(
     return groups
 
 
+def _parse_next_step_q_to_display(next_step_q: str | None) -> str | None:
+    v = (next_step_q or "").strip()
+    if not v or v == "—":
+        return None
+    # Accept date input from the UI (`YYYY-MM-DD`) and convert it to the dashboard display format.
+    if len(v) == 10 and v[4] == "-" and v[7] == "-":
+        try:
+            dt = datetime.strptime(v, "%Y-%m-%d")
+            return dt.strftime("%b %d, %Y")
+        except Exception:
+            return None
+    return v
+
+
+def filter_publisher_crm_groups_by_column_filters(
+    groups: list[dict],
+    crm_source: str,
+    *,
+    title_q: str | None = None,
+    spoc_q: str | None = None,
+    status_filter: str | None = None,
+    next_step_q: str | None = None,
+    relevance_filter: str | None = None,
+    traffic_min: int | None = None,
+    traffic_max: int | None = None,
+    syndication_filter: str | None = None,
+    brands_min: int | None = None,
+    contacted_min: int | None = None,
+    ceo_q: str | None = None,
+) -> list[dict]:
+    # Normalize strings once.
+    title_need = (title_q or "").strip().lower()
+    spoc_need = (spoc_q or "").strip().lower()
+    status_need = (status_filter or "").strip()
+    next_step_need = _parse_next_step_q_to_display(next_step_q)
+    rel_need = (relevance_filter or "").strip().lower()
+    synd_need = (syndication_filter or "").strip().lower()
+    ceo_need = (ceo_q or "").strip().lower()
+
+    if crm_source not in ("independent", "media"):
+        crm_source = "independent"
+
+    not_contacted = _crm_kpi_buckets().get("not_contacted")
+
+    out: list[dict] = []
+    for g in groups:
+        if title_need:
+            if title_need not in str(g.get("display_title") or "").lower():
+                continue
+
+        # Relevance is shared.
+        if rel_need:
+            if rel_need != str(g.get("relevance") or "").strip().lower():
+                continue
+
+        # Next step date is shared.
+        if next_step_need:
+            if next_step_need != str(g.get("next_step_date") or ""):
+                continue
+
+        # Traffic is shared (monthly_visits already computed for both sources).
+        if traffic_min is not None or traffic_max is not None:
+            mv = g.get("monthly_visits")
+            if mv is None:
+                continue
+            mv_n = float(mv)
+            if traffic_min is not None and mv_n < float(traffic_min):
+                continue
+            if traffic_max is not None and mv_n > float(traffic_max):
+                continue
+
+        # Syndication is shared (tags are saved as msn|yahoo|newsbreak|smartnews).
+        if synd_need:
+            syns = [str(s or "").strip().lower() for s in (g.get("syndication") or [])]
+            if synd_need not in syns:
+                continue
+
+        if crm_source == "independent":
+            if spoc_need:
+                spoc_name = str(g.get("spoc_name") or "").lower()
+                spoc_names = [str(s or "").lower() for s in (g.get("spoc_names") or [])]
+                if spoc_need not in spoc_name and not any(spoc_need in n for n in spoc_names):
+                    continue
+
+            if status_need:
+                if str(g.get("status") or "") != status_need:
+                    continue
+
+        else:  # media
+            brands = g.get("brands") or []
+            if brands_min is not None:
+                if len(brands) < int(brands_min):
+                    continue
+
+            if contacted_min is not None:
+                cnt_contacted = sum(1 for b in brands if str(b.get("status") or "") != str(not_contacted))
+                if cnt_contacted < int(contacted_min):
+                    continue
+
+            if ceo_need:
+                ceo = str(g.get("ceo_display_name") or "").lower()
+                if ceo_need not in ceo:
+                    continue
+
+        out.append(g)
+
+    return out
+
+
 def paginate_publisher_crm_list(
     source: str,
     offer_tab: str | None,
@@ -1425,13 +1534,39 @@ def paginate_publisher_crm_list(
     kpi: str,
     due_dates: list[str] | None,
     compact: bool = False,
+    title_q: str | None = None,
+    spoc_q: str | None = None,
+    status_filter: str | None = None,
+    next_step_q: str | None = None,
+    relevance_filter: str | None = None,
+    traffic_min: int | None = None,
+    traffic_max: int | None = None,
+    syndication_filter: str | None = None,
+    brands_min: int | None = None,
+    contacted_min: int | None = None,
+    ceo_q: str | None = None,
 ) -> tuple[dict, list[dict], int]:
     rows = build_publisher_crm_rows(source, offer_tab, lite=True)
     all_groups = rows_to_company_groups(rows, source)
-    kpis = compute_publisher_crm_kpis(all_groups, due_dates)
 
     searched = filter_publisher_crm_groups_by_search(all_groups, search, source)
-    filtered = filter_publisher_crm_groups_by_kpi(searched, kpi, due_dates)
+    column_filtered = filter_publisher_crm_groups_by_column_filters(
+        searched,
+        source,
+        title_q=title_q,
+        spoc_q=spoc_q,
+        status_filter=status_filter,
+        next_step_q=next_step_q,
+        relevance_filter=relevance_filter,
+        traffic_min=traffic_min,
+        traffic_max=traffic_max,
+        syndication_filter=syndication_filter,
+        brands_min=brands_min,
+        contacted_min=contacted_min,
+        ceo_q=ceo_q,
+    )
+    kpis = compute_publisher_crm_kpis(column_filtered, due_dates)
+    filtered = filter_publisher_crm_groups_by_kpi(column_filtered, kpi, due_dates)
     total_filtered = len(filtered)
     p = max(1, page)
     ps = max(1, min(3000, page_size))

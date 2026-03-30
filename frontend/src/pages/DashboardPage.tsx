@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { apiFetch } from '../api/client'
 import {
   mapApiPublisherGroup as mapApiGroup,
@@ -103,6 +103,81 @@ function getTodayUtcDisplayStatic() {
   return formatUtcDisplayStatic(todayUtc)
 }
 
+/** Calendar date (YYYY-MM-DD) → ISO instant (noon UTC) for stable planned-day storage */
+function ymdToScheduledIso(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map((x) => parseInt(x, 10))
+  if (!y || !m || !d) return ''
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).toISOString()
+}
+
+function scheduledIsoToYmdUTC(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toISOString().slice(0, 10)
+}
+
+function IconFunnel({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M3 4H21L14 13V20L10 22V13L3 4Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconCalendar({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        d="M8 2V5M16 2V5M3 10H21M5 6H19C20.1046 6 21 6.89543 21 8V19C21 20.1046 20.1046 21 19 21H5C3.89543 21 3 20.1046 3 19V8C3 6.89543 3.89543 6 5 6Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function ColumnFilterDetails({
+  ariaLabel,
+  active,
+  icon,
+  children,
+}: {
+  ariaLabel: string
+  active: boolean
+  icon: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <details className="crm-col-filter-details">
+      <summary className="crm-col-filter-summary" aria-label={ariaLabel} title={ariaLabel}>
+        <span className="crm-col-filter-icon" style={{ color: active ? 'var(--accent)' : 'var(--muted)' }}>
+          {icon}
+        </span>
+      </summary>
+      <div className="crm-col-filter-pop">{children}</div>
+    </details>
+  )
+}
+
 /** Parse /dashboard query string once on mount so list filters + page match the URL before first fetch. */
 function parseDashboardUrlSearch(search: string): {
   crmSource: 'independent' | 'media'
@@ -114,6 +189,17 @@ function parseDashboardUrlSearch(search: string): {
   detailTab: 'overview' | 'campaign'
   crmSearchInput: string
   debouncedSearch: string
+  title_q: string
+  spoc_q: string
+  status_filter: string
+  next_step_q: string
+  relevance_filter: string
+  traffic_min: number | null
+  traffic_max: number | null
+  syndication_filter: string
+  brands_min: number | null
+  contacted_min: number | null
+  ceo_q: string
 } {
   const raw = search.startsWith('?') ? search.slice(1) : search
   const sp = new URLSearchParams(raw)
@@ -128,6 +214,15 @@ function parseDashboardUrlSearch(search: string): {
   const dueDisplayFilters = dueParsed && dueParsed.length ? dueParsed : [todayDisplay]
   const detailTab: 'overview' | 'campaign' = sp.get('detail') === 'campaign' ? 'campaign' : 'overview'
   const qParam = sp.get('q') ?? ''
+
+  const parseIntOrNull = (v: string | null): number | null => {
+    if (v == null) return null
+    const s = String(v).trim()
+    if (!s) return null
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) ? n : null
+  }
+
   return {
     crmSource,
     listPage,
@@ -138,6 +233,17 @@ function parseDashboardUrlSearch(search: string): {
     detailTab,
     crmSearchInput: qParam,
     debouncedSearch: qParam.trim(),
+    title_q: sp.get('title_q') ?? '',
+    spoc_q: sp.get('spoc_q') ?? '',
+    status_filter: sp.get('status_filter') ?? '',
+    next_step_q: sp.get('next_step_q') ?? '',
+    relevance_filter: sp.get('relevance_filter') ?? '',
+    traffic_min: parseIntOrNull(sp.get('traffic_min')),
+    traffic_max: parseIntOrNull(sp.get('traffic_max')),
+    syndication_filter: sp.get('syndication_filter') ?? '',
+    brands_min: parseIntOrNull(sp.get('brands_min')),
+    contacted_min: parseIntOrNull(sp.get('contacted_min')),
+    ceo_q: sp.get('ceo_q') ?? '',
   }
 }
 
@@ -272,7 +378,7 @@ function reasonPointers(reason: unknown, relevance: RelevanceValue): string[] {
       .map((c) => c.trim())
       .filter(Boolean)
     const cleaned = chunks
-      .map((c) => c.replace(/^[\-*]\s*/, '').trim())
+      .map((c) => c.replace(/^[*-]\s*/, '').trim())
       .filter(Boolean)
     if (cleaned.length) return cleaned.slice(0, 3)
   }
@@ -384,9 +490,59 @@ export default function DashboardPage() {
   const [customDueDate, setCustomDueDate] = useState<string>('') // yyyy-mm-dd
   const [includeCustomDue, setIncludeCustomDue] = useState(false)
 
+  // Column filters (server-side, persisted in URL).
+  const [titleQ, setTitleQ] = useState<string>(initialDash.title_q)
+  const [spocQ, setSpocQ] = useState<string>(initialDash.spoc_q)
+  const [statusFilter, setStatusFilter] = useState<string>(initialDash.status_filter)
+  const [nextStepQ, setNextStepQ] = useState<string>(initialDash.next_step_q)
+  const [relevanceFilter, setRelevanceFilter] = useState<string>(initialDash.relevance_filter)
+  const [trafficMin, setTrafficMin] = useState<number | null>(initialDash.traffic_min)
+  const [trafficMax, setTrafficMax] = useState<number | null>(initialDash.traffic_max)
+  const [syndicationFilter, setSyndicationFilter] = useState<string>(initialDash.syndication_filter)
+  const [brandsMin, setBrandsMin] = useState<number | null>(initialDash.brands_min)
+  const [contactedMin, setContactedMin] = useState<number | null>(initialDash.contacted_min)
+  const [ceoQ, setCeoQ] = useState<string>(initialDash.ceo_q)
+
   const [drawerHasResearch, setDrawerHasResearch] = useState<boolean | null>(null)
   const [drawerResearchBusy, setDrawerResearchBusy] = useState(false)
   const [savingRelevanceKey, setSavingRelevanceKey] = useState('')
+
+  // Inline SPOC add (drawer-only).
+  const [inlineSpocTipVisible, setInlineSpocTipVisible] = useState(false)
+  const inlineSpocTipKeyRef = useRef<string | null>(null)
+  const [inlineSpocEditorOpen, setInlineSpocEditorOpen] = useState(false)
+  const [inlineSpocName, setInlineSpocName] = useState('')
+  const [inlineSpocEmail, setInlineSpocEmail] = useState('')
+  const [inlineSpocRole, setInlineSpocRole] = useState('')
+  const [inlineSpocBusy, setInlineSpocBusy] = useState(false)
+
+  useEffect(() => {
+    const key =
+      crmSource === 'independent'
+        ? selectedGroup?.company_id
+          ? `ind:${selectedGroup.company_id}`
+          : null
+        : selectedMediaBrand?.brand.advisor_company_id
+          ? `media:${selectedMediaBrand.brand.advisor_company_id}`
+          : null
+
+    if (!key) return
+    if (inlineSpocTipKeyRef.current === key) return
+
+    inlineSpocTipKeyRef.current = key
+    setInlineSpocTipVisible(true)
+
+    const t = setTimeout(() => setInlineSpocTipVisible(false), 4500)
+    return () => clearTimeout(t)
+  }, [crmSource, selectedGroup?.company_id, selectedMediaBrand?.brand.advisor_company_id])
+
+  useEffect(() => {
+    // Reset inline add form on drawer switch.
+    setInlineSpocName('')
+    setInlineSpocEmail('')
+    setInlineSpocRole('')
+    setInlineSpocEditorOpen(false)
+  }, [selectedGroup?.company_id, selectedMediaBrand?.brand.advisor_company_id])
 
   const [crmSearchInput, setCrmSearchInput] = useState(initialDash.crmSearchInput)
   const [debouncedSearch, setDebouncedSearch] = useState(initialDash.debouncedSearch)
@@ -404,8 +560,44 @@ export default function DashboardPage() {
   companyGroupsRef.current = companyGroups
   const listFilterKey = useMemo(
     () =>
-      [crmSource, offerTab, debouncedSearch, activeKpiKey, dueDisplayFilters.join('\0'), pageSize].join('|'),
-    [crmSource, offerTab, debouncedSearch, activeKpiKey, dueDisplayFilters, pageSize],
+      [
+        crmSource,
+        offerTab,
+        debouncedSearch,
+        activeKpiKey,
+        dueDisplayFilters.join('\0'),
+        pageSize,
+        titleQ,
+        spocQ,
+        statusFilter,
+        nextStepQ,
+        relevanceFilter,
+        trafficMin ?? '',
+        trafficMax ?? '',
+        syndicationFilter,
+        brandsMin ?? '',
+        contactedMin ?? '',
+        ceoQ,
+      ].join('|'),
+    [
+      crmSource,
+      offerTab,
+      debouncedSearch,
+      activeKpiKey,
+      dueDisplayFilters,
+      pageSize,
+      titleQ,
+      spocQ,
+      statusFilter,
+      nextStepQ,
+      relevanceFilter,
+      trafficMin,
+      trafficMax,
+      syndicationFilter,
+      brandsMin,
+      contactedMin,
+      ceoQ,
+    ],
   )
   const prevListFilterKey = useRef<string | null>(null)
   const lastListFetchSig = useRef<string>('')
@@ -474,6 +666,18 @@ export default function DashboardPage() {
       q.set('kpi', activeKpiKey === 'due' ? 'due' : activeKpiKey)
       const duePipe = (dueDisplayFilters.length ? dueDisplayFilters : [todayDisplay]).join('|')
       q.set('due_dates', duePipe)
+      // Server-side column filters.
+      if (titleQ.trim()) q.set('title_q', titleQ.trim())
+      if (crmSource === 'independent' && spocQ.trim()) q.set('spoc_q', spocQ.trim())
+      if (crmSource === 'independent' && statusFilter.trim()) q.set('status_filter', statusFilter.trim())
+      if (nextStepQ.trim()) q.set('next_step_q', nextStepQ.trim())
+      if (relevanceFilter.trim()) q.set('relevance_filter', relevanceFilter.trim())
+      if (trafficMin != null) q.set('traffic_min', String(trafficMin))
+      if (trafficMax != null) q.set('traffic_max', String(trafficMax))
+      if (syndicationFilter.trim()) q.set('syndication_filter', syndicationFilter.trim())
+      if (crmSource === 'media' && brandsMin != null) q.set('brands_min', String(brandsMin))
+      if (crmSource === 'media' && contactedMin != null) q.set('contacted_min', String(contactedMin))
+      if (crmSource === 'media' && ceoQ.trim()) q.set('ceo_q', ceoQ.trim())
       q.set('compact', 'true')
 
       const out = await apiFetch<{
@@ -675,6 +879,147 @@ export default function DashboardPage() {
     }
   }
 
+  async function submitInlineSpocAdd() {
+    setErr('')
+    if (inlineSpocBusy) return
+    const name = inlineSpocName.trim()
+    if (!name) {
+      setErr('SPOC name is required.')
+      return
+    }
+
+    const email = inlineSpocEmail.trim() || null
+    const role = inlineSpocRole.trim() || null
+    const contacts = [{ name, email, role }]
+
+    setInlineSpocBusy(true)
+    try {
+      if (crmSource === 'independent') {
+        const cid = selectedGroup?.company_id
+        if (!cid) throw new Error('No company selected.')
+        await apiFetch(`/api/companies/${cid}/contacts/add`, {
+          method: 'POST',
+          json: { contacts },
+        })
+
+        // Refresh list + drawer detail.
+        lastListFetchSig.current = ''
+        await fetchCrm(listPage)
+        lastDetailFetchKey.current = null
+
+        const q = new URLSearchParams()
+        q.set('source', 'independent')
+        q.set('offer_tab', offerTab)
+        q.set('company_id', String(cid))
+        const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+        if (out.group) setSelectedGroup(mapApiGroup(out.group))
+      } else {
+        const aid = selectedMediaBrand?.brand.advisor_company_id
+        if (aid == null) throw new Error('No media brand selected.')
+        await apiFetch(`/api/advisor/companies/${aid}/contacts/add`, {
+          method: 'POST',
+          json: { contacts },
+        })
+
+        lastListFetchSig.current = ''
+        await fetchCrm(listPage)
+        lastDetailFetchKey.current = null
+
+        const q = new URLSearchParams()
+        q.set('source', 'media')
+        q.set('offer_tab', offerTab)
+        q.set('advisor_company_id', String(aid))
+        const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+        if (out.group) {
+          const mapped = mapApiGroup(out.group)
+          const brand = mapped.brands?.find((b) => b.advisor_company_id === aid) ?? mapped.brands?.[0]
+          if (brand) setSelectedMediaBrand({ parent: mapped, brand })
+        }
+      }
+
+      setInlineSpocName('')
+      setInlineSpocEmail('')
+      setInlineSpocRole('')
+      setInlineSpocEditorOpen(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to add SPOC')
+    } finally {
+      setInlineSpocBusy(false)
+    }
+  }
+
+  function pickNextStepFromPlannedPreview(planned_preview: { id?: number; scheduled_at?: string | null }[] | null | undefined) {
+    const todayYmd = new Date().toISOString().slice(0, 10)
+    const items = (planned_preview || []).filter((p) => p && p.id && p.scheduled_at)
+    if (!items.length) return null
+
+    const upcoming = items
+      .map((p) => ({ ...p, ymd: scheduledIsoToYmdUTC(p.scheduled_at) }))
+      .filter((p) => p.ymd && p.ymd >= todayYmd)
+      .sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)))
+    if (upcoming.length) return upcoming[0]
+
+    // Fallback: earliest planned action even if it's overdue.
+    return items.sort((a, b) => String(a.scheduled_at || '').localeCompare(String(b.scheduled_at || '')))[0] || null
+  }
+
+  async function patchDrawerNextStepDate(ymd: string) {
+    if (!ymd) return
+    const candidate =
+      crmSource === 'independent'
+        ? pickNextStepFromPlannedPreview(selectedGroup?.planned_preview)
+        : pickNextStepFromPlannedPreview(selectedMediaBrand?.parent.planned_preview)
+
+    const actionId = candidate?.id
+    if (!actionId) {
+      setErr('No planned action found for this “Next step”.')
+      return
+    }
+
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch(`/api/actions/${actionId}`, {
+        method: 'PATCH',
+        silent: true,
+        json: { scheduled_at: ymdToScheduledIso(ymd), shift_following_in_sequence: true },
+      })
+
+      lastListFetchSig.current = ''
+      await fetchCrm(listPage)
+
+      if (crmSource === 'independent') {
+        const cid = selectedGroup?.company_id
+        if (cid) {
+          const q = new URLSearchParams()
+          q.set('source', 'independent')
+          q.set('offer_tab', offerTab)
+          q.set('company_id', String(cid))
+          const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+          if (out.group) setSelectedGroup(mapApiGroup(out.group))
+        }
+      } else {
+        const aid = selectedMediaBrand?.brand.advisor_company_id
+        if (aid != null) {
+          const q = new URLSearchParams()
+          q.set('source', 'media')
+          q.set('offer_tab', offerTab)
+          q.set('advisor_company_id', String(aid))
+          const out = await apiFetch<{ group: ApiPublisherGroup | null }>(`/api/dashboard/publisher-crm/detail?${q}`)
+          if (out.group) {
+            const mapped = mapApiGroup(out.group)
+            const brand = mapped.brands?.find((b) => b.advisor_company_id === aid) ?? mapped.brands?.[0]
+            if (brand) setSelectedMediaBrand({ parent: mapped, brand })
+          }
+        }
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update next step date')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   useEffect(() => {
     if (crmSource !== 'media' || !expandedMediaHouseKey) {
       setMediaBrandsLoadingKey(null)
@@ -744,6 +1089,27 @@ export default function DashboardPage() {
     setActiveKpiKey(kpi)
     setDueDisplayFilters(dueParsed && dueParsed.length ? dueParsed : [todayDisplay])
 
+    // Column filters.
+    const parseIntOrNull = (k: string): number | null => {
+      const raw = searchParams.get(k)
+      if (raw == null) return null
+      const s = String(raw).trim()
+      if (!s) return null
+      const n = parseInt(s, 10)
+      return Number.isFinite(n) ? n : null
+    }
+    setTitleQ(searchParams.get('title_q') ?? '')
+    setSpocQ(searchParams.get('spoc_q') ?? '')
+    setStatusFilter(searchParams.get('status_filter') ?? '')
+    setNextStepQ(searchParams.get('next_step_q') ?? '')
+    setRelevanceFilter(searchParams.get('relevance_filter') ?? '')
+    setTrafficMin(parseIntOrNull('traffic_min'))
+    setTrafficMax(parseIntOrNull('traffic_max'))
+    setSyndicationFilter(searchParams.get('syndication_filter') ?? '')
+    setBrandsMin(parseIntOrNull('brands_min'))
+    setContactedMin(parseIntOrNull('contacted_min'))
+    setCeoQ(searchParams.get('ceo_q') ?? '')
+
     const detailParam = searchParams.get('detail') === 'campaign' ? 'campaign' : 'overview'
     setDetailTab(detailParam)
 
@@ -802,6 +1168,37 @@ export default function DashboardPage() {
       p.delete('due')
     }
 
+    // Column filters (server-side).
+    if (titleQ.trim()) p.set('title_q', titleQ.trim())
+    else p.delete('title_q')
+
+    if (crmSource === 'independent' && spocQ.trim()) p.set('spoc_q', spocQ.trim())
+    else p.delete('spoc_q')
+
+    if (crmSource === 'independent' && statusFilter.trim()) p.set('status_filter', statusFilter.trim())
+    else p.delete('status_filter')
+
+    if (nextStepQ.trim()) p.set('next_step_q', nextStepQ.trim())
+    else p.delete('next_step_q')
+
+    if (relevanceFilter.trim()) p.set('relevance_filter', relevanceFilter.trim())
+    else p.delete('relevance_filter')
+
+    if (trafficMin != null) p.set('traffic_min', String(trafficMin))
+    else p.delete('traffic_min')
+    if (trafficMax != null) p.set('traffic_max', String(trafficMax))
+    else p.delete('traffic_max')
+
+    if (syndicationFilter.trim()) p.set('syndication_filter', syndicationFilter.trim())
+    else p.delete('syndication_filter')
+
+    if (crmSource === 'media' && brandsMin != null) p.set('brands_min', String(brandsMin))
+    else p.delete('brands_min')
+    if (crmSource === 'media' && contactedMin != null) p.set('contacted_min', String(contactedMin))
+    else p.delete('contacted_min')
+    if (crmSource === 'media' && ceoQ.trim()) p.set('ceo_q', ceoQ.trim())
+    else p.delete('ceo_q')
+
     if (crmSource === 'independent' && selectedGroup?.company_id) p.set('company', String(selectedGroup.company_id))
     else p.delete('company')
 
@@ -831,6 +1228,17 @@ export default function DashboardPage() {
     offerTab,
     activeKpiKey,
     dueDisplayFilters,
+    titleQ,
+    spocQ,
+    statusFilter,
+    nextStepQ,
+    relevanceFilter,
+    trafficMin,
+    trafficMax,
+    syndicationFilter,
+    brandsMin,
+    contactedMin,
+    ceoQ,
     selectedGroup?.company_id,
     selectedMediaBrand?.brand.advisor_company_id,
     expandedMediaHouseKey,
@@ -1368,24 +1776,474 @@ export default function DashboardPage() {
               <thead>
                 {crmSource === 'media' ? (
                   <tr>
-                    <th>Media House</th>
-                    <th>Brands</th>
-                    <th>Contacted</th>
-                    <th>CEO / Decision Maker</th>
-                    <th>Relevance</th>
-                    <th>Total Traffic</th>
-                    <th>Syndication</th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Media House</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Media House"
+                          active={!!titleQ.trim()}
+                          icon={<IconFunnel />}
+                        >
+                          <input
+                            className="crm-col-filter-input"
+                            type="text"
+                            value={titleQ}
+                            placeholder="Filter"
+                            onChange={(e) => setTitleQ(e.target.value)}
+                            aria-label="Filter Media House"
+                            disabled={busy}
+                          />
+                          {titleQ.trim() ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setTitleQ('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Brands</span>
+                        <ColumnFilterDetails ariaLabel="Filter Brands (min)" active={brandsMin != null} icon={<IconFunnel />}>
+                          <input
+                            className="crm-col-filter-input"
+                            type="number"
+                            value={brandsMin ?? ''}
+                            placeholder="Min"
+                            onChange={(e) => setBrandsMin(e.target.value ? Number(e.target.value) : null)}
+                            aria-label="Filter Brands (min)"
+                            disabled={busy}
+                            min={0}
+                          />
+                          {brandsMin != null ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setBrandsMin(null)}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Contacted</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Contacted (min)"
+                          active={contactedMin != null}
+                          icon={<IconFunnel />}
+                        >
+                          <input
+                            className="crm-col-filter-input"
+                            type="number"
+                            value={contactedMin ?? ''}
+                            placeholder="Min"
+                            onChange={(e) => setContactedMin(e.target.value ? Number(e.target.value) : null)}
+                            aria-label="Filter Contacted (min)"
+                            disabled={busy}
+                            min={0}
+                          />
+                          {contactedMin != null ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setContactedMin(null)}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>CEO / Decision Maker</span>
+                        <ColumnFilterDetails ariaLabel="Filter CEO / Decision Maker" active={!!ceoQ.trim()} icon={<IconFunnel />}>
+                          <input
+                            className="crm-col-filter-input"
+                            type="text"
+                            value={ceoQ}
+                            placeholder="Filter"
+                            onChange={(e) => setCeoQ(e.target.value)}
+                            aria-label="Filter CEO / Decision Maker"
+                            disabled={busy}
+                          />
+                          {ceoQ.trim() ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setCeoQ('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Relevance</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Relevance"
+                          active={relevanceFilter.trim().length > 0}
+                          icon={<IconFunnel />}
+                        >
+                          <select
+                            className="crm-col-filter-select"
+                            value={relevanceFilter}
+                            onChange={(e) => setRelevanceFilter(e.target.value)}
+                            disabled={busy}
+                            aria-label="Filter Relevance"
+                          >
+                            <option value="">Any</option>
+                            <option value="-">Unset (-)</option>
+                            <option value="relevant">Relevant</option>
+                            <option value="irrelevant">Irrelevant</option>
+                          </select>
+                          {relevanceFilter.trim().length ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setRelevanceFilter('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Total Traffic</span>
+                        <ColumnFilterDetails ariaLabel="Filter Total Traffic range" active={trafficMin != null || trafficMax != null} icon={<IconFunnel />}>
+                          <div className="crm-col-filter-mini-row">
+                            <input
+                              className="crm-col-filter-input"
+                              type="number"
+                              value={trafficMin ?? ''}
+                              placeholder="Min"
+                              onChange={(e) => setTrafficMin(e.target.value ? Number(e.target.value) : null)}
+                              aria-label="Filter Total Traffic min"
+                              disabled={busy}
+                              min={0}
+                            />
+                            <input
+                              className="crm-col-filter-input"
+                              type="number"
+                              value={trafficMax ?? ''}
+                              placeholder="Max"
+                              onChange={(e) => setTrafficMax(e.target.value ? Number(e.target.value) : null)}
+                              aria-label="Filter Total Traffic max"
+                              disabled={busy}
+                              min={0}
+                            />
+                          </div>
+                          {trafficMin != null || trafficMax != null ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => {
+                                setTrafficMin(null)
+                                setTrafficMax(null)
+                              }}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Syndication</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Syndication"
+                          active={syndicationFilter.trim().length > 0}
+                          icon={<IconFunnel />}
+                        >
+                          <select
+                            className="crm-col-filter-select"
+                            value={syndicationFilter}
+                            onChange={(e) => setSyndicationFilter(e.target.value)}
+                            disabled={busy}
+                            aria-label="Filter Syndication"
+                          >
+                            <option value="">Any</option>
+                            {Object.keys(SYND_BADGE).map((k) => (
+                              <option key={k} value={k}>
+                                {SYND_BADGE[k]?.label ?? k}
+                              </option>
+                            ))}
+                          </select>
+                          {syndicationFilter.trim().length ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setSyndicationFilter('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
                   </tr>
                 ) : (
                   <tr>
                     <th className="crm-research-col" scope="col" aria-label="Research saved" title="Research" />
-                    <th>Website</th>
-                    <th>SPOC name</th>
-                    <th>Status</th>
-                    <th>Next step</th>
-                    <th>Relevance</th>
-                    <th>Traffic</th>
-                    <th>Syndication</th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Website</span>
+                        <ColumnFilterDetails ariaLabel="Filter Website" active={!!titleQ.trim()} icon={<IconFunnel />}>
+                          <input
+                            className="crm-col-filter-input"
+                            type="text"
+                            value={titleQ}
+                            placeholder="Filter"
+                            onChange={(e) => setTitleQ(e.target.value)}
+                            aria-label="Filter Website"
+                            disabled={busy}
+                          />
+                          {titleQ.trim() ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setTitleQ('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>SPOC name</span>
+                        <ColumnFilterDetails ariaLabel="Filter SPOC name" active={!!spocQ.trim()} icon={<IconFunnel />}>
+                          <input
+                            className="crm-col-filter-input"
+                            type="text"
+                            value={spocQ}
+                            placeholder="Filter"
+                            onChange={(e) => setSpocQ(e.target.value)}
+                            aria-label="Filter SPOC name"
+                            disabled={busy}
+                          />
+                          {spocQ.trim() ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setSpocQ('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Status</span>
+                        <ColumnFilterDetails ariaLabel="Filter Status" active={statusFilter.trim().length > 0} icon={<IconFunnel />}>
+                          <select
+                            className="crm-col-filter-select"
+                            value={statusFilter}
+                            onChange={(e) => setStatusFilter(e.target.value)}
+                            disabled={busy}
+                            aria-label="Filter Status"
+                          >
+                            <option value="">Any</option>
+                            {statusOptions.map((s) => (
+                              <option key={s} value={s}>
+                                {statusLabels[s] || s}
+                              </option>
+                            ))}
+                          </select>
+                          {statusFilter.trim().length ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setStatusFilter('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Next step</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Next step date"
+                          active={!!nextStepQ}
+                          icon={<IconCalendar />}
+                        >
+                          <input
+                            className="crm-col-filter-input"
+                            type="date"
+                            value={nextStepQ}
+                            onChange={(e) => setNextStepQ(e.target.value)}
+                            aria-label="Filter Next step date"
+                            disabled={busy}
+                          />
+                          {nextStepQ ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setNextStepQ('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Relevance</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Relevance"
+                          active={relevanceFilter.trim().length > 0}
+                          icon={<IconFunnel />}
+                        >
+                          <select
+                            className="crm-col-filter-select"
+                            value={relevanceFilter}
+                            onChange={(e) => setRelevanceFilter(e.target.value)}
+                            disabled={busy}
+                            aria-label="Filter Relevance"
+                          >
+                            <option value="">Any</option>
+                            <option value="-">Unset (-)</option>
+                            <option value="relevant">Relevant</option>
+                            <option value="irrelevant">Irrelevant</option>
+                          </select>
+                          {relevanceFilter.trim().length ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setRelevanceFilter('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Traffic</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Traffic range"
+                          active={trafficMin != null || trafficMax != null}
+                          icon={<IconFunnel />}
+                        >
+                          <div className="crm-col-filter-mini-row">
+                            <input
+                              className="crm-col-filter-input"
+                              type="number"
+                              value={trafficMin ?? ''}
+                              placeholder="Min"
+                              onChange={(e) => setTrafficMin(e.target.value ? Number(e.target.value) : null)}
+                              aria-label="Filter Traffic min"
+                              disabled={busy}
+                              min={0}
+                            />
+                            <input
+                              className="crm-col-filter-input"
+                              type="number"
+                              value={trafficMax ?? ''}
+                              placeholder="Max"
+                              onChange={(e) => setTrafficMax(e.target.value ? Number(e.target.value) : null)}
+                              aria-label="Filter Traffic max"
+                              disabled={busy}
+                              min={0}
+                            />
+                          </div>
+                          {trafficMin != null || trafficMax != null ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => {
+                                setTrafficMin(null)
+                                setTrafficMax(null)
+                              }}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
+                    <th>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span>Syndication</span>
+                        <ColumnFilterDetails
+                          ariaLabel="Filter Syndication"
+                          active={syndicationFilter.trim().length > 0}
+                          icon={<IconFunnel />}
+                        >
+                          <select
+                            className="crm-col-filter-select"
+                            value={syndicationFilter}
+                            onChange={(e) => setSyndicationFilter(e.target.value)}
+                            disabled={busy}
+                            aria-label="Filter Syndication"
+                          >
+                            <option value="">Any</option>
+                            {Object.keys(SYND_BADGE).map((k) => (
+                              <option key={k} value={k}>
+                                {SYND_BADGE[k]?.label ?? k}
+                              </option>
+                            ))}
+                          </select>
+                          {syndicationFilter.trim().length ? (
+                            <button
+                              type="button"
+                              className="secondary sm"
+                              style={{ marginTop: 6 }}
+                              disabled={busy}
+                              onClick={() => setSyndicationFilter('')}
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </ColumnFilterDetails>
+                      </div>
+                    </th>
                   </tr>
                 )}
               </thead>
@@ -1854,39 +2712,139 @@ export default function DashboardPage() {
                 <div className="crm-detail-row">
                   <div className="muted small">Next step</div>
                   <div>
-                    {selectedGroup.next_step_date}
-                    {selectedGroup.due_today ? <div className="crm-due-today">Due</div> : null}
+                    {(() => {
+                      const candidate = pickNextStepFromPlannedPreview(selectedGroup?.planned_preview)
+                      const ymd = candidate?.scheduled_at ? scheduledIsoToYmdUTC(candidate.scheduled_at) : ''
+                      return (
+                        <>
+                          <input
+                            type="date"
+                            value={ymd}
+                            onChange={(e) => void patchDrawerNextStepDate(e.target.value)}
+                            disabled={!ymd || busy}
+                            aria-label="Edit next step date"
+                          />
+                          {selectedGroup.due_today ? <div className="crm-due-today">Due</div> : null}
+                        </>
+                      )
+                    })()}
                   </div>
                 </div>
 
                 {crmSource === 'independent' ? (
-                  <div className="crm-detail-row">
-                    <div className="muted small">Contacts & SPOCs</div>
-                    <div className="crm-contact-list">
-                      {(selectedGroup.contacts_summary || []).length === 0 ? (
-                        <div className="muted">No contacts yet.</div>
-                      ) : (
-                        selectedGroup.contacts_summary.map((c, idx) => (
-                          <div key={`${c.kind}-${c.email}-${c.linkedin_url}-${idx}`} className="crm-contact-item">
-                            <div>
-                              <strong>{c.name}</strong> <span className="muted small">({c.kind})</span>
+                  <>
+                    <div className="crm-detail-row">
+                      <div className="muted small">Contacts & SPOCs</div>
+                      <div className="crm-contact-list">
+                        {(selectedGroup.contacts_summary || []).length === 0 ? (
+                          <div className="muted">No contacts yet.</div>
+                        ) : (
+                          selectedGroup.contacts_summary.map((c, idx) => (
+                            <div
+                              key={`${c.kind}-${c.email}-${c.linkedin_url}-${idx}`}
+                              className="crm-contact-item"
+                            >
+                              <div>
+                                <strong>{c.name}</strong> <span className="muted small">({c.kind})</span>
+                              </div>
+                              <div className="muted small">{c.role || '—'}</div>
+                              {c.email ? <div className="muted small">{c.email}</div> : null}
+                              {c.linkedin_url ? (
+                                <a href={c.linkedin_url} target="_blank" rel="noopener noreferrer">
+                                  LinkedIn
+                                </a>
+                              ) : null}
                             </div>
-                            <div className="muted small">{c.role || '—'}</div>
-                            {c.email ? <div className="muted small">{c.email}</div> : null}
-                            {c.linkedin_url ? (
-                              <a href={c.linkedin_url} target="_blank" rel="noopener noreferrer">
-                                LinkedIn
-                              </a>
-                            ) : null}
-                          </div>
-                        ))
-                      )}
+                          ))
+                        )}
+                      </div>
                     </div>
-                  </div>
+                    <div className="crm-detail-row">
+                      <div className="muted small">Add SPOC (inline)</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {inlineSpocTipVisible ? (
+                          <div className="muted small">
+                            Tip: add extra SPOCs here (name/email/role) to keep outreach planned for this workspace.
+                          </div>
+                        ) : null}
+                        {!inlineSpocEditorOpen ? (
+                          <button
+                            type="button"
+                            className="secondary sm"
+                            onClick={() => setInlineSpocEditorOpen(true)}
+                            disabled={inlineSpocBusy || busy}
+                          >
+                            {inlineSpocBusy ? 'Loading…' : '+ Add SPOC'}
+                          </button>
+                        ) : (
+                          <>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 180 }}
+                                type="text"
+                                value={inlineSpocName}
+                                placeholder="Name"
+                                onChange={(e) => setInlineSpocName(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC name"
+                              />
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 200 }}
+                                type="email"
+                                value={inlineSpocEmail}
+                                placeholder="Email (optional)"
+                                onChange={(e) => setInlineSpocEmail(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC email"
+                              />
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 180 }}
+                                type="text"
+                                value={inlineSpocRole}
+                                placeholder="Role (optional)"
+                                onChange={(e) => setInlineSpocRole(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC role"
+                              />
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <button
+                                type="button"
+                                className="secondary sm"
+                                onClick={() => void submitInlineSpocAdd()}
+                                disabled={inlineSpocBusy || busy}
+                              >
+                                {inlineSpocBusy ? 'Adding…' : '+ Add SPOC'}
+                              </button>
+                              <button
+                                type="button"
+                                className="crm-close-btn"
+                                style={{ width: 32, height: 32 }}
+                                onClick={() => {
+                                  setInlineSpocEditorOpen(false)
+                                  setInlineSpocName('')
+                                  setInlineSpocEmail('')
+                                  setInlineSpocRole('')
+                                }}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Cancel add SPOC"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </>
                 ) : (
-                  <div className="crm-detail-row">
-                    <div className="muted small">Brands & SPOCs</div>
-                    <div className="crm-brand-list">
+                  <>
+                    <div className="crm-detail-row">
+                      <div className="muted small">Brands & SPOCs</div>
+                      <div className="crm-brand-list">
                       {(selectedGroup.brands || []).map((b) => (
                         <details key={b.company_domain} className="crm-brand-details">
                           <summary className="crm-brand-summary">
@@ -1917,25 +2875,112 @@ export default function DashboardPage() {
                           </div>
                         </details>
                       ))}
+                      </div>
                     </div>
-                  </div>
+                    <div className="crm-detail-row">
+                      <div className="muted small">Add SPOC (inline)</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {inlineSpocTipVisible ? (
+                          <div className="muted small">
+                            Tip: add extra SPOCs here for this media brand (name/email/role) so outreach can be planned.
+                          </div>
+                        ) : null}
+                        {!inlineSpocEditorOpen ? (
+                          <button
+                            type="button"
+                            className="secondary sm"
+                            onClick={() => setInlineSpocEditorOpen(true)}
+                            disabled={inlineSpocBusy || busy}
+                          >
+                            {inlineSpocBusy ? 'Loading…' : '+ Add SPOC'}
+                          </button>
+                        ) : (
+                          <>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 180 }}
+                                type="text"
+                                value={inlineSpocName}
+                                placeholder="Name"
+                                onChange={(e) => setInlineSpocName(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC name"
+                              />
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 200 }}
+                                type="email"
+                                value={inlineSpocEmail}
+                                placeholder="Email (optional)"
+                                onChange={(e) => setInlineSpocEmail(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC email"
+                              />
+                              <input
+                                className="crm-col-filter-input"
+                                style={{ minWidth: 180 }}
+                                type="text"
+                                value={inlineSpocRole}
+                                placeholder="Role (optional)"
+                                onChange={(e) => setInlineSpocRole(e.target.value)}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Inline SPOC role"
+                              />
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <button
+                                type="button"
+                                className="secondary sm"
+                                onClick={() => void submitInlineSpocAdd()}
+                                disabled={inlineSpocBusy || busy}
+                              >
+                                {inlineSpocBusy ? 'Adding…' : '+ Add SPOC'}
+                              </button>
+                              <button
+                                type="button"
+                                className="crm-close-btn"
+                                style={{ width: 32, height: 32 }}
+                                onClick={() => {
+                                  setInlineSpocEditorOpen(false)
+                                  setInlineSpocName('')
+                                  setInlineSpocEmail('')
+                                  setInlineSpocRole('')
+                                }}
+                                disabled={inlineSpocBusy || busy}
+                                aria-label="Cancel add SPOC"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
             ) : (
               <div className="crm-detail">
                 <div className="crm-subhead">Update pipeline status</div>
-                <div className="crm-status-grid">
-                  {statusOptions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className={selectedStatus === s ? 'crm-status-btn active' : 'crm-status-btn'}
-                      onClick={() => void patchGroupStatus(s)}
-                      disabled={busy}
-                    >
-                      {statusLabels[s] || s}
-                    </button>
-                  ))}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={statusOptions.includes(selectedStatus) ? selectedStatus : ''}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      if (!next) return
+                      void patchGroupStatus(next)
+                    }}
+                    disabled={busy}
+                    aria-label="Update pipeline status"
+                  >
+                    <option value="">Select status…</option>
+                    {statusOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {statusLabels[s] || s}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="crm-subhead">Planned outreach (preview)</div>
@@ -2109,8 +3154,22 @@ export default function DashboardPage() {
                       <div className="crm-detail-row">
                         <div className="muted small">Next step</div>
                         <div>
-                          {brand.next_step_date}
-                          {brand.due_today ? <div className="crm-due-today">Due</div> : null}
+                          {(() => {
+                            const candidate = pickNextStepFromPlannedPreview(selectedMediaBrand?.parent.planned_preview)
+                            const ymd = candidate?.scheduled_at ? scheduledIsoToYmdUTC(candidate.scheduled_at) : ''
+                            return (
+                              <>
+                                <input
+                                  type="date"
+                                  value={ymd}
+                                  onChange={(e) => void patchDrawerNextStepDate(e.target.value)}
+                                  disabled={!ymd || busy}
+                                  aria-label="Edit next step date"
+                                />
+                                {brand.due_today ? <div className="crm-due-today">Due</div> : null}
+                              </>
+                            )
+                          })()}
                         </div>
                       </div>
 
@@ -2144,18 +3203,24 @@ export default function DashboardPage() {
             ) : (
               <div className="crm-detail">
                 <div className="crm-subhead">Update pipeline status</div>
-                <div className="crm-status-grid">
-                  {statusOptions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className={selectedStatus === s ? 'crm-status-btn active' : 'crm-status-btn'}
-                      onClick={() => void patchMediaBrandStatus(s)}
-                      disabled={busy}
-                    >
-                      {statusLabels[s] || s}
-                    </button>
-                  ))}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={statusOptions.includes(selectedStatus) ? selectedStatus : ''}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      if (!next) return
+                      void patchMediaBrandStatus(next)
+                    }}
+                    disabled={busy}
+                    aria-label="Update pipeline status"
+                  >
+                    <option value="">Select status…</option>
+                    {statusOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {statusLabels[s] || s}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="crm-subhead">Planned outreach (preview)</div>
