@@ -1,4 +1,5 @@
 from typing import Any
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ from db_ops import (
     upsert_contact,
 )
 from integrations.ai.ai_engine import compute_lead_score
+from integrations.analytics import apply_syndication_refresh_to_company
 from api.deps import get_current_user, user_has_perm
 from api.schemas import SessionEnsureIn
 
@@ -100,6 +102,15 @@ def create_publisher_company(
         except Exception:
             pass
         session_id = get_or_create_session(company_id, first_contact_id, user["id"], score=score)
+    # Best-effort async syndication refresh for newly created independent publishers.
+    # Keep create API fast; refresh persists in background.
+    def _refresh_syndication_async():
+        try:
+            apply_syndication_refresh_to_company(company_id, dom, publisher_name=display_name)
+        except Exception:
+            pass
+
+    threading.Thread(target=_refresh_syndication_async, daemon=True).start()
     return {
         "ok": True,
         "company_id": company_id,

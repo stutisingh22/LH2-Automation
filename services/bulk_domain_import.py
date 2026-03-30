@@ -12,6 +12,7 @@ Flow:
 import io
 import logging
 import sys
+import threading
 from typing import List
 
 import pandas as pd
@@ -340,6 +341,8 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
         "created": [],  # for undo: list of dicts
     }
     existing_parents = set(get_existing_parent_media_houses())
+    syndication_targets_independent: list[tuple[int, str, str]] = []
+    syndication_targets_media: list[tuple[int, str, str]] = []
 
     for r in rows or []:
         if not r.get("do_import"):
@@ -359,6 +362,8 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
         if cl == "independent":
             try:
                 company_id = upsert_company(dom, name=label, notion_page_id=None)
+                if company_id:
+                    syndication_targets_independent.append((int(company_id), dom, label))
                 result["added_independent"].append(label)
                 result["created"].append({
                     "type": "independent",
@@ -390,6 +395,8 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                     })
                 else:
                     advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=None)
+                    if advisor_id:
+                        syndication_targets_media.append((int(advisor_id), dom, label))
                     result["added_media_house"].append(label)
                     result["created"].append({
                         "type": "media_house",
@@ -401,6 +408,37 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
             except Exception as e:
                 log.exception("Commit media_house failed for %s: %s", dom, e)
                 result["errors"].append(f"{label}: {e}")
+
+    # Post-commit async syndication refresh:
+    # keeps bulk commit response fast while still persisting syndication after commit.
+    def _run_syndication_refresh_async(
+        ind_targets: list[tuple[int, str, str]],
+        media_targets: list[tuple[int, str, str]],
+    ):
+        try:
+            from integrations.analytics import (
+                apply_syndication_refresh_to_company,
+                apply_syndication_refresh_to_advisor_company,
+            )
+            for cid, dom, label in ind_targets:
+                try:
+                    apply_syndication_refresh_to_company(cid, dom, publisher_name=label)
+                except Exception as e:
+                    log.warning("Syndication refresh failed for company %s (%s): %s", cid, dom, e)
+            for aid, dom, label in media_targets:
+                try:
+                    apply_syndication_refresh_to_advisor_company(aid, dom, publisher_name=label)
+                except Exception as e:
+                    log.warning("Syndication refresh failed for advisor company %s (%s): %s", aid, dom, e)
+        except Exception as e:
+            log.warning("Syndication refresh stage skipped: %s", e)
+
+    if syndication_targets_independent or syndication_targets_media:
+        threading.Thread(
+            target=_run_syndication_refresh_async,
+            args=(list(syndication_targets_independent), list(syndication_targets_media)),
+            daemon=True,
+        ).start()
 
     clear_ui_cache()
     invalidate_group("advisor")

@@ -12,6 +12,7 @@ import random
 import logging
 from pathlib import Path
 from collections import defaultdict
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -229,6 +230,54 @@ def update_all_companies_from_csv(csv_path: Path | None = None) -> tuple[int, st
         if merge_company_extra_data(c["id"], patch):
             updated += 1
     return updated, ""
+
+
+def refresh_syndication_for_domain(domain: str, publisher_name: str | None = None) -> dict:
+    """
+    Live, conservative syndication refresh for a single domain.
+    Returns detector payload with platform_presence + platform_presence_details.
+    """
+    from .syndication_detector import detect_syndication_for_domain
+
+    return detect_syndication_for_domain(domain, publisher_name=publisher_name)
+
+
+def apply_syndication_refresh_to_company(company_id: int, domain: str, publisher_name: str | None = None) -> bool:
+    """
+    Refresh and persist syndication data to Company.extra_data for one independent company.
+    """
+    from db_ops import merge_company_extra_data
+
+    dom = normalize_domain(domain or "")
+    if not dom or not company_id:
+        return False
+    payload = refresh_syndication_for_domain(dom, publisher_name=publisher_name)
+    patch = {
+        "platform_presence": payload.get("platform_presence") or {},
+        "platform_presence_details": payload.get("platform_presence_details") or {},
+        "syndication_last_checked_at": datetime.utcnow().isoformat(),
+    }
+    return bool(merge_company_extra_data(int(company_id), patch))
+
+
+def apply_syndication_refresh_to_advisor_company(
+    advisor_company_id: int, domain: str, publisher_name: str | None = None
+) -> bool:
+    """
+    Refresh and persist syndication data to AdvisorCompany.extra_data for one media child.
+    """
+    from db_ops import merge_advisor_company_extra_data
+
+    dom = normalize_domain(domain or "")
+    if not dom or not advisor_company_id:
+        return False
+    payload = refresh_syndication_for_domain(dom, publisher_name=publisher_name)
+    patch = {
+        "platform_presence": payload.get("platform_presence") or {},
+        "platform_presence_details": payload.get("platform_presence_details") or {},
+        "syndication_last_checked_at": datetime.utcnow().isoformat(),
+    }
+    return bool(merge_advisor_company_extra_data(int(advisor_company_id), patch))
 
 
 if __name__ == "__main__":

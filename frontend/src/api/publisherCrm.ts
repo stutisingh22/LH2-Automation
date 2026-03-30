@@ -26,6 +26,7 @@ export type ApiPublisherBrand = {
   due_today: boolean
   monthly_visits: number | null
   syndication: string[]
+  syndication_links?: Record<string, string>
   spoc_name: string
   contacts_summary: ContactSummary[]
   advisor_company_id: number | null
@@ -47,6 +48,7 @@ export type ApiPublisherGroup = {
   next_step_date: string
   monthly_visits: number | null
   syndication: string[]
+  syndication_links?: Record<string, string>
   spoc_name: string
   spoc_names?: string[]
   ceo_display_name?: string | null
@@ -89,6 +91,7 @@ export type UiPublisherGroup = {
   next_step_date: string
   monthly_visits: number | null
   syndication: string[]
+  syndication_links?: Record<string, string>
   spoc_name: string
   contacts_summary: ContactSummary[]
   brands?: UiPublisherBrand[]
@@ -112,6 +115,7 @@ export type UiPublisherBrand = {
   due_today: boolean
   monthly_visits: number | null
   syndication: string[]
+  syndication_links?: Record<string, string>
   spoc_name: string
   contacts_summary: ContactSummary[]
   advisor_company_id: number | null
@@ -139,6 +143,7 @@ export function mapApiPublisherGroup(g: ApiPublisherGroup): UiPublisherGroup {
       due_today: b.due_today,
       monthly_visits: b.monthly_visits,
       syndication: b.syndication,
+      syndication_links: b.syndication_links || {},
       spoc_name: b.spoc_name,
       contacts_summary: bc,
       advisor_company_id: b.advisor_company_id,
@@ -160,6 +165,7 @@ export function mapApiPublisherGroup(g: ApiPublisherGroup): UiPublisherGroup {
     next_step_date: g.next_step_date,
     monthly_visits: g.monthly_visits,
     syndication: g.syndication,
+    syndication_links: g.syndication_links || {},
     spoc_name: g.spoc_name,
     contacts_summary: contacts,
     brands: g.brands?.map(mapBrand),

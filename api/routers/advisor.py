@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from typing import Any
+import threading
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,7 @@ from db_ops import (
     upsert_contact,
 )
 from integrations.ai.ai_engine import compute_lead_score
+from integrations.analytics import apply_syndication_refresh_to_advisor_company
 from api.deps import get_current_user, user_has_perm
 from api.routers.companies import PublisherContactIn
 
@@ -136,6 +138,15 @@ def create_advisor_brand(
     except Exception:
         pass
     session_id = get_or_create_session(cid, ctid, user["id"], score=score)
+    # Best-effort async syndication refresh for newly created media child brands.
+    # Keep create API fast; refresh persists in background.
+    def _refresh_syndication_async():
+        try:
+            apply_syndication_refresh_to_advisor_company(advisor_id, dom, publisher_name=(body.leadership_name or dom))
+        except Exception:
+            pass
+
+    threading.Thread(target=_refresh_syndication_async, daemon=True).start()
     return {
         "ok": True,
         "advisor_company_id": advisor_id,

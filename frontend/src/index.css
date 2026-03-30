@@ -2826,6 +2826,14 @@ td.crm-research-col {
   line-height: 1.2;
   white-space: nowrap;
 }
+.crm-synd-badge-link {
+  text-decoration: none;
+  cursor: pointer;
+}
+.crm-synd-badge-link:hover {
+  filter: brightness(0.96);
+  text-decoration: underline;
+}
 
 .crm-kpi-btn {
   text-align: left;

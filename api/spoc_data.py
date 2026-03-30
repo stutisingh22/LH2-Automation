@@ -61,6 +61,21 @@ def _normalize_extra_dict(extra) -> dict:
     return ed if isinstance(ed, dict) else {}
 
 
+def _platform_links_from_extra(extra: dict) -> dict[str, str]:
+    details = _normalize_extra_dict(extra).get("platform_presence_details") or {}
+    if not isinstance(details, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k in ("msn", "yahoo", "newsbreak", "smartnews"):
+        d = details.get(k) or {}
+        if not isinstance(d, dict):
+            continue
+        url = str(d.get("url") or "").strip()
+        if url:
+            out[k] = url
+    return out
+
+
 def _parse_md_row(line: str) -> list[str]:
     s = (line or "").strip()
     if s.startswith("|"):
@@ -603,7 +618,10 @@ def build_publisher_crm_rows(
             status_norm = normalize_contact_status((ch.get("extra_data") or {}).get("pipeline_status", "not_contacted"))
             status_label = CONTACT_STATUS_LABELS.get(status_norm, status_norm)
 
-            extra = (shadow_company or {}).get("extra_data") or {}
+            extra = _normalize_extra_dict((shadow_company or {}).get("extra_data"))
+            # Prefer shadow company analytics when present, but honor advisor-child extra_data
+            # so newly bulk-imported media brands can surface syndication immediately.
+            extra = {**_normalize_extra_dict(ch.get("extra_data")), **extra}
             platform_presence = extra.get("platform_presence") or {}
             if not platform_presence or not any(
                 bool(platform_presence.get(k))
@@ -617,6 +635,7 @@ def build_publisher_crm_rows(
                 for k, v in (platform_presence or {}).items()
                 if k in ("msn", "yahoo", "newsbreak", "smartnews") and bool(v)
             ]
+            syndication_links = _platform_links_from_extra(extra)
             child_domain = (ch.get("domain") or "").strip()
             monthly_visits = (shadow_company or {}).get("monthly_visits")
             if monthly_visits is None and child_domain:
@@ -759,6 +778,7 @@ def build_publisher_crm_rows(
                 "due_today": due_today,
                 "first_overdue_date_str": first_overdue_date_str,
                 "syndication": syndication,
+                "syndication_links": syndication_links,
                 "monthly_visits": monthly_visits,
                 "planned_preview": planned_use,
                 "contacts_summary": contacts_use,
@@ -956,6 +976,7 @@ def build_publisher_crm_rows(
                 for k, v in (platform_presence or {}).items()
                 if k in ("msn", "yahoo", "newsbreak", "smartnews") and bool(v)
             ]
+            syndication_links = _platform_links_from_extra(extra)
 
             planned_sorted = sorted(planned, key=lambda a: a.get("scheduled_at") or "")
             planned_preview = [
@@ -1012,6 +1033,7 @@ def build_publisher_crm_rows(
                 "due_today": due_today,
                 "first_overdue_date_str": first_overdue_date_str,
                 "syndication": syndication,
+                "syndication_links": syndication_links,
                 "monthly_visits": monthly_visits,
                 "planned_preview": planned_use,
                 "contacts_summary": contacts_use,
@@ -1110,6 +1132,13 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
         )
 
         syndication = _unique_by_key([s for r in arr for s in (r.get("syndication") or [])], lambda s: str(s))
+        syndication_links: dict[str, str] = {}
+        for r in arr:
+            for k, v in (r.get("syndication_links") or {}).items():
+                ks = str(k or "").strip().lower()
+                vs = str(v or "").strip()
+                if ks in ("msn", "yahoo", "newsbreak", "smartnews") and vs and ks not in syndication_links:
+                    syndication_links[ks] = vs
 
         contact_ids: list[int] = []
         _seen_c = set()
@@ -1204,6 +1233,13 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                             [s for r in br_arr for s in (r.get("syndication") or [])],
                             lambda x: str(x),
                         ),
+                        "syndication_links": {
+                            ks: vs
+                            for br in br_arr
+                            for ks, vs in (br.get("syndication_links") or {}).items()
+                            if str(ks).strip().lower() in ("msn", "yahoo", "newsbreak", "smartnews")
+                            and str(vs or "").strip()
+                        },
                         "spoc_name": best.get("spoc_name"),
                         "contacts_summary": bd_contacts,
                         "advisor_company_id": best.get("advisor_company_id"),
@@ -1240,6 +1276,7 @@ def rows_to_company_groups(rows: list[dict], crm_source: str) -> list[dict]:
                 "next_step_date": next_step_date or "—",
                 "monthly_visits": monthly_visits,
                 "syndication": syndication,
+                "syndication_links": syndication_links,
                 "spoc_name": spoc_name,
                 "spoc_names": spoc_names,
                 "ceo_display_name": (ceo_contact or {}).get("name") if ceo_contact else None,
@@ -1286,6 +1323,7 @@ def _slim_media_list_group(g: dict) -> dict:
         "next_step_date": g.get("next_step_date"),
         "monthly_visits": g.get("monthly_visits"),
         "syndication": list(g.get("syndication") or []),
+        "syndication_links": dict(g.get("syndication_links") or {}),
         "spoc_name": g.get("spoc_name"),
         "ceo_display_name": g.get("ceo_display_name"),
         "relevance": g.get("relevance") or "-",
@@ -1313,6 +1351,7 @@ def _slim_independent_list_group(g: dict) -> dict:
         "next_step_date": g.get("next_step_date"),
         "monthly_visits": g.get("monthly_visits"),
         "syndication": list(g.get("syndication") or []),
+        "syndication_links": dict(g.get("syndication_links") or {}),
         "spoc_name": g.get("spoc_name"),
         "ceo_display_name": g.get("ceo_display_name"),
         "spoc_names": list(g.get("spoc_names") or []),

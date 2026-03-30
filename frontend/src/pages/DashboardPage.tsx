@@ -28,17 +28,38 @@ const SYND_BADGE: Record<string, { label: string; bg: string; color: string }> =
   smartnews: { label: 'Smartnews', bg: '#F3F4F6', color: '#374151' },
 }
 
-function SyndicationBadges({ syndication }: { syndication: string[] | undefined | null }) {
+function SyndicationBadges({
+  syndication,
+  links,
+}: {
+  syndication: string[] | undefined | null
+  links?: Record<string, string> | null
+}) {
   const list = syndication || []
   if (!list.length) return <span className="muted">None</span>
   return (
     <div className="crm-synd-badges">
       {list.map((s) => {
         const cfg = SYND_BADGE[s] || { label: s, bg: '#F3F4F6', color: '#374151' }
+        const href = (links || {})[s] || ''
         return (
-          <span key={s} className="crm-synd-badge" style={{ background: cfg.bg, color: cfg.color }}>
-            {cfg.label}
-          </span>
+          href ? (
+            <a
+              key={s}
+              className="crm-synd-badge crm-synd-badge-link"
+              style={{ background: cfg.bg, color: cfg.color }}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${cfg.label} source page`}
+            >
+              {cfg.label}
+            </a>
+          ) : (
+            <span key={s} className="crm-synd-badge" style={{ background: cfg.bg, color: cfg.color }}>
+              {cfg.label}
+            </span>
+          )
         )
       })}
     </div>
@@ -2327,7 +2348,7 @@ export default function DashboardPage() {
                           </td>
                           <td>{fmtVisits(g.monthly_visits)}</td>
                           <td>
-                            <SyndicationBadges syndication={g.syndication} />
+                            <SyndicationBadges syndication={g.syndication} links={g.syndication_links} />
                           </td>
                         </tr>
 
@@ -2433,7 +2454,7 @@ export default function DashboardPage() {
                                           </td>
                                           <td>{fmtVisits(b.monthly_visits)}</td>
                                           <td>
-                                            <SyndicationBadges syndication={b.syndication} />
+                                            <SyndicationBadges syndication={b.syndication} links={b.syndication_links} />
                                           </td>
                                         </tr>
                                       )
@@ -2540,7 +2561,7 @@ export default function DashboardPage() {
                       </td>
                       <td>{fmtVisits(g.monthly_visits)}</td>
                       <td>
-                        <SyndicationBadges syndication={g.syndication} />
+                        <SyndicationBadges syndication={g.syndication} links={g.syndication_links} />
                       </td>
                     </tr>
                   )
@@ -2705,7 +2726,7 @@ export default function DashboardPage() {
                 <div className="crm-detail-row">
                   <div className="muted small">Syndication</div>
                   <div>
-                    <SyndicationBadges syndication={selectedGroup.syndication} />
+                    <SyndicationBadges syndication={selectedGroup.syndication} links={selectedGroup.syndication_links} />
                   </div>
                 </div>
 
@@ -3147,7 +3168,7 @@ export default function DashboardPage() {
                       <div className="crm-detail-row">
                         <div className="muted small">Syndication</div>
                         <div>
-                          <SyndicationBadges syndication={brand.syndication} />
+                          <SyndicationBadges syndication={brand.syndication} links={brand.syndication_links} />
                         </div>
                       </div>
 
