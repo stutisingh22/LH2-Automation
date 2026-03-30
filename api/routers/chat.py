@@ -2,7 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from db_ops import get_company, get_contact, get_session, load_messages, save_memory_event, save_message
+import re
+
+from db_ops import (
+    get_company,
+    get_contact,
+    get_session,
+    load_messages,
+    merge_session_extra_data,
+    save_memory_event,
+    save_message,
+)
 from api.company_resolve import enrich_company_for_strategist
 from integrations.ai.ai_engine import (
     extract_episodic_memories,
@@ -135,12 +145,16 @@ def save_strategist_rules(
     )
     learned = learn_user_preference(uid, pref_instruction, source="strategist_rules_ui")
     try:
-        save_memory_event(
-            session_id,
-            "preference",
-            f"User saved strategist rules: {raw_rules[:320]}",
-            importance=6,
-        )
+        kw_tokens = sorted({t for t in re.findall(r"[a-zA-Z]{4,}", raw_rules.lower())})[:30]
+        kw_line = " ".join(kw_tokens)
+        summ = f"User saved strategist rules: {raw_rules[:280]}"
+        if kw_line:
+            summ = f"{summ}\nRule keywords for recall: {kw_line}"
+        save_memory_event(session_id, "preference", summ, importance=6)
     except Exception:
         pass
-    return {"ok": True, "learned": bool(learned)}
+    try:
+        merge_session_extra_data(session_id, {"strategist_rules": raw_rules})
+    except Exception:
+        pass
+    return {"ok": True, "learned": bool(learned), "persisted": True}

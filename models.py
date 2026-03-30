@@ -81,6 +81,7 @@ class Session(Base):
     strategic_summary = Column(Text)
     summary_msg_count = Column(Integer, default=0)
     lead_score = Column(Integer, default=0)
+    extra_data = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     __table_args__ = (Index("ix_sessions_company_id_updated_at", "company_id", "updated_at"),)

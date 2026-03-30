@@ -125,6 +125,18 @@ def init_db():
                 else:
                     log.warning("Migration %s: %s", col, e)
         try:
+            with engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(
+                        text(f"ALTER TABLE sessions ADD COLUMN extra_data {('TEXT' if is_sqlite else 'JSON')}")
+                    )
+        except Exception as e:
+            err = str(e).lower()
+            if "duplicate column" in err or "already exists" in err:
+                pass
+            else:
+                log.warning("Migration sessions.extra_data: %s", e)
+        try:
             GmailOutreachSyncEvent.__table__.create(bind=engine, checkfirst=True)
         except Exception as e:
             log.warning("gmail_outreach_sync_events table: %s", e)
@@ -222,12 +234,14 @@ def _ct_dict(c):
 
 
 def _sess_dict(x):
+    ed = getattr(x, "extra_data", None)
     return {
         "id": x.id, "company_id": x.company_id,
         "contact_id": x.contact_id, "owner_user_id": x.owner_user_id,
         "strategic_summary": x.strategic_summary,
         "summary_msg_count": x.summary_msg_count or 0,
         "lead_score": x.lead_score or 0,
+        "extra_data": _normalize_extra_data(ed),
         "created_at": x.created_at.isoformat() if x.created_at else None,
         "updated_at": x.updated_at.isoformat() if x.updated_at else None,
     }
@@ -1200,6 +1214,22 @@ def get_session(sid):
     with db() as s:
         sess = s.get(Session, sid)
         return _sess_dict(sess) if sess else None
+
+
+def merge_session_extra_data(session_id: int, patch: dict):
+    """Shallow-merge keys into Session.extra_data. Returns False if session missing."""
+    if not patch:
+        return False
+    with db() as s:
+        row = s.get(Session, session_id)
+        if not row:
+            return False
+        base = dict(_normalize_extra_data(getattr(row, "extra_data", None)))
+        base.update(patch)
+        row.extra_data = dict(base)
+        row.updated_at = datetime.utcnow()
+        s.flush()
+        return True
 
 
 def get_sessions_for_company(company_id):

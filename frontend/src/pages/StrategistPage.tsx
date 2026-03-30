@@ -71,6 +71,7 @@ export default function StrategistPage() {
   const [strategistRules, setStrategistRules] = useState('')
   const [draftStrategistRules, setDraftStrategistRules] = useState('')
   const [showRulesPreview, setShowRulesPreview] = useState(false)
+  const [rulesSaveMsg, setRulesSaveMsg] = useState('')
   const emailSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   const boardKey = (r: ContactsBoardRow) => `${(r.name || '').trim().toLowerCase()}|${(r.linkedin_url || '').trim()}`
@@ -296,10 +297,36 @@ export default function StrategistPage() {
       setDraftStrategistRules('')
       return
     }
-    const saved = localStorage.getItem(rulesStorageKey) || ''
-    setStrategistRules(saved)
-    setDraftStrategistRules(saved)
-  }, [cid, rulesStorageKey])
+    let cancelled = false
+    const fromLs = localStorage.getItem(rulesStorageKey) || ''
+    ;(async () => {
+      if (sid) {
+        try {
+          const r = await apiFetch<{ session?: { extra_data?: Record<string, unknown> } }>(
+            `/api/sessions/${sid}`,
+            { silent: true },
+          )
+          const raw = r.session?.extra_data?.strategist_rules
+          const serverRules = typeof raw === 'string' ? raw.trim() : ''
+          if (!cancelled && serverRules) {
+            setStrategistRules(serverRules)
+            setDraftStrategistRules(serverRules)
+            localStorage.setItem(rulesStorageKey, serverRules)
+            return
+          }
+        } catch {
+          /* fall through to localStorage */
+        }
+      }
+      if (!cancelled) {
+        setStrategistRules(fromLs)
+        setDraftStrategistRules(fromLs)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [cid, rulesStorageKey, sid])
 
   function parseDraft(content: string) {
     const raw = (content || '').trim()
@@ -665,23 +692,39 @@ export default function StrategistPage() {
 
   function openRulesPopup() {
     setDraftStrategistRules(strategistRules)
+    setRulesSaveMsg('')
     setShowRulesPopup(true)
   }
 
   async function saveStrategistRules() {
     const cleaned = draftStrategistRules.trim()
+    setRulesSaveMsg('')
     setStrategistRules(cleaned)
     localStorage.setItem(rulesStorageKey, cleaned)
     if (sid && cleaned) {
       try {
-        await apiFetch(`/api/sessions/${sid}/strategist-rules`, {
-          method: 'POST',
-          silent: true,
-          json: { strategist_rules: cleaned },
-        })
+        const out = await apiFetch<{ ok?: boolean; learned?: boolean; persisted?: boolean }>(
+          `/api/sessions/${sid}/strategist-rules`,
+          {
+            method: 'POST',
+            silent: true,
+            json: { strategist_rules: cleaned },
+          },
+        )
+        if (out.learned) {
+          setRulesSaveMsg(
+            'Rules saved on this session and added to global preference memory. They apply on the next message.',
+          )
+        } else {
+          setRulesSaveMsg(
+            'Rules saved on this session and apply on the next message. Global preference memory was unchanged (often means this text was already stored).',
+          )
+        }
       } catch (ex) {
         setErr(ex instanceof Error ? ex.message : 'Could not save strategist rules to memory')
       }
+    } else if (cleaned) {
+      setRulesSaveMsg('Rules saved in this browser for this company/contact. Open a session to sync them to the server.')
     }
     setShowRulesPreview(false)
     setShowRulesPopup(false)
@@ -1104,6 +1147,7 @@ export default function StrategistPage() {
                 {strategistRules}
               </pre>
             )}
+            {!!rulesSaveMsg && <p className="muted small strategist-rules-save-msg">{rulesSaveMsg}</p>}
           </section>
 
           {pendingPlan && pendingPlan.length > 0 && (

@@ -211,12 +211,15 @@ def learn_user_preference(uid, user_text, assistant_text="", source="strategist"
         return False
 
 
+_STRATEGIST_RULES_UI_SOURCE = "strategist_rules_ui"
+_MAX_STRATEGIST_UI_PREFS = 2
+
+
 def get_relevant_preference_memories(query, limit=5):
     q = (query or "").strip().lower()
-    if not q:
-        return []
-    q_tags = set(_infer_intent_tags(q))
-    q_words = set(re.findall(r"\b[a-z]{4,}\b", q))
+    has_query = bool(q)
+    q_tags = set(_infer_intent_tags(q)) if has_query else set()
+    q_words = set(re.findall(r"\b[a-z]{4,}\b", q)) if has_query else set()
     rows = get_all_global_insights(limit=120)
     ranked = []
     for row in rows:
@@ -227,40 +230,68 @@ def get_relevant_preference_memories(query, limit=5):
         if not pref:
             continue
         tags = set(parsed.get("intent_tags") or [])
+        source = (parsed.get("source") or "").strip()
+        is_sr_ui = source == _STRATEGIST_RULES_UI_SOURCE
         pref_words = set(re.findall(r"\b[a-z]{4,}\b", pref.lower()))
         overlap = len(q_words & pref_words)
         tag_overlap = len(q_tags & tags) if q_tags else 0
-        if q_tags and tag_overlap == 0 and overlap == 0:
-            continue
+        if not has_query:
+            if not is_sr_ui:
+                continue
+        else:
+            if not is_sr_ui:
+                if q_tags and tag_overlap == 0 and overlap == 0:
+                    continue
         score = float(row.get("confidence_score") or 0.5) + (0.8 * tag_overlap) + (0.15 * overlap)
+        if is_sr_ui:
+            score += 0.35
         ranked.append({
             "preference": pref[:260],
             "rationale": (parsed.get("rationale") or "").strip()[:180],
             "tags": sorted(tags),
             "score": score,
+            "source": source,
+            "created_at": row.get("created_at") or "",
         })
-    ranked.sort(key=lambda x: x["score"], reverse=True)
+    ranked.sort(key=lambda x: (x["score"], x.get("created_at") or ""), reverse=True)
     out = []
     seen = set()
+    sr_ui_count = 0
     for item in ranked:
         key = item["preference"].lower()
         if key in seen:
             continue
+        if item.get("source") == _STRATEGIST_RULES_UI_SOURCE:
+            if sr_ui_count >= _MAX_STRATEGIST_UI_PREFS:
+                continue
+            sr_ui_count += 1
         seen.add(key)
-        out.append(item)
+        out.append({k: v for k, v in item.items() if k not in ("source", "created_at")})
         if len(out) >= limit:
             break
     return out
 
 
-def _build_preference_memory_block(query):
-    prefs = get_relevant_preference_memories(query, limit=5)
-    if not prefs:
-        return "== USER PREFERENCE MEMORY ==\n(None captured yet for this ask.)"
+_STRATEGIST_SESSION_PREF_CHARS = 420
+
+
+def _build_preference_memory_block(query, strategist_rules=None):
     lines = []
+    sr = (strategist_rules or "").strip()
+    if sr:
+        cleaned = re.sub(r"\s+", " ", sr).strip()
+        if len(cleaned) > _STRATEGIST_SESSION_PREF_CHARS:
+            cleaned = cleaned[:_STRATEGIST_SESSION_PREF_CHARS].rstrip() + "..."
+        lines.append(
+            "- [strategist_session] (active chat rules for this thread — apply on every turn, even when the "
+            f"user message is short) {cleaned}"
+        )
+    prefs = get_relevant_preference_memories(query, limit=5)
     for p in prefs:
         why = f" | why: {p['rationale']}" if p.get("rationale") else ""
         lines.append(f"- [{', '.join(p.get('tags') or ['general'])}] {p['preference']}{why}")
+    if not lines:
+        return "== USER PREFERENCE MEMORY ==\n(None captured yet for this ask.)"
     return "== USER PREFERENCE MEMORY ==\n" + "\n".join(lines)
 
 
@@ -769,7 +800,7 @@ The RESEARCH section shows programmatic/core revenue is the primary driver (e.g.
     research_coverage_block = _build_research_coverage_block(research_context)
     context_health_block = _build_context_health_block(comp, research_notes=research_notes)
     painpoint_signals_block = _extract_painpoint_signals(research_context, platform_presence_block)
-    preference_memory_block = _build_preference_memory_block(query or "")
+    preference_memory_block = _build_preference_memory_block(query or "", strategist_rules=strategist_rules)
     strategist_rules_block = ""
     if strategist_rules and str(strategist_rules).strip():
         cleaned_rules = re.sub(r"\s+", " ", str(strategist_rules)).strip()
@@ -1742,7 +1773,7 @@ Signature to use:
         f"- {s.get('company_domain', '?')} / {s.get('contact_name', '?')} (msgs: {get_message_count(s['id'])})"
         for s in sessions
     ]) or "(None.)"
-    preference_memory_block = _build_preference_memory_block(query or "")
+    preference_memory_block = _build_preference_memory_block(query or "", strategist_rules=None)
     return f"""You are the LH2 Command Center Advisor. You have full visibility into the user's pipeline, active sessions, and research status. Your job is to tell them exactly what to do next and why.
 
 == LH2 OFFERINGS ==
@@ -1836,16 +1867,33 @@ _STOP_WORDS = {
 
 
 def retrieve_relevant_memories(sid, uid, query, limit=5):
+    mems = []
+    latest_rules_summary = None
+    latest_rules_ts = ""
+    for e in get_memory_events(sid, min_imp=3, limit=50):
+        summ = (e.get("summary") or "").strip()
+        if "user saved strategist rules" not in summ.lower():
+            continue
+        ts = e.get("created_at") or ""
+        if ts >= latest_rules_ts:
+            latest_rules_ts = ts
+            latest_rules_summary = summ
+    if latest_rules_summary:
+        mems.append({"type": "episodic", "text": latest_rules_summary, "score": 99.0})
+
     kw = set(re.findall(r"\b[a-zA-Z]{4,}\b", query.lower())) - _STOP_WORDS
     if not kw:
-        return []
+        return mems[:limit]
 
-    mems = []
+    skip_exact = {latest_rules_summary} if latest_rules_summary else set()
     for e in get_memory_events(sid, min_imp=3):
-        ew = set(re.findall(r"\b[a-zA-Z]{4,}\b", e["summary"].lower()))
+        summ = (e.get("summary") or "").strip()
+        if summ in skip_exact:
+            continue
+        ew = set(re.findall(r"\b[a-zA-Z]{4,}\b", summ.lower()))
         ol = len(kw & ew)
         if ol > 0:
-            mems.append({"type": "episodic", "text": e["summary"], "score": ol + e["importance_score"] / 10})
+            mems.append({"type": "episodic", "text": summ, "score": ol + e["importance_score"] / 10})
 
     for g in get_all_global_insights(limit=20):
         gw = set(re.findall(r"\b[a-zA-Z]{4,}\b", g["insight"].lower()))
