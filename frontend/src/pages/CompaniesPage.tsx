@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../api/client'
 import {
@@ -6,7 +6,7 @@ import {
   type ApiPublisherGroup,
   type UiPublisherGroup as CompanyGroup,
 } from '../api/publisherCrm'
-import { stripWorkspaceFromSearchParams, toWorkspaceSearchString } from '../lib/workspaceUrl'
+import { toWorkspaceSearchString } from '../lib/workspaceUrl'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
 import { useDebounced } from '../hooks/useDebounced'
@@ -121,6 +121,17 @@ export default function CompaniesPage() {
   const [expandedMediaHouseKey, setExpandedMediaHouseKey] = useState<string | null>(null)
   const [mediaBrandsLoadingKey, setMediaBrandsLoadingKey] = useState<string | null>(null)
   const [listEpoch, setListEpoch] = useState(0)
+  const [retagOpen, setRetagOpen] = useState(false)
+  const [retagSourceType, setRetagSourceType] = useState<'independent' | 'media_house'>('independent')
+  const [retagSourceId, setRetagSourceId] = useState<number | null>(null)
+  const [retagLabel, setRetagLabel] = useState('')
+  const [retagTargetType, setRetagTargetType] = useState<'independent' | 'media_house'>('media_house')
+  const [retagParentName, setRetagParentName] = useState('')
+  const [retagReason, setRetagReason] = useState('')
+  const [addMediaOpen, setAddMediaOpen] = useState(false)
+  const [addMediaParent, setAddMediaParent] = useState('')
+  const [addMediaDomain, setAddMediaDomain] = useState('')
+  const [mediaParentSuggestions, setMediaParentSuggestions] = useState<string[]>([])
   const companyGroupsRef = useRef(companyGroups)
   companyGroupsRef.current = companyGroups
 
@@ -133,18 +144,6 @@ export default function CompaniesPage() {
       statusOptions.find((s) => s === 'not_contacted') || statusOptions[0] || 'not_contacted'
     return { notContacted }
   }, [statusOptions])
-
-  useLayoutEffect(() => {
-    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1)
-    const limit = clampPageSize(parseInt(searchParams.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
-    const sourceInUrl = searchParams.get('sel_source') ?? searchParams.get('source')
-    const source: 'independent' | 'media' = sourceInUrl === 'media' ? 'media' : 'independent'
-    const qParam = searchParams.get('q') ?? ''
-    setListPage(page)
-    setPageSize(limit)
-    setCrmSource(source)
-    setQ(qParam)
-  }, [searchParams])
 
   useEffect(() => {
     const fk = `${crmSource}|${dq.trim()}`
@@ -169,9 +168,9 @@ export default function CompaniesPage() {
   }, [crmSource, listPage, pageSize, dq, searchParams, setSearchParams])
 
   useEffect(() => {
-    if (searchParams.has('source')) return
-    setCrmSource(selection.source === 'media' ? 'media' : 'independent')
-  }, [selection.source, searchParams])
+    const next = selection.source === 'media' ? 'media' : 'independent'
+    if (next !== crmSource) setCrmSource(next)
+  }, [selection.source, crmSource])
 
   useEffect(() => {
     let cancelled = false
@@ -209,6 +208,44 @@ export default function CompaniesPage() {
       cancelled = true
     }
   }, [crmSource, dq, listPage, pageSize, listEpoch])
+
+  useEffect(() => {
+    const needsSuggestions = addMediaOpen || (retagOpen && retagTargetType === 'media_house')
+    if (!needsSuggestions) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await apiFetch<{ parent_name: string }[]>('/api/advisor/media-houses', { silent: true })
+        if (cancelled) return
+        const byLower = new Map<string, string>()
+        for (const r of rows || []) {
+          const val = (r.parent_name || '').trim()
+          if (!val) continue
+          const k = val.toLowerCase()
+          if (!byLower.has(k)) byLower.set(k, val)
+        }
+        setMediaParentSuggestions(Array.from(byLower.values()))
+      } catch {
+        if (!cancelled) setMediaParentSuggestions([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [addMediaOpen, retagOpen, retagTargetType])
+
+  const filteredRetagParentSuggestions = useMemo(() => {
+    const qtxt = retagParentName.trim().toLowerCase()
+    const list = mediaParentSuggestions || []
+    if (!qtxt) return list.slice(0, 12)
+    return list.filter((p) => p.toLowerCase().includes(qtxt)).slice(0, 12)
+  }, [mediaParentSuggestions, retagParentName])
+
+  const hasExactRetagParentMatch = useMemo(() => {
+    const qtxt = retagParentName.trim().toLowerCase()
+    if (!qtxt) return false
+    return (mediaParentSuggestions || []).some((p) => p.trim().toLowerCase() === qtxt)
+  }, [mediaParentSuggestions, retagParentName])
 
   useEffect(() => {
     if (crmSource !== 'media' || !expandedMediaHouseKey) {
@@ -307,6 +344,76 @@ export default function CompaniesPage() {
     }
   }
 
+  function openRetagForIndependent(g: CompanyGroup) {
+    if (!g.company_id) return
+    setRetagSourceType('independent')
+    setRetagSourceId(g.company_id)
+    setRetagLabel(g.displayTitle || '')
+    setRetagTargetType('media_house')
+    setRetagParentName('')
+    setRetagReason('')
+    setRetagOpen(true)
+  }
+
+  function openRetagForMediaBrand(advisorCompanyId: number, domain: string) {
+    setRetagSourceType('media_house')
+    setRetagSourceId(advisorCompanyId)
+    setRetagLabel(domain || '')
+    setRetagTargetType('independent')
+    setRetagParentName('')
+    setRetagReason('')
+    setRetagOpen(true)
+  }
+
+  async function submitRetag() {
+    if (!retagSourceId) return
+    if (retagTargetType === 'media_house' && !retagParentName.trim()) return
+    setBusy('retag')
+    setErr('')
+    try {
+      await apiFetch('/api/companies/reclassify', {
+        method: 'POST',
+        json: {
+          source_type: retagSourceType,
+          source_id: retagSourceId,
+          target_type: retagTargetType,
+          parent_name: retagTargetType === 'media_house' ? retagParentName.trim() : null,
+          reason: retagReason.trim() || null,
+        },
+      })
+      setRetagOpen(false)
+      setListPage(1)
+      setListEpoch((e) => e + 1)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Retag failed')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function submitCreateMediaHouse() {
+    const parent = addMediaParent.trim()
+    const domain = addMediaDomain.trim()
+    if (!parent || !domain) return
+    setBusy('create-media')
+    setErr('')
+    try {
+      await apiFetch('/api/advisor/companies', {
+        method: 'POST',
+        json: { parent_name: parent, domain },
+      })
+      setAddMediaOpen(false)
+      setAddMediaParent('')
+      setAddMediaDomain('')
+      setListPage(1)
+      setListEpoch((e) => e + 1)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Create media house failed')
+    } finally {
+      setBusy('')
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(listTotal / pageSize) || 1)
   const qLower = dq.trim().toLowerCase()
   const visibleGroups = companyGroups
@@ -314,15 +421,15 @@ export default function CompaniesPage() {
   return (
     <div className="page-wide">
       <h1>Companies</h1>
-      <div className="toolbar" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-        <div className="crm-source" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div className="toolbar companies-toolbar">
+        <div className="crm-source companies-source">
           <label className="muted small">Source</label>
           <div className="crm-seg">
             <button
               type="button"
               className={crmSource === 'independent' ? 'crm-seg-btn active' : 'crm-seg-btn'}
               onClick={() => {
-                setCrmSource('independent')
+                if (crmSource !== 'independent') setCrmSource('independent')
                 setSelection({
                   source: 'independent',
                   companyId: null,
@@ -330,14 +437,6 @@ export default function CompaniesPage() {
                   advisorCompanyId: null,
                   sessionId: null,
                 })
-                setSearchParams(
-                  (prev) => {
-                    const p = new URLSearchParams(prev)
-                    stripWorkspaceFromSearchParams(p)
-                    return p
-                  },
-                  { replace: true },
-                )
               }}
               disabled={!!busy || loading}
             >
@@ -347,7 +446,7 @@ export default function CompaniesPage() {
               type="button"
               className={crmSource === 'media' ? 'crm-seg-btn active' : 'crm-seg-btn'}
               onClick={() => {
-                setCrmSource('media')
+                if (crmSource !== 'media') setCrmSource('media')
                 setSelection({
                   source: 'media',
                   companyId: null,
@@ -355,14 +454,6 @@ export default function CompaniesPage() {
                   advisorCompanyId: null,
                   sessionId: null,
                 })
-                setSearchParams(
-                  (prev) => {
-                    const p = new URLSearchParams(prev)
-                    stripWorkspaceFromSearchParams(p)
-                    return p
-                  },
-                  { replace: true },
-                )
               }}
               disabled={!!busy || loading}
             >
@@ -371,8 +462,7 @@ export default function CompaniesPage() {
           </div>
         </div>
         <input
-          className="search"
-          style={{ flex: '1 1 200px', minWidth: 180 }}
+          className="search companies-search"
           placeholder={crmSource === 'media' ? 'Search parent / brands / SPOCs…' : 'Search domain / SPOCs…'}
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -382,9 +472,23 @@ export default function CompaniesPage() {
             {busy === 'sync-ind' ? '…' : 'Sync Notion'}
           </button>
         ) : (
-          <button type="button" className="secondary" disabled={!!busy} onClick={syncMedia}>
-            {busy === 'sync-media' ? '…' : 'Sync Media Houses'}
-          </button>
+          <>
+            <button
+              type="button"
+              className="secondary"
+              disabled={!!busy}
+              onClick={() => {
+                setAddMediaOpen(true)
+                setAddMediaParent('')
+                setAddMediaDomain('')
+              }}
+            >
+              + Add Media House
+            </button>
+            <button type="button" className="secondary" disabled={!!busy} onClick={syncMedia}>
+              {busy === 'sync-media' ? '…' : 'Sync Media Houses'}
+            </button>
+          </>
         )}
       </div>
       {err && <p className="error">{err}</p>}
@@ -404,12 +508,13 @@ export default function CompaniesPage() {
                   <th>Next step</th>
                   <th>Traffic</th>
                   <th>Syndication</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleGroups.length === 0 && (
                   <tr>
-                    <td className="muted" colSpan={7}>
+                    <td className="muted" colSpan={8}>
                       No companies match this search{qLower ? '.' : '.'}
                     </td>
                   </tr>
@@ -451,6 +556,19 @@ export default function CompaniesPage() {
                       <td>{fmtVisits(g.monthly_visits)}</td>
                       <td>
                         <SyndicationBadges syndication={g.syndication} />
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary sm"
+                          disabled={!!busy}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openRetagForIndependent(g)
+                          }}
+                        >
+                          Retag
+                        </button>
                       </td>
                     </tr>
                   )
@@ -564,12 +682,13 @@ export default function CompaniesPage() {
                                       <th>Next step</th>
                                       <th>Traffic</th>
                                       <th>Syndication</th>
+                                      <th>Actions</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {brandsToShow.length === 0 && (
                                       <tr>
-                                        <td className="muted" colSpan={7}>
+                                        <td className="muted" colSpan={8}>
                                           No matching brands in this media house.
                                         </td>
                                       </tr>
@@ -619,6 +738,24 @@ export default function CompaniesPage() {
                                           <td>
                                             <SyndicationBadges syndication={b.syndication} />
                                           </td>
+                                          <td>
+                                            {canOpen ? (
+                                              <button
+                                                type="button"
+                                                className="secondary sm"
+                                                disabled={!!busy}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  openRetagForMediaBrand(
+                                                    b.advisor_company_id as number,
+                                                    b.company_domain,
+                                                  )
+                                                }}
+                                              >
+                                                Retag
+                                              </button>
+                                            ) : null}
+                                          </td>
                                         </tr>
                                       )
                                     })}
@@ -637,6 +774,132 @@ export default function CompaniesPage() {
           </div>
         </>
       )}
+
+      {retagOpen ? (
+        <div
+          className="crm-add-publisher-overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRetagOpen(false)
+          }}
+        >
+          <div className="panel crm-add-publisher-modal" onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Retag company</h2>
+            <p className="muted small">Update classification for {retagLabel || 'this company'}.</p>
+            <div className="crm-add-publisher-fields">
+              <label className="crm-add-field">
+                <span>Target type</span>
+                <select
+                  value={retagTargetType}
+                  onChange={(e) => setRetagTargetType(e.target.value as 'independent' | 'media_house')}
+                >
+                  <option value="independent">Independent</option>
+                  <option value="media_house">Media House</option>
+                </select>
+              </label>
+              {retagTargetType === 'media_house' ? (
+                <label className="crm-add-field">
+                  <span>Media house (parent)</span>
+                  <input
+                    type="text"
+                    value={retagParentName}
+                    onChange={(e) => setRetagParentName(e.target.value)}
+                    placeholder="e.g. Future plc"
+                    list="companies-retag-parent-datalist"
+                    autoComplete="off"
+                  />
+                  <datalist id="companies-retag-parent-datalist">
+                    {filteredRetagParentSuggestions.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                  {retagParentName.trim() && !hasExactRetagParentMatch ? (
+                    <span className="muted small">No exact match. Save retag to create this media house parent.</span>
+                  ) : null}
+                </label>
+              ) : null}
+              <label className="crm-add-field">
+                <span>Reason (optional)</span>
+                <input
+                  type="text"
+                  value={retagReason}
+                  onChange={(e) => setRetagReason(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button type="button" className="secondary sm" onClick={() => setRetagOpen(false)} disabled={!!busy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary sm"
+                onClick={() => void submitRetag()}
+                disabled={!!busy || !retagSourceId || (retagTargetType === 'media_house' && !retagParentName.trim())}
+              >
+                {busy === 'retag' ? 'Saving…' : 'Save retag'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {addMediaOpen ? (
+        <div
+          className="crm-add-publisher-overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAddMediaOpen(false)
+          }}
+        >
+          <div className="panel crm-add-publisher-modal" onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Add media house brand</h2>
+            <div className="crm-add-publisher-fields">
+              <label className="crm-add-field">
+                <span>Media house (parent)</span>
+                <input
+                  type="text"
+                  value={addMediaParent}
+                  onChange={(e) => setAddMediaParent(e.target.value)}
+                  list="companies-media-parent-datalist"
+                  autoComplete="off"
+                />
+                <datalist id="companies-media-parent-datalist">
+                  {(mediaParentSuggestions || []).slice(0, 25).map((p) => (
+                    <option key={p} value={p} />
+                  ))}
+                </datalist>
+              </label>
+              <label className="crm-add-field">
+                <span>Brand domain</span>
+                <input
+                  type="text"
+                  value={addMediaDomain}
+                  onChange={(e) => setAddMediaDomain(e.target.value)}
+                  placeholder="e.g. 9to5mac.com"
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button type="button" className="secondary sm" onClick={() => setAddMediaOpen(false)} disabled={!!busy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary sm"
+                onClick={() => void submitCreateMediaHouse()}
+                disabled={!!busy || !addMediaParent.trim() || !addMediaDomain.trim()}
+              >
+                {busy === 'create-media' ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {!loading && (
         <div className="crm-pagination companies-pagination" style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>

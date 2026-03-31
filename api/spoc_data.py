@@ -30,6 +30,7 @@ from db_ops import (
     get_spoc_contacts_by_spoc,
     get_spoc_contacts_by_company_and_leader,
     get_spoc_contacts_for_company_ids,
+    lookup_existing_shadow_pairs_for_advisors,
 )
 
 from integrations.analytics.tracker_sources import load_domain_to_platforms, get_presence_for_domain
@@ -531,7 +532,11 @@ def build_publisher_crm_rows(
             return out_rows
 
         advisor_ids = [int(ch["id"]) for _, ch in worklist]
-        shadow_pair_by_aid = bulk_ensure_shadow_companies_for_advisor_ids(advisor_ids)
+        # Keep list reads side-effect free: do not create missing shadow rows on lite list fetch.
+        if lite and filter_advisor_company_id is None and media_parent_key is None:
+            shadow_pair_by_aid = lookup_existing_shadow_pairs_for_advisors(advisor_ids)
+        else:
+            shadow_pair_by_aid = bulk_ensure_shadow_companies_for_advisor_ids(advisor_ids)
 
         shadow_company_ids = [sc for sc, ct in shadow_pair_by_aid.values() if sc]
         shadow_contact_ids = [ct for sc, ct in shadow_pair_by_aid.values() if ct]

@@ -558,6 +558,13 @@ export default function DashboardPage() {
   const [addPubMediaParent, setAddPubMediaParent] = useState('')
   const [addPubMediaSpocs, setAddPubMediaSpocs] = useState<AddPublisherSpocRow[]>(() => [newSpocRow()])
   const [mediaParentSuggestions, setMediaParentSuggestions] = useState<string[]>([])
+  const [retagOpen, setRetagOpen] = useState(false)
+  const [retagSourceType, setRetagSourceType] = useState<'independent' | 'media_house'>('independent')
+  const [retagSourceId, setRetagSourceId] = useState<number | null>(null)
+  const [retagLabel, setRetagLabel] = useState('')
+  const [retagTargetType, setRetagTargetType] = useState<'independent' | 'media_house'>('media_house')
+  const [retagParentName, setRetagParentName] = useState('')
+  const [retagReason, setRetagReason] = useState('')
   const lastDetailFetchKey = useRef<string | null>(null)
   const companyGroupsRef = useRef(companyGroups)
   companyGroupsRef.current = companyGroups
@@ -634,6 +641,7 @@ export default function DashboardPage() {
   }, [crmSearchInput])
 
   const scrollRestoreRef = useRef<{ el: HTMLElement; top: number } | null>(null)
+  const inFlightCrmSigRef = useRef<string | null>(null)
 
   const captureScrollTop = () => {
     const el = document.querySelector('.frame-content') as HTMLElement | null
@@ -657,32 +665,35 @@ export default function DashboardPage() {
   }, [selectedGroup])
 
   const fetchCrm = async (page: number, opts?: { clearSelection?: boolean }) => {
+    const q = new URLSearchParams()
+    q.set('source', crmSource)
+    q.set('offer_tab', offerTab)
+    q.set('page', String(page))
+    q.set('page_size', String(pageSize))
+    if (debouncedSearch) q.set('search', debouncedSearch)
+    q.set('kpi', activeKpiKey === 'due' ? 'due' : activeKpiKey)
+    const duePipe = (dueDisplayFilters.length ? dueDisplayFilters : [todayDisplay]).join('|')
+    q.set('due_dates', duePipe)
+    // Server-side column filters.
+    if (titleQ.trim()) q.set('title_q', titleQ.trim())
+    if (crmSource === 'independent' && spocQ.trim()) q.set('spoc_q', spocQ.trim())
+    if (crmSource === 'independent' && statusFilter.trim()) q.set('status_filter', statusFilter.trim())
+    if (nextStepQ.trim()) q.set('next_step_q', nextStepQ.trim())
+    if (relevanceFilter.trim()) q.set('relevance_filter', relevanceFilter.trim())
+    if (trafficMin != null) q.set('traffic_min', String(trafficMin))
+    if (trafficMax != null) q.set('traffic_max', String(trafficMax))
+    if (syndicationFilter.trim()) q.set('syndication_filter', syndicationFilter.trim())
+    if (crmSource === 'media' && brandsMin != null) q.set('brands_min', String(brandsMin))
+    if (crmSource === 'media' && contactedMin != null) q.set('contacted_min', String(contactedMin))
+    if (crmSource === 'media' && ceoQ.trim()) q.set('ceo_q', ceoQ.trim())
+    q.set('compact', 'true')
+    const reqSig = q.toString()
+    if (inFlightCrmSigRef.current === reqSig) return
+    inFlightCrmSigRef.current = reqSig
+
     setBusy(true)
     setErr('')
     try {
-      const q = new URLSearchParams()
-      q.set('source', crmSource)
-      q.set('offer_tab', offerTab)
-      q.set('page', String(page))
-      q.set('page_size', String(pageSize))
-      if (debouncedSearch) q.set('search', debouncedSearch)
-      q.set('kpi', activeKpiKey === 'due' ? 'due' : activeKpiKey)
-      const duePipe = (dueDisplayFilters.length ? dueDisplayFilters : [todayDisplay]).join('|')
-      q.set('due_dates', duePipe)
-      // Server-side column filters.
-      if (titleQ.trim()) q.set('title_q', titleQ.trim())
-      if (crmSource === 'independent' && spocQ.trim()) q.set('spoc_q', spocQ.trim())
-      if (crmSource === 'independent' && statusFilter.trim()) q.set('status_filter', statusFilter.trim())
-      if (nextStepQ.trim()) q.set('next_step_q', nextStepQ.trim())
-      if (relevanceFilter.trim()) q.set('relevance_filter', relevanceFilter.trim())
-      if (trafficMin != null) q.set('traffic_min', String(trafficMin))
-      if (trafficMax != null) q.set('traffic_max', String(trafficMax))
-      if (syndicationFilter.trim()) q.set('syndication_filter', syndicationFilter.trim())
-      if (crmSource === 'media' && brandsMin != null) q.set('brands_min', String(brandsMin))
-      if (crmSource === 'media' && contactedMin != null) q.set('contacted_min', String(contactedMin))
-      if (crmSource === 'media' && ceoQ.trim()) q.set('ceo_q', ceoQ.trim())
-      q.set('compact', 'true')
-
       const out = await apiFetch<{
         kpis: Record<string, number>
         groups: ApiPublisherGroup[]
@@ -714,12 +725,14 @@ export default function DashboardPage() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to load dashboard')
     } finally {
+      if (inFlightCrmSigRef.current === reqSig) inFlightCrmSigRef.current = null
       setBusy(false)
     }
   }
 
   useEffect(() => {
-    if (!addPublisherOpen || crmSource !== 'media') return
+    const needsSuggestions = (addPublisherOpen && crmSource === 'media') || (retagOpen && retagTargetType === 'media_house')
+    if (!needsSuggestions) return
     let cancelled = false
     ;(async () => {
       try {
@@ -739,7 +752,20 @@ export default function DashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [addPublisherOpen, crmSource])
+  }, [addPublisherOpen, crmSource, retagOpen, retagTargetType])
+
+  const filteredRetagParentSuggestions = useMemo(() => {
+    const qtxt = retagParentName.trim().toLowerCase()
+    const list = mediaParentSuggestions || []
+    if (!qtxt) return list.slice(0, 12)
+    return list.filter((p) => p.toLowerCase().includes(qtxt)).slice(0, 12)
+  }, [mediaParentSuggestions, retagParentName])
+
+  const hasExactRetagParentMatch = useMemo(() => {
+    const qtxt = retagParentName.trim().toLowerCase()
+    if (!qtxt) return false
+    return (mediaParentSuggestions || []).some((p) => p.trim().toLowerCase() === qtxt)
+  }, [mediaParentSuggestions, retagParentName])
 
   function openAddPublisherModal() {
     setErr('')
@@ -948,6 +974,56 @@ export default function DashboardPage() {
       setErr(e instanceof Error ? e.message : 'Failed to add SPOC')
     } finally {
       setInlineSpocBusy(false)
+    }
+  }
+
+  function openRetagFromIndependentDrawer() {
+    if (!selectedGroup?.company_id) return
+    setRetagSourceType('independent')
+    setRetagSourceId(selectedGroup.company_id)
+    setRetagLabel(selectedGroup.displayTitle || '')
+    setRetagTargetType('media_house')
+    setRetagParentName('')
+    setRetagReason('')
+    setRetagOpen(true)
+  }
+
+  function openRetagFromMediaDrawer() {
+    const aid = selectedMediaBrand?.brand.advisor_company_id
+    if (aid == null) return
+    setRetagSourceType('media_house')
+    setRetagSourceId(aid)
+    setRetagLabel(selectedMediaBrand?.brand.company_domain || '')
+    setRetagTargetType('independent')
+    setRetagParentName('')
+    setRetagReason('')
+    setRetagOpen(true)
+  }
+
+  async function submitRetagFromDashboard() {
+    if (!retagSourceId) return
+    if (retagTargetType === 'media_house' && !retagParentName.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      await apiFetch('/api/companies/reclassify', {
+        method: 'POST',
+        json: {
+          source_type: retagSourceType,
+          source_id: retagSourceId,
+          target_type: retagTargetType,
+          parent_name: retagTargetType === 'media_house' ? retagParentName.trim() : null,
+          reason: retagReason.trim() || null,
+        },
+      })
+      setRetagOpen(false)
+      lastListFetchSig.current = ''
+      setListPage(1)
+      await fetchCrm(1, { clearSelection: true })
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Retag failed')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -1428,7 +1504,7 @@ export default function DashboardPage() {
               type="button"
               className={crmSource === 'independent' ? 'crm-seg-btn active' : 'crm-seg-btn'}
               onClick={() => {
-                setCrmSource('independent')
+                if (crmSource !== 'independent') setCrmSource('independent')
                 setSelection({ source: 'independent' })
               }}
               disabled={busy}
@@ -1439,7 +1515,7 @@ export default function DashboardPage() {
               type="button"
               className={crmSource === 'media' ? 'crm-seg-btn active' : 'crm-seg-btn'}
               onClick={() => {
-                setCrmSource('media')
+                if (crmSource !== 'media') setCrmSource('media')
                 setSelection({ source: 'media' })
               }}
               disabled={busy}
@@ -2508,6 +2584,14 @@ export default function DashboardPage() {
                   <div className="muted small">Current status</div>
                   <div>{selectedGroup.status_label}</div>
                 </div>
+                <div className="crm-detail-row">
+                  <div className="muted small">Classification</div>
+                  <div>
+                    <button type="button" className="secondary sm" disabled={busy} onClick={openRetagFromIndependentDrawer}>
+                      Retag company
+                    </button>
+                  </div>
+                </div>
 
                 <div className="crm-detail-row">
                   <div className="muted small">Relevance reason</div>
@@ -2945,6 +3029,14 @@ export default function DashboardPage() {
                         <div className="muted small">Current status</div>
                         <div>{brand.status_label}</div>
                       </div>
+                      <div className="crm-detail-row">
+                        <div className="muted small">Classification</div>
+                        <div>
+                          <button type="button" className="secondary sm" disabled={busy} onClick={openRetagFromMediaDrawer}>
+                            Retag company
+                          </button>
+                        </div>
+                      </div>
 
                       <div className="crm-detail-row">
                         <div className="muted small">Relevance reason</div>
@@ -3073,6 +3165,77 @@ export default function DashboardPage() {
           </aside>
         )}
       </div>
+
+      {retagOpen ? (
+        <div
+          className="crm-add-publisher-overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRetagOpen(false)
+          }}
+        >
+          <div className="panel crm-add-publisher-modal" onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Retag company</h2>
+            <p className="muted small">Update classification for {retagLabel || 'this company'}.</p>
+            <div className="crm-add-publisher-fields">
+              <label className="crm-add-field">
+                <span>Target type</span>
+                <select
+                  value={retagTargetType}
+                  onChange={(e) => setRetagTargetType(e.target.value as 'independent' | 'media_house')}
+                >
+                  <option value="independent">Independent</option>
+                  <option value="media_house">Media House</option>
+                </select>
+              </label>
+              {retagTargetType === 'media_house' ? (
+                <label className="crm-add-field">
+                  <span>Media house (parent)</span>
+                  <input
+                    type="text"
+                    value={retagParentName}
+                    onChange={(e) => setRetagParentName(e.target.value)}
+                    placeholder="e.g. Future plc"
+                    list="dashboard-retag-parent-datalist"
+                    autoComplete="off"
+                  />
+                  <datalist id="dashboard-retag-parent-datalist">
+                    {filteredRetagParentSuggestions.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                  {retagParentName.trim() && !hasExactRetagParentMatch ? (
+                    <span className="muted small">No exact match. Save retag to create this media house parent.</span>
+                  ) : null}
+                </label>
+              ) : null}
+              <label className="crm-add-field">
+                <span>Reason (optional)</span>
+                <input
+                  type="text"
+                  value={retagReason}
+                  onChange={(e) => setRetagReason(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button type="button" className="secondary sm" onClick={() => setRetagOpen(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary sm"
+                onClick={() => void submitRetagFromDashboard()}
+                disabled={!retagSourceId || busy || (retagTargetType === 'media_house' && !retagParentName.trim())}
+              >
+                {busy ? 'Saving…' : 'Save retag'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {addPublisherOpen ? (
         <div

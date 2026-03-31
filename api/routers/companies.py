@@ -23,6 +23,7 @@ from integrations.ai.ai_engine import compute_lead_score
 from integrations.analytics import apply_syndication_refresh_to_company
 from api.deps import get_current_user, user_has_perm
 from api.schemas import SessionEnsureIn
+from services.company_reclassification_service import reclassify_company
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -48,6 +49,14 @@ class AddPublisherContactsIn(BaseModel):
     """Add extra SPOCs/contacts for an existing independent publisher company."""
 
     contacts: list[PublisherContactIn] = Field(default_factory=list)
+
+
+class ReclassifyCompanyIn(BaseModel):
+    source_type: str = Field(..., description="independent | media_house")
+    source_id: int = Field(..., ge=1)
+    target_type: str = Field(..., description="independent | media_house")
+    parent_name: str | None = None
+    reason: str | None = None
 
 
 @router.post("")
@@ -260,3 +269,34 @@ def patch_company_extra_data(
     if not merge_company_extra_data(company_id, body.patch):
         raise HTTPException(status_code=404, detail="Company not found")
     return {"ok": True}
+
+
+@router.post("/reclassify")
+def reclassify_company_route(
+    body: ReclassifyCompanyIn,
+    user: dict = Depends(get_current_user),
+):
+    if not user_has_perm(user, "can_edit_company"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    source_type = (body.source_type or "").strip().lower()
+    target_type = (body.target_type or "").strip().lower()
+    valid = {"independent", "media_house"}
+    if source_type not in valid or target_type not in valid:
+        raise HTTPException(status_code=400, detail="Invalid source_type or target_type")
+    if source_type == target_type:
+        raise HTTPException(status_code=400, detail="source_type and target_type must be different")
+    if target_type == "media_house" and not (body.parent_name or "").strip():
+        raise HTTPException(status_code=400, detail="parent_name is required for media_house target")
+
+    try:
+        return reclassify_company(
+            source_type=source_type,  # type: ignore[arg-type]
+            source_id=body.source_id,
+            target_type=target_type,  # type: ignore[arg-type]
+            parent_name=body.parent_name,
+            reason=body.reason,
+            actor_user_id=user.get("id"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

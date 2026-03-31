@@ -2359,6 +2359,45 @@ button.sel-pill-clear:hover {
   cursor: not-allowed;
 }
 
+.companies-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  align-items: end;
+}
+.companies-source {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+.companies-source .muted.small {
+  margin: 0;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.companies-search {
+  flex: 0 0 340px;
+  width: 340px;
+  min-width: 340px;
+  max-width: 340px;
+  align-self: end;
+  margin: 0;
+}
+@media (max-width: 920px) {
+  .companies-toolbar {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .companies-search {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 auto;
+  }
+}
+
 .crm-kpi-row {
   margin-bottom: 0.9rem;
 }
