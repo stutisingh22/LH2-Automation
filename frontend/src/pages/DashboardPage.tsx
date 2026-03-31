@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { apiFetch } from '../api/client'
 import {
   mapApiPublisherGroup as mapApiGroup,
@@ -9,7 +9,7 @@ import {
 import { toWorkspaceSearchString } from '../lib/workspaceUrl'
 import { useSelection } from '../state/SelectionContext'
 import { useMeta } from '../state/MetaContext'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { CrmResearchDot } from '../ui/CrmResearchDot'
 import { CrmResearchTh } from '../ui/CrmResearchTh'
 
@@ -90,21 +90,6 @@ function clampPageSize(n: number): number {
 function parseKpiParam(v: string | null): KpiKey {
   if (v && (ALL_KPI_KEYS as readonly string[]).includes(v)) return v as KpiKey
   return 'total'
-}
-
-function dueNeedsUrlParam(activeKpiKey: KpiKey, dueDisplayFilters: string[], todayDisplay: string): boolean {
-  if (activeKpiKey === 'due') return true
-  if (dueDisplayFilters.length !== 1) return true
-  return dueDisplayFilters[0] !== todayDisplay
-}
-
-/** Compare query strings regardless of param ordering (avoids setSearchParams loops). */
-function dashboardUrlParamsEqual(a: URLSearchParams, b: URLSearchParams): boolean {
-  const keys = new Set<string>([...a.keys(), ...b.keys()])
-  for (const k of keys) {
-    if (a.get(k) !== b.get(k)) return false
-  }
-  return true
 }
 
 /** UTC "Mar 25, 2026" matching dashboard due-date strings (must match in-component formatter). */
@@ -449,9 +434,6 @@ export default function DashboardPage() {
   const { selection, setSelection } = useSelection()
   const meta = useMeta()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const selectedCompanyIdRef = useRef<number | undefined>(undefined)
-  const selectedAdvisorBrandIdRef = useRef<number | null>(null)
 
   const [initialDash] = useState(() =>
     parseDashboardUrlSearch(typeof window !== 'undefined' ? window.location.search : ''),
@@ -1081,200 +1063,6 @@ export default function DashboardPage() {
   }, [crmSource, expandedMediaHouseKey, offerTab, listDataEpoch])
 
   useEffect(() => {
-    selectedCompanyIdRef.current = selectedGroup?.company_id
-  }, [selectedGroup?.company_id])
-
-  useEffect(() => {
-    selectedAdvisorBrandIdRef.current = selectedMediaBrand?.brand.advisor_company_id ?? null
-  }, [selectedMediaBrand?.brand.advisor_company_id])
-
-  useLayoutEffect(() => {
-    const qParam = searchParams.get('q') ?? ''
-    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1)
-    const limit = clampPageSize(parseInt(searchParams.get('limit') || String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
-    const sourceInUrl = searchParams.get('sel_source') ?? searchParams.get('source')
-    const source: 'independent' | 'media' = sourceInUrl === 'media' ? 'media' : 'independent'
-    const offer: 'indication' | 'general_acq' =
-      searchParams.get('offer') === 'general_acq' ? 'general_acq' : 'indication'
-    const kpi = parseKpiParam(searchParams.get('kpi'))
-    const dueRaw = searchParams.get('due')
-    const dueParsed =
-      dueRaw && dueRaw.length ? dueRaw.split('|').map((s) => s.trim()).filter(Boolean) : null
-
-    setCrmSearchInput(qParam)
-    setDebouncedSearch(qParam.trim())
-    setListPage(page)
-    setPageSize(limit)
-    setCrmSource(source)
-    setOfferTab(offer)
-    setActiveKpiKey(kpi)
-    setDueDisplayFilters(dueParsed && dueParsed.length ? dueParsed : [todayDisplay])
-
-    // Column filters.
-    const parseIntOrNull = (k: string): number | null => {
-      const raw = searchParams.get(k)
-      if (raw == null) return null
-      const s = String(raw).trim()
-      if (!s) return null
-      const n = parseInt(s, 10)
-      return Number.isFinite(n) ? n : null
-    }
-    setTitleQ(searchParams.get('title_q') ?? '')
-    setSpocQ(searchParams.get('spoc_q') ?? '')
-    setStatusFilter(searchParams.get('status_filter') ?? '')
-    setNextStepQ(searchParams.get('next_step_q') ?? '')
-    setRelevanceFilter(searchParams.get('relevance_filter') ?? '')
-    setTrafficMin(parseIntOrNull('traffic_min'))
-    setTrafficMax(parseIntOrNull('traffic_max'))
-    setSyndicationFilter(searchParams.get('syndication_filter') ?? '')
-    setBrandsMin(parseIntOrNull('brands_min'))
-    setContactedMin(parseIntOrNull('contacted_min'))
-    setCeoQ(searchParams.get('ceo_q') ?? '')
-
-    const detailParam = searchParams.get('detail') === 'campaign' ? 'campaign' : 'overview'
-    setDetailTab(detailParam)
-
-    if (source === 'independent') {
-      setSelectedMediaBrand(null)
-      setExpandedMediaHouseKey(null)
-      const cidRaw = searchParams.get('company')
-      if (cidRaw) {
-        const cid = parseInt(cidRaw, 10)
-        if (cid > 0 && selectedCompanyIdRef.current !== cid) {
-          lastDetailFetchKey.current = null
-          setSelectedGroup(minimalIndependentGroup(cid))
-        }
-      } else {
-        setSelectedGroup(null)
-      }
-    } else {
-      setSelectedGroup(null)
-      const expandKey = searchParams.get('expand')
-      if (expandKey) setExpandedMediaHouseKey(expandKey)
-      else setExpandedMediaHouseKey(null)
-      const brandRaw = searchParams.get('brand')
-      if (brandRaw) {
-        const aid = parseInt(brandRaw, 10)
-        if (aid > 0 && selectedAdvisorBrandIdRef.current !== aid) {
-          lastDetailFetchKey.current = null
-          setSelectedMediaBrand(minimalMediaBrandSelection(expandKey, aid))
-        }
-      } else {
-        setSelectedMediaBrand(null)
-      }
-    }
-  }, [searchParams, todayDisplay])
-
-  useEffect(() => {
-    const hasScopedSel =
-      searchParams.has('sel_company') || searchParams.has('sel_advisor') || searchParams.has('sel_contact') || searchParams.has('sel_session')
-    const p = new URLSearchParams(searchParams)
-    if (!hasScopedSel) p.set('source', crmSource)
-    else p.delete('source')
-    p.set('page', String(listPage))
-    if (debouncedSearch) p.set('q', debouncedSearch)
-    else p.delete('q')
-    if (pageSize !== DEFAULT_PAGE_SIZE) p.set('limit', String(pageSize))
-    else p.delete('limit')
-
-    if (offerTab === 'general_acq') p.set('offer', 'general_acq')
-    else p.delete('offer')
-
-    if (activeKpiKey !== 'total') p.set('kpi', activeKpiKey)
-    else p.delete('kpi')
-
-    if (dueNeedsUrlParam(activeKpiKey, dueDisplayFilters, todayDisplay)) {
-      p.set('due', dueDisplayFilters.join('|'))
-    } else {
-      p.delete('due')
-    }
-
-    // Column filters (server-side).
-    if (titleQ.trim()) p.set('title_q', titleQ.trim())
-    else p.delete('title_q')
-
-    if (crmSource === 'independent' && spocQ.trim()) p.set('spoc_q', spocQ.trim())
-    else p.delete('spoc_q')
-
-    if (crmSource === 'independent' && statusFilter.trim()) p.set('status_filter', statusFilter.trim())
-    else p.delete('status_filter')
-
-    if (nextStepQ.trim()) p.set('next_step_q', nextStepQ.trim())
-    else p.delete('next_step_q')
-
-    if (relevanceFilter.trim()) p.set('relevance_filter', relevanceFilter.trim())
-    else p.delete('relevance_filter')
-
-    if (trafficMin != null) p.set('traffic_min', String(trafficMin))
-    else p.delete('traffic_min')
-    if (trafficMax != null) p.set('traffic_max', String(trafficMax))
-    else p.delete('traffic_max')
-
-    if (syndicationFilter.trim()) p.set('syndication_filter', syndicationFilter.trim())
-    else p.delete('syndication_filter')
-
-    if (crmSource === 'media' && brandsMin != null) p.set('brands_min', String(brandsMin))
-    else p.delete('brands_min')
-    if (crmSource === 'media' && contactedMin != null) p.set('contacted_min', String(contactedMin))
-    else p.delete('contacted_min')
-    if (crmSource === 'media' && ceoQ.trim()) p.set('ceo_q', ceoQ.trim())
-    else p.delete('ceo_q')
-
-    if (crmSource === 'independent' && selectedGroup?.company_id) p.set('company', String(selectedGroup.company_id))
-    else p.delete('company')
-
-    if (crmSource === 'media') {
-      if (expandedMediaHouseKey) p.set('expand', expandedMediaHouseKey)
-      else p.delete('expand')
-      if (selectedMediaBrand?.brand.advisor_company_id != null) {
-        p.set('brand', String(selectedMediaBrand.brand.advisor_company_id))
-      } else {
-        p.delete('brand')
-      }
-    } else {
-      p.delete('expand')
-      p.delete('brand')
-    }
-
-    if (detailTab === 'campaign') p.set('detail', 'campaign')
-    else p.delete('detail')
-
-    if (dashboardUrlParamsEqual(p, new URLSearchParams(searchParams))) return
-    setSearchParams(p, { replace: true })
-  }, [
-    debouncedSearch,
-    listPage,
-    pageSize,
-    crmSource,
-    offerTab,
-    activeKpiKey,
-    dueDisplayFilters,
-    titleQ,
-    spocQ,
-    statusFilter,
-    nextStepQ,
-    relevanceFilter,
-    trafficMin,
-    trafficMax,
-    syndicationFilter,
-    brandsMin,
-    contactedMin,
-    ceoQ,
-    selectedGroup?.company_id,
-    selectedMediaBrand?.brand.advisor_company_id,
-    expandedMediaHouseKey,
-    detailTab,
-    todayDisplay,
-    searchParams,
-    setSearchParams,
-  ])
-
-  useEffect(() => {
-    if (searchParams.has('source')) return
-    setCrmSource(selection.source === 'media' ? 'media' : 'independent')
-  }, [selection.source, searchParams])
-
-  useEffect(() => {
     const fkChanged =
       prevListFilterKey.current !== null && prevListFilterKey.current !== listFilterKey
     prevListFilterKey.current = listFilterKey
@@ -1286,6 +1074,14 @@ export default function DashboardPage() {
     void fetchCrm(pageToFetch)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listFilterKey, listPage])
+
+  // Keep source toggle in sync with global DB/source selector.
+  useEffect(() => {
+    const next = selection.source === 'media' ? 'media' : 'independent'
+    if (next !== crmSource) {
+      setCrmSource(next)
+    }
+  }, [selection.source, crmSource])
 
   // When the drawer opens, check whether any research has been saved already.
   useEffect(() => {
