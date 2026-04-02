@@ -1316,65 +1316,148 @@ def get_sessions_for_companies(company_ids: list[int]) -> dict[int, list]:
         return out
 
 
+def _advisor_id_from_company_dict(comp: dict | None) -> int | None:
+    """Resolve advisor_companies.id from a Media Houses shadow company dict, or None."""
+    if not comp:
+        return None
+    ed = comp.get("extra_data") if isinstance(comp.get("extra_data"), dict) else {}
+    raw = ed.get("source_advisor_company_id")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    dom = (comp.get("domain") or "").strip()
+    if dom.startswith("__advisor_"):
+        suf = dom[len("__advisor_") :]
+        if suf.isdigit():
+            return int(suf)
+    return None
+
+
+def _collect_adv_map_for_company_rows(s, comps: list) -> dict[int, dict]:
+    advisor_ids: set[int] = set()
+    for comp in comps:
+        if comp is None:
+            continue
+        mini = {
+            "domain": getattr(comp, "domain", None),
+            "name": getattr(comp, "name", None),
+            "extra_data": getattr(comp, "extra_data", None),
+        }
+        aid = _advisor_id_from_company_dict(mini)
+        if aid is not None:
+            advisor_ids.add(aid)
+    if not advisor_ids:
+        return {}
+    rows = s.query(AdvisorCompany).filter(AdvisorCompany.id.in_(sorted(advisor_ids))).all()
+    return {r.id: _advisor_comp_dict(r) for r in rows}
+
+
+def _apply_orm_company_to_session_dict(d: dict, comp, adv_by_id: dict[int, dict]) -> None:
+    d["company_domain"] = comp.domain
+    d["company_name"] = comp.name
+    ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
+    if ed.get("source_advisor_company_id") is not None:
+        try:
+            d["source_advisor_company_id"] = int(ed["source_advisor_company_id"])
+        except (TypeError, ValueError):
+            d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
+    mini = {"domain": comp.domain, "name": comp.name, "extra_data": comp.extra_data}
+    aid = _advisor_id_from_company_dict(mini)
+    if aid is None:
+        return
+    d["source_advisor_company_id"] = aid
+    adv = adv_by_id.get(aid)
+    if adv:
+        pn = (adv.get("parent_name") or "").strip() or "(No parent)"
+        bd = (adv.get("domain") or "").strip() or "—"
+    else:
+        pn = "(No parent)"
+        bd = (comp.name or "").strip() or "—"
+    d["media_parent_name"] = pn
+    d["media_brand_domain"] = bd
+    d["company_workspace_label"] = f"{pn} · {bd}"
+
+
+def attach_media_workspace_labels_to_company_dict(comp: dict | None) -> dict | None:
+    """
+    For Media Houses shadow companies (__advisor_<id>), add media_parent_name,
+    media_brand_domain, and company_workspace_label for UI. No-op for independent companies.
+    """
+    if not comp:
+        return None
+    out = dict(comp)
+    aid = _advisor_id_from_company_dict(out)
+    if aid is None:
+        return out
+    adv = get_advisor_company(aid)
+    if adv:
+        pn = (adv.get("parent_name") or "").strip() or "(No parent)"
+        bd = (adv.get("domain") or "").strip() or "—"
+    else:
+        pn = "(No parent)"
+        bd = (out.get("name") or "").strip() or "—"
+    out["media_parent_name"] = pn
+    out["media_brand_domain"] = bd
+    out["company_workspace_label"] = f"{pn} · {bd}"
+    return out
+
+
+def _finalize_session_rows(s, sess_rows: list, include_owner: bool) -> list:
+    cids = [x.company_id for x in sess_rows if x.company_id]
+    comps_by_id = {}
+    if cids:
+        for c in s.query(Company).filter(Company.id.in_(list(set(cids)))).all():
+            comps_by_id[c.id] = c
+    adv_by_id = _collect_adv_map_for_company_rows(s, list(comps_by_id.values()))
+
+    owner_map = {}
+    if include_owner:
+        oids = {x.owner_user_id for x in sess_rows if x.owner_user_id}
+        if oids:
+            for u in s.query(User).filter(User.id.in_(sorted(oids))).all():
+                owner_map[u.id] = u
+
+    results = []
+    for sess in sess_rows:
+        d = _sess_dict(sess)
+        if include_owner:
+            owner = owner_map.get(sess.owner_user_id) if sess.owner_user_id else None
+            if owner:
+                d["owner_username"] = owner.username
+        comp = comps_by_id.get(sess.company_id)
+        if comp:
+            try:
+                _apply_orm_company_to_session_dict(d, comp, adv_by_id)
+            except Exception as e:
+                log.error("_apply_orm_company_to_session_dict session %s: %s", sess.id, e)
+                d["company_domain"] = comp.domain
+                d["company_name"] = comp.name
+        try:
+            ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
+        except Exception as e:
+            log.error("session contact load failed for session %s: %s", sess.id, e)
+            ct = None
+        if ct:
+            d["contact_name"] = ct.name
+            d["contact_role"] = ct.role
+        results.append(d)
+    return results
+
+
 def get_user_sessions(user_id):
     """Sessions owned by this user (kept for compatibility). Prefer get_all_sessions for shared visibility."""
     with db() as s:
-        results = []
-        for sess in s.query(Session).filter_by(owner_user_id=user_id).order_by(Session.updated_at.desc()).all():
-            d = _sess_dict(sess)
-            try:
-                comp = s.get(Company, sess.company_id) if sess.company_id else None
-            except Exception as e:
-                log.error("get_user_sessions: failed to load Company %s for session %s: %s", sess.company_id, sess.id, e)
-                comp = None
-            try:
-                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
-            except Exception as e:
-                log.error("get_user_sessions: failed to load Contact %s for session %s: %s", sess.contact_id, sess.id, e)
-                ct = None
-            if comp:
-                d["company_domain"] = comp.domain
-                d["company_name"] = comp.name
-                ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
-                if ed:
-                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
-            if ct:
-                d["contact_name"] = ct.name
-                d["contact_role"] = ct.role
-            results.append(d)
-        return results
+        rows = s.query(Session).filter_by(owner_user_id=user_id).order_by(Session.updated_at.desc()).all()
+        return _finalize_session_rows(s, rows, include_owner=False)
 
 
 def get_all_sessions():
     """All sessions (shared visibility). Includes company_domain, contact_name, owner_username."""
     with db() as s:
-        results = []
-        for sess in s.query(Session).order_by(Session.updated_at.desc()).all():
-            d = _sess_dict(sess)
-            try:
-                comp = s.get(Company, sess.company_id) if sess.company_id else None
-            except Exception as e:
-                log.error("get_all_sessions: failed to load Company %s for session %s: %s", sess.company_id, sess.id, e)
-                comp = None
-            try:
-                ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
-            except Exception as e:
-                log.error("get_all_sessions: failed to load Contact %s for session %s: %s", sess.contact_id, sess.id, e)
-                ct = None
-            owner = s.get(User, sess.owner_user_id) if sess.owner_user_id else None
-            if owner:
-                d["owner_username"] = owner.username
-            if comp:
-                d["company_domain"] = comp.domain
-                d["company_name"] = comp.name
-                ed = comp.extra_data if isinstance(comp.extra_data, dict) else {}
-                if ed:
-                    d["source_advisor_company_id"] = ed.get("source_advisor_company_id")
-            if ct:
-                d["contact_name"] = ct.name
-                d["contact_role"] = ct.role
-            results.append(d)
-        return results
+        rows = s.query(Session).order_by(Session.updated_at.desc()).all()
+        return _finalize_session_rows(s, rows, include_owner=True)
 
 
 def get_session_for_contact(company_id, contact_id):
@@ -1392,8 +1475,8 @@ def get_session_for_contact(company_id, contact_id):
         comp = s.get(Company, sess.company_id) if sess.company_id else None
         ct = s.get(Contact, sess.contact_id) if sess.contact_id else None
         if comp:
-            d["company_domain"] = comp.domain
-            d["company_name"] = comp.name
+            adv_by_id = _collect_adv_map_for_company_rows(s, [comp])
+            _apply_orm_company_to_session_dict(d, comp, adv_by_id)
         if ct:
             d["contact_name"] = ct.name
             d["contact_role"] = ct.role

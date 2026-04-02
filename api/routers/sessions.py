@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from db_ops import get_company, get_contact, get_session, load_messages
+from db_ops import attach_media_workspace_labels_to_company_dict, get_company, get_contact, get_session, load_messages
 from api.deps import get_current_user
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -26,7 +26,7 @@ def session_detail(session_id: int, user: dict = Depends(get_current_user)):
     if comp_id:
         comp = get_company(comp_id)
         if comp:
-            out["company"] = {"domain": comp.get("domain"), "name": comp.get("name")}
+            out["company"] = attach_media_workspace_labels_to_company_dict(comp)
     return out
 
 

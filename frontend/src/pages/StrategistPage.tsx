@@ -788,8 +788,17 @@ export default function StrategistPage() {
       <header className="intel-hero strategist-header">
         <div className="intel-hero-text">
           <p className="intel-eyebrow">Strategist</p>
-          <h1>{(ws?.company?.name as string) || String(ws?.company?.domain || 'Workspace')}</h1>
-          <p className="intel-domain muted">{String(ws?.company?.domain || '')}</p>
+          <h1>
+            {String(
+              (ws?.company as Record<string, unknown> | undefined)?.company_workspace_label ||
+                ws?.company?.name ||
+                ws?.company?.domain ||
+                'Workspace',
+            )}
+          </h1>
+          {(ws?.company as Record<string, unknown> | undefined)?.company_workspace_label ? null : (
+            <p className="intel-domain muted">{String(ws?.company?.domain || '')}</p>
+          )}
         </div>
       </header>
       {err && <p className="error">{err}</p>}

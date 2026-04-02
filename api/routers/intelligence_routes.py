@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db_ops import (
+    attach_media_workspace_labels_to_company_dict,
     get_advisor_company,
     get_company,
     get_company_platform_presence_bundle_by_domain,
@@ -794,6 +795,13 @@ def intelligence_workspace(
     else:
         rf_out, rdh_out = rf, rdh
 
+    if advisor_company_id is not None:
+        _pn = (comp.get("publisher_type") or "").strip() or None
+        _bd = (comp.get("domain") or "").strip() or None
+        _workspace_label = f"{_pn} · {_bd}" if _pn and _bd else None
+    else:
+        _enr = attach_media_workspace_labels_to_company_dict(comp if isinstance(comp, dict) else None)
+        _workspace_label = (_enr or {}).get("company_workspace_label") if _enr else None
     return {
         "profile": {
             "domain": comp.get("domain"),
@@ -802,6 +810,7 @@ def intelligence_workspace(
             "content_type": comp.get("content_type"),
             "monthly_visits": comp.get("monthly_visits"),
             "research_status": comp.get("research_status"),
+            "company_workspace_label": _workspace_label,
         },
         "research_full": rf_out,
         "research_display_html": rdh_out,

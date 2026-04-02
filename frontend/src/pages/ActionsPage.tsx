@@ -9,7 +9,7 @@ type Seq = { id: string; steps: Step[]; done: number; total: number }
 type SessionDetail = {
   session: Record<string, unknown>
   contact?: { id?: number; email?: string | null; name?: string | null }
-  company?: { domain?: string; name?: string }
+  company?: { domain?: string; name?: string; company_workspace_label?: string }
 }
 
 function flattenSteps(board: { sequences: Seq[]; standalone: Step[] } | null): Step[] {
@@ -419,8 +419,17 @@ export default function ActionsPage() {
       <header className="intel-hero strategist-header">
         <div className="intel-hero-text">
           <p className="intel-eyebrow">Actions</p>
-          <h1>{String(sessionDetail?.company?.name || sessionDetail?.company?.domain || 'Actions')}</h1>
-          <p className="intel-domain muted">{String(sessionDetail?.company?.domain || '')}</p>
+          <h1>
+            {String(
+              sessionDetail?.company?.company_workspace_label ||
+                sessionDetail?.company?.name ||
+                sessionDetail?.company?.domain ||
+                'Actions',
+            )}
+          </h1>
+          {sessionDetail?.company?.company_workspace_label ? null : (
+            <p className="intel-domain muted">{String(sessionDetail?.company?.domain || '')}</p>
+          )}
         </div>
       </header>
       {err && <p className="error">{err}</p>}

@@ -12,6 +12,7 @@ type IntelProfile = {
   content_type?: string | null
   monthly_visits?: number | null
   research_status?: string | null
+  company_workspace_label?: string | null
 }
 
 type IntelWorkspace = {
@@ -741,8 +742,12 @@ export default function IntelligencePage() {
       <header className="intel-hero">
         <div className="intel-hero-text">
           <p className="intel-eyebrow">Intelligence</p>
-          <h1>{p?.name || p?.domain || 'Company'}</h1>
-          <p className="intel-domain muted">{p?.domain || '—'}</p>
+          <h1>
+            {(p?.company_workspace_label || '').trim() || p?.name || p?.domain || 'Company'}
+          </h1>
+          {!(p?.company_workspace_label || '').trim() ? (
+            <p className="intel-domain muted">{p?.domain || '—'}</p>
+          ) : null}
         </div>
         <div className="intel-hero-actions">
           <button type="button" className="primary sm" disabled={!!busy} onClick={runDeep}>

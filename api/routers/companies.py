@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from config import normalize_domain
 from db_ops import (
+    attach_media_workspace_labels_to_company_dict,
     get_company,
     get_company_by_domain,
     get_contact,
@@ -231,7 +232,7 @@ def company_workspace(company_id: int, user: dict = Depends(get_current_user)):
     if not comp:
         raise HTTPException(status_code=404, detail="Company not found")
     return {
-        "company": comp,
+        "company": attach_media_workspace_labels_to_company_dict(comp),
         "contacts": get_contacts(company_id),
         "spoc_contacts": get_spoc_contacts_by_company(company_id),
     }

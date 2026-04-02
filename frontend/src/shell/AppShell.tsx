@@ -1,4 +1,5 @@
 import { useEffect, useState, type MouseEvent } from 'react'
+import { apiFetch } from '../api/client'
 import { createPortal } from 'react-dom'
 import {
   Building2,
@@ -66,6 +67,8 @@ export default function AppShell() {
       return false
     }
   })
+  const [mediaWorkspacePill, setMediaWorkspacePill] = useState<string | null>(null)
+
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     try {
       const t = localStorage.getItem(THEME_KEY)
@@ -91,6 +94,28 @@ export default function AppShell() {
       /* ignore */
     }
   }, [navCollapsed])
+
+  useEffect(() => {
+    const aid = selection.advisorCompanyId
+    if (aid == null) {
+      setMediaWorkspacePill(null)
+      return
+    }
+    let cancelled = false
+    apiFetch<{ parent_name?: string; domain?: string }>(`/api/advisor/companies/${aid}`)
+      .then((row) => {
+        if (cancelled) return
+        const pn = (row.parent_name || '').trim() || '(No parent)'
+        const dom = (row.domain || '').trim() || '—'
+        setMediaWorkspacePill(`${pn} · ${dom}`)
+      })
+      .catch(() => {
+        if (!cancelled) setMediaWorkspacePill(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selection.advisorCompanyId])
 
   function showNavFlyout(e: MouseEvent<HTMLElement>, text: string) {
     if (!navCollapsed) return
@@ -183,9 +208,14 @@ export default function AppShell() {
           {(selection.companyId != null || selection.advisorCompanyId != null) && (
             <span className="sel-pill-wrap">
               <span className="sel-pill">
-                {selection.companyId != null && `Company #${selection.companyId}`}
-                {selection.companyId != null && selection.advisorCompanyId != null && ' · '}
-                {selection.advisorCompanyId != null && `Advisor #${selection.advisorCompanyId}`}
+                {selection.advisorCompanyId != null && mediaWorkspacePill
+                  ? mediaWorkspacePill
+                  : [
+                      selection.companyId != null ? `Company #${selection.companyId}` : '',
+                      selection.advisorCompanyId != null ? `Advisor #${selection.advisorCompanyId}` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                 {selection.contactId != null && ` · Contact #${selection.contactId}`}
               </span>
               <button

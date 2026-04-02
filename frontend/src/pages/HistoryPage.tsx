@@ -26,13 +26,23 @@ export default function HistoryPage() {
   }
 
   function openSession(sx: Record<string, unknown>) {
-    const aid = sx.source_advisor_company_id as number | null | undefined
+    let aid: number | null =
+      typeof sx.source_advisor_company_id === 'number'
+        ? sx.source_advisor_company_id
+        : sx.source_advisor_company_id != null
+          ? Number(sx.source_advisor_company_id)
+          : null
+    if (!Number.isFinite(aid as number)) aid = null
+    if (aid == null && typeof sx.company_domain === 'string') {
+      const m = /^__advisor_(\d+)$/.exec(sx.company_domain.trim())
+      if (m) aid = Number(m[1])
+    }
     const nextSel = {
       source: (aid ? 'media' : 'independent') as 'media' | 'independent',
       companyId: sx.company_id as number,
       contactId: (sx.contact_id as number) || null,
       sessionId: sx.id as number,
-      advisorCompanyId: aid ?? null,
+      advisorCompanyId: aid,
     }
     setSelection(nextSel)
     nav(`/intelligence?${toWorkspaceSearchString(nextSel)}`)
@@ -42,6 +52,18 @@ export default function HistoryPage() {
 
   const sessions = (data.sessions as Record<string, unknown>[]) || []
   const analytics = data.analytics as Record<string, unknown> | null
+
+  function sessionCompanyLine(sx: Record<string, unknown>): string {
+    const w = sx.company_workspace_label
+    if (typeof w === 'string' && w.trim()) return w
+    return String(sx.company_domain || sx.company_name || '—')
+  }
+
+  function sessionContactLine(sx: Record<string, unknown>): string {
+    const n = sx.contact_name
+    if (n == null || n === '') return '—'
+    return String(n)
+  }
 
   return (
     <div className="page-wide">
@@ -61,8 +83,7 @@ export default function HistoryPage() {
           {sessions.map((sx) => (
             <li key={sx.id as number} className="session-row">
               <div>
-                <strong>{String(sx.company_domain || sx.company_name)}</strong> ·{' '}
-                {String(sx.contact_name)}
+                <strong>{sessionCompanyLine(sx)}</strong> · {sessionContactLine(sx)}
                 <span className="muted small">
                   {' '}
                   ({String(sx.message_count)} msgs · {String(sx.action_count)} actions)
