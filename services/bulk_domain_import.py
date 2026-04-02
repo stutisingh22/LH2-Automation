@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import threading
+import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from typing import List
 
@@ -54,6 +55,13 @@ log = logging.getLogger(__name__)
 DOMAIN_COLUMN_CANDIDATES = ("domain", "Domain", "website", "Website", "url", "URL", "site", "Site", "domain_name")
 SAFE_MIN_PARENT_KEY_LEN = 6
 DEFAULT_JUDGMENT_STAGE = os.getenv("BULK_IMPORT_JUDGMENT_STAGE", "stage_b").strip().lower()
+WEB_VERIFY_WORKERS = int(os.getenv("BULK_WEB_VERIFY_WORKERS", "20"))
+# When a classifier row is uncertain (low confidence or flagged), we route it to web verification.
+# Keep this threshold consistent across both analyze_from_domains and analyze_from_entries.
+WEB_VERIFY_CONF_TRIGGER = float(os.getenv("BULK_WEB_VERIFY_CONF_TRIGGER", "0.65"))
+# Run web verification for every new row by default. This is accuracy-first and avoids
+# over-confident model misclassifications skipping verification.
+BULK_VERIFY_ALL_NEW_ROWS = os.getenv("BULK_VERIFY_ALL_NEW_ROWS", "true").strip().lower() in {"1", "true", "yes", "on"}
 PARENT_ALIAS_MAP = {
     "conde nast": "Condé Nast",
     "conde nast media": "Condé Nast",
@@ -218,6 +226,29 @@ def resolve_import_judgment(
     decision["ownership_rationale"] = rationale
     decision["needs_review"] = model_needs_review
 
+    # Web evidence override: if the verifier explicitly finds this site is independently owned/self-owned,
+    # treat it as independent regardless of classifier guess.
+    if verify_result and verify_result.get("explicit_independent"):
+        direct_parent = verify_result.get("direct_parent")
+        ultimate_parent = verify_result.get("ultimate_parent")
+        parent_match_ev = verify_result.get("parent_match")
+        parent_evidence = bool(direct_parent) or bool(ultimate_parent) or bool(parent_match_ev)
+        if not parent_evidence:
+            decision["classification"] = "independent"
+            decision["parent_name"] = ""
+            decision["parent_suggested"] = ""
+            decision["parent_confirmed"] = ""
+            decision["match_reason"] = "web_explicit_independent"
+            decision["match_method"] = "web_explicit_independent"
+            decision["requires_review"] = False
+            decision["decision_reason"] = "web_explicit_independent"
+            ev_conf = _as_float(verify_result.get("explicit_independent_confidence"), 0.0)
+            decision["decision_confidence"] = max(confidence, ev_conf)
+            return decision
+        decision["requires_review"] = True
+        decision["decision_reason"] = "conflicting_web_explicit_independent_vs_parent"
+        return decision
+
     is_parent_company = bool(classified_row.get("is_parent_company"))
     if is_parent_company and parent:
         decision["parent_suggested"] = parent
@@ -232,6 +263,12 @@ def resolve_import_judgment(
         return decision
 
     if cl == "media_house":
+        if verify_result and str(verify_result.get("match_reason") or "").strip().lower() == "error":
+            decision["requires_review"] = True
+            decision["decision_reason"] = "web_verification_error"
+            decision["match_method"] = "web_verification_error"
+            decision["match_reason"] = "web_verification_error"
+            return decision
         if verify_result and verify_result.get("parent_match"):
             matched = str(verify_result["parent_match"]).strip()
             decision["parent_suggested"] = matched
@@ -239,17 +276,49 @@ def resolve_import_judgment(
             decision["parent_name"] = matched
             decision["match_reason"] = f"web_verified({verify_result.get('match_reason','')},conf={_as_float(verify_result.get('confidence'), 0.0):.2f})"
             decision["match_method"] = "web_verified"
-            decision["match_score"] = max(_as_float(verify_result.get("confidence"), 0.0), 0.7)
-            decision["decision_reason"] = "web_verified_parent_match"
-            decision["requires_review"] = False
-            decision["decision_confidence"] = max(confidence, _as_float(verify_result.get("confidence"), 0.0))
+            web_conf = _as_float(verify_result.get("confidence"), 0.0)
+            decision["match_score"] = web_conf
+            decision["decision_confidence"] = max(confidence, web_conf)
+            # Tighten auto-acceptance: low-confidence "web verified" still needs manual confirmation.
+            decision["requires_review"] = web_conf < 0.8
+            decision["decision_reason"] = (
+                "web_verified_parent_match" if web_conf >= 0.8 else "web_verified_low_confidence_parent_match"
+            )
             return decision
+
+        # Web verifier says there is no parent detected for this domain.
+        # In this case, don't let model-provided parent strings drive the result.
+        if verify_result is not None:
+            web_conf = _as_float(verify_result.get("confidence"), 0.0)
+            direct_parent = (verify_result.get("direct_parent") or "").strip()
+            ultimate_parent = (verify_result.get("ultimate_parent") or "").strip()
+            if not direct_parent and not ultimate_parent:
+                decision["classification"] = "independent"
+                decision["parent_name"] = ""
+                decision["parent_suggested"] = ""
+                decision["parent_confirmed"] = ""
+                decision["match_reason"] = "web_no_parent_detected"
+                decision["match_method"] = "web_no_parent_detected"
+                decision["match_score"] = web_conf
+                decision["ownership_rationale"] = (rationale or decision["ownership_rationale"]).strip()
+                decision["decision_reason"] = "web_no_parent_detected"
+                # Hard stop: "no parent found" is unverified, never auto-commit.
+                decision["requires_review"] = True
+                decision["decision_confidence"] = max(confidence, web_conf)
+                return decision
 
         if verify_result and (verify_result.get("direct_parent") or verify_result.get("ultimate_parent")):
             decision["parent_name"] = str(verify_result.get("ultimate_parent") or verify_result.get("direct_parent") or "").strip()
             decision["new_parent_candidate"] = str(verify_result.get("new_parent_candidate") or "").strip()
 
-        suggested, reason, method, score, ambiguous = _suggest_parent_from_data(parent, parent_match, existing_parents)
+        # Use verifier's parent strings as the primary signal for mapping into allowed parents.
+        # This avoids mis-assignments when the classifier guessed a wrong parent_name string.
+        verifier_parent_name = (verify_result.get("parent_name") or "").strip() if isinstance(verify_result, dict) else ""
+        verifier_parent_match = (verify_result.get("parent_match") or "").strip() if isinstance(verify_result, dict) else ""
+        ai_parent_name = verifier_parent_name or parent
+        ai_parent_match = verifier_parent_match or parent_match
+
+        suggested, reason, method, score, ambiguous = _suggest_parent_from_data(ai_parent_name, ai_parent_match, existing_parents)
         decision["parent_suggested"] = suggested
         decision["parent_confirmed"] = suggested
         decision["match_reason"] = reason
@@ -264,8 +333,12 @@ def resolve_import_judgment(
             decision["requires_review"] = True
             decision["decision_reason"] = "no_parent_evidence"
         else:
-            decision["decision_reason"] = "deterministic_parent_match"
-            decision["requires_review"] = False
+            # Even when parent matching is deterministic, require adequate model confidence
+            # to avoid auto-committing questionable parent mappings.
+            decision["requires_review"] = confidence < 0.65
+            decision["decision_reason"] = (
+                "deterministic_parent_match" if confidence >= 0.65 else "low_confidence_media_house_parent_match"
+            )
             decision["decision_confidence"] = max(confidence, score)
         if model_needs_review:
             decision["requires_review"] = True
@@ -273,8 +346,65 @@ def resolve_import_judgment(
         return decision
 
     # independent branch
+    if verify_result is not None:
+        if str(verify_result.get("match_reason") or "").strip().lower() == "error":
+            decision["classification"] = "independent"
+            decision["decision_reason"] = "web_verification_error"
+            decision["requires_review"] = True
+            return decision
+        web_conf = _as_float(verify_result.get("confidence"), 0.0)
+        direct_parent = (verify_result.get("direct_parent") or "").strip()
+        ultimate_parent = (verify_result.get("ultimate_parent") or "").strip()
+        parent_match_ev = (verify_result.get("parent_match") or "").strip() if verify_result.get("parent_match") is not None else ""
+
+        parent_evidence = bool(direct_parent) or bool(ultimate_parent) or bool(parent_match_ev)
+        if not parent_evidence:
+            # Hard stop: "no parent found" during web verification is unverified → never auto-commit.
+            decision["classification"] = "independent"
+            decision["decision_reason"] = "web_no_parent_detected_unverified"
+            decision["requires_review"] = True
+            decision["decision_confidence"] = max(confidence, web_conf)
+            return decision
+
+        # Parent evidence exists, so flip to media_house even if the classifier guessed independent.
+        verifier_parent_name = (
+            (verify_result.get("parent_name") or "").strip()
+            or (verify_result.get("ultimate_parent") or "").strip()
+            or (verify_result.get("direct_parent") or "").strip()
+        )
+        verifier_parent_match = parent_match_ev or ""
+
+        suggested, reason, method, score, ambiguous = _suggest_parent_from_data(
+            verifier_parent_name or parent,
+            verifier_parent_match or parent_match,
+            existing_parents,
+        )
+        decision["classification"] = "media_house"
+        decision["parent_suggested"] = suggested
+        decision["parent_confirmed"] = suggested
+        decision["match_reason"] = reason
+        decision["match_method"] = method
+        decision["match_score"] = score
+        if suggested:
+            decision["parent_name"] = suggested
+
+        if verifier_parent_match:
+            decision["decision_reason"] = "web_verified_parent_match" if web_conf >= 0.8 else "web_verified_low_confidence_parent_match"
+            decision["requires_review"] = web_conf < 0.8 or ambiguous or not suggested
+        else:
+            decision["decision_reason"] = (
+                "deterministic_parent_match" if (suggested and not ambiguous) else "web_parent_detected_requires_review"
+            )
+            decision["requires_review"] = (not suggested) or ambiguous or web_conf < 0.8
+
+        decision["decision_confidence"] = max(confidence, web_conf, score)
+        if model_needs_review:
+            decision["requires_review"] = True
+            decision["decision_reason"] = "model_marked_uncertain"
+        return decision
+
     decision["decision_reason"] = "model_independent"
-    if model_needs_review or confidence < 0.55:
+    if model_needs_review or confidence < 0.65:
         decision["requires_review"] = True
         decision["decision_reason"] = "low_confidence_independent"
     return decision
@@ -400,19 +530,19 @@ def get_existing_parent_media_houses() -> List[str]:
     return sorted(list(dict.fromkeys(out)))
 
 
-def analyze_from_file(uploaded_file, verify_ownership: bool = True, max_verify: int = 500) -> dict:
+def analyze_from_file(uploaded_file, verify_ownership: bool = True, max_verify: int = 1000) -> dict:
     """Analyze a CSV/XLSX and return preview rows; no writes."""
     domains_raw = _parse_domains_from_file(uploaded_file)
     return analyze_from_domains(domains_raw, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_text(text: str, verify_ownership: bool = True, max_verify: int = 500) -> dict:
+def analyze_from_text(text: str, verify_ownership: bool = True, max_verify: int = 1000) -> dict:
     """Analyze manual input (names/domains) and return preview rows; no writes."""
     entries = _parse_entries_from_text(text or "")
     return analyze_from_entries(entries, verify_ownership=verify_ownership, max_verify=max_verify)
 
 
-def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, max_verify: int = 500) -> dict:
+def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, max_verify: int = 1000) -> dict:
     """Analyze list of domains (strings). Returns {"rows": [...], "errors": [...]}. No writes."""
     result = {"rows": [], "errors": []}
     if not domains_raw:
@@ -433,6 +563,9 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
     classified = classify_domains_independent_or_media_house(domains, allowed_parents=existing_parents)
     by_dom = {normalize_domain(c.get("domain") or ""): c for c in classified if c}
 
+    # Precompute existence + classifier rows, then run web verification in parallel
+    # for uncertain rows in a bounded worker pool.
+    existence_by_domain: dict[str, dict] = {}
     for d in domains:
         existing_company = get_company_by_domain(d)
         existing_advisor = get_advisor_company_by_domain(d)
@@ -440,12 +573,74 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
         exists = bool(exists_db)
         existing_parent = (existing_advisor or {}).get("parent_name") or ""
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
+        existence_by_domain[d] = {
+            "exists_db": exists_db,
+            "exists": exists,
+            "existing_advisor": existing_advisor,
+            "existing_parent": existing_parent,
+        }
+
+    def _row_needs_web_verify(c: dict) -> bool:
+        # Trigger web verification for BOTH directions when uncertain:
+        # low confidence or model-marked uncertain.
+        if BULK_VERIFY_ALL_NEW_ROWS:
+            return True
+        model_needs_review = bool(c.get("needs_review"))
+        conf = _as_float(c.get("ownership_confidence"), 0.0)
+        return model_needs_review or conf < WEB_VERIFY_CONF_TRIGGER
+
+    to_verify: list[str] = []
+    ver_candidate_by_dom: dict[str, dict] = {}
+    for d in domains:
+        ctx = existence_by_domain.get(d) or {}
+        if ctx.get("exists_db"):
+            continue
+        c = by_dom.get(d) or {}
+        if not verify_ownership:
+            continue
+        if max_verify <= 0:
+            break
+        if _row_needs_web_verify(c):
+            to_verify.append(d)
+            ver_candidate_by_dom[d] = c
+            max_verify -= 1
+
+    # cap already applied; no need for more.
+    verify_results: dict[str, dict] = {}
+    if to_verify:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WEB_VERIFY_WORKERS) as ex:
+            future_by_dom = {
+                ex.submit(verify_parent_from_web, dom, existing_parents): dom for dom in to_verify
+            }
+            for fut in concurrent.futures.as_completed(future_by_dom):
+                dom = future_by_dom[fut]
+                try:
+                    verify_results[dom] = fut.result()
+                except Exception as e:
+                    log.warning("web ownership verify failed for %s: %s", dom, e)
+                    verify_results[dom] = {
+                        "domain": dom,
+                        "direct_parent": None,
+                        "ultimate_parent": None,
+                        "parent_match": None,
+                        "match_reason": "error",
+                        "parent_name": None,
+                        "new_parent_candidate": None,
+                        "confidence": 0.0,
+                        "explicit_independent": False,
+                        "explicit_independent_confidence": 0.0,
+                        "evidence": [],
+                    }
+
+    for d in domains:
+        ctx = existence_by_domain.get(d) or {}
+        exists_db = bool(ctx.get("exists_db"))
+        exists = bool(ctx.get("exists"))
+        existing_advisor = ctx.get("existing_advisor")
+        existing_parent = ctx.get("existing_parent") or ""
 
         c = by_dom.get(d) or {}
-        ver = None
-        if (not exists_db) and ((c.get("classification") or "").strip().lower().replace(" ", "_") == "media_house") and verify_ownership and max_verify > 0:
-            ver = verify_parent_from_web(d, existing_parents)
-            max_verify -= 1
+        ver = verify_results.get(d)
         decision = resolve_import_judgment(
             classified_row=c,
             exists_db=exists_db,
@@ -482,7 +677,7 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
     return result
 
 
-def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_verify: int = 500) -> dict:
+def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_verify: int = 1000) -> dict:
     """Analyze list of names/domains. Returns preview rows; no writes."""
     result = {"rows": [], "errors": []}
     entries = [e.strip() for e in (entries or []) if e and str(e).strip()]
@@ -494,6 +689,8 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
     classified = classify_entries_independent_or_media_house(entries, allowed_parents=existing_parents)
     # map by exact input (lower) to keep order
     by_inp = {(c.get("input") or "").strip().lower(): c for c in (classified or []) if isinstance(c, dict)}
+    # Build per-entry contexts; verify in parallel for uncertain domains.
+    entry_ctx: list[dict] = []
     for inp in entries:
         c = by_inp.get(inp.strip().lower()) or {}
         dom = normalize_domain(c.get("domain") or inp)
@@ -503,11 +700,75 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
         exists = bool(exists_db)
         existing_parent = (existing_advisor or {}).get("parent_name") or ""
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
+        entry_ctx.append({
+            "inp": inp,
+            "c": c,
+            "dom": dom,
+            "exists_db": exists_db,
+            "exists": exists,
+            "existing_advisor": existing_advisor,
+            "existing_parent": existing_parent,
+        })
 
-        ver = None
-        if (not exists_db) and ((c.get("classification") or "").strip().lower().replace(" ", "_") == "media_house") and verify_ownership and max_verify > 0:
-            ver = verify_parent_from_web(dom, existing_parents)
+    def _row_needs_web_verify(c: dict) -> bool:
+        if BULK_VERIFY_ALL_NEW_ROWS:
+            return True
+        model_needs_review = bool(c.get("needs_review"))
+        conf = _as_float(c.get("ownership_confidence"), 0.0)
+        return model_needs_review or conf < WEB_VERIFY_CONF_TRIGGER
+
+    to_verify: list[str] = []
+    queued: set[str] = set()
+    for row in entry_ctx:
+        dom = row.get("dom")
+        if not dom:
+            continue
+        if row.get("exists_db"):
+            continue
+        if not verify_ownership:
+            continue
+        if max_verify <= 0:
+            break
+        c = row.get("c") or {}
+        if _row_needs_web_verify(c) and dom not in queued:
+            queued.add(dom)
+            to_verify.append(dom)
             max_verify -= 1
+
+    verify_results: dict[str, dict] = {}
+    if to_verify:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WEB_VERIFY_WORKERS) as ex:
+            future_by_dom = {ex.submit(verify_parent_from_web, dom, existing_parents): dom for dom in to_verify}
+            for fut in concurrent.futures.as_completed(future_by_dom):
+                dom = future_by_dom[fut]
+                try:
+                    verify_results[dom] = fut.result()
+                except Exception as e:
+                    log.warning("web ownership verify failed for %s: %s", dom, e)
+                    verify_results[dom] = {
+                        "domain": dom,
+                        "direct_parent": None,
+                        "ultimate_parent": None,
+                        "parent_match": None,
+                        "match_reason": "error",
+                        "parent_name": None,
+                        "new_parent_candidate": None,
+                        "confidence": 0.0,
+                        "explicit_independent": False,
+                        "explicit_independent_confidence": 0.0,
+                        "evidence": [],
+                    }
+
+    for row in entry_ctx:
+        inp = row["inp"]
+        c = row["c"]
+        dom = row["dom"]
+        exists_db = bool(row["exists_db"])
+        exists = bool(row["exists"])
+        existing_advisor = row["existing_advisor"]
+        existing_parent = row["existing_parent"] or ""
+        ver = verify_results.get(dom)
+
         decision = resolve_import_judgment(
             classified_row=c,
             exists_db=exists_db,
@@ -595,10 +856,8 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False, campaign_id: 
         decision_confidence = _as_float(r.get("decision_confidence"), 0.0)
         override_review_block = bool(r.get("override_review_block"))
         stage = _decision_stage()
-        should_gate = (
-            (stage == "stage_b" and cl == "media_house")
-            or (stage == "stage_c")
-        )
+        # Stage B keeps bulk import fast but still blocks low-confidence classifications for manual review.
+        should_gate = (stage == "stage_c") or (stage == "stage_b" and requires_review)
         if should_gate and requires_review and not override_review_block:
             result["flagged_for_review"].append(label)
             result["blocked_for_review_details"].append({

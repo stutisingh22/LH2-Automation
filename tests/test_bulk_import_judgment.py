@@ -55,6 +55,156 @@ class TestResolveImportJudgment(unittest.TestCase):
         self.assertEqual(out["classification"], "independent")
         self.assertTrue(out["requires_review"])
 
+    def test_web_verified_low_confidence_requires_review(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "media_house",
+                "parent_name": "Vox Media Group",
+                "parent_match": None,
+                "ownership_confidence": 0.62,
+                "needs_review": False,
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "parent_match": "Vox Media",
+                "confidence": 0.5,
+                "match_reason": "exact",
+            },
+        )
+        self.assertEqual(out["classification"], "media_house")
+        self.assertTrue(out["requires_review"])
+        self.assertEqual(out["decision_reason"], "web_verified_low_confidence_parent_match")
+
+    def test_web_verified_high_confidence_auto_accept(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "media_house",
+                "parent_name": "Vox Media Group",
+                "parent_match": None,
+                "ownership_confidence": 0.62,
+                "needs_review": False,
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "parent_match": "Vox Media",
+                "confidence": 0.9,
+                "match_reason": "exact",
+            },
+        )
+        self.assertEqual(out["classification"], "media_house")
+        self.assertFalse(out["requires_review"])
+        self.assertEqual(out["decision_reason"], "web_verified_parent_match")
+
+    def test_web_parent_low_confidence_requires_review(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "independent",
+                "parent_name": None,
+                "parent_match": None,
+                "ownership_confidence": 0.6,
+                "needs_review": False,
+                "ownership_rationale": "",
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "parent_match": "Vox Media",
+                "parent_name": "Vox Media",
+                "confidence": 0.4,
+                "direct_parent": "Vox Media",
+                "ultimate_parent": "Vox Media",
+            },
+        )
+        self.assertEqual(out["classification"], "media_house")
+        self.assertTrue(out["requires_review"])
+        self.assertEqual(out["decision_reason"], "web_verified_low_confidence_parent_match")
+
+    def test_web_no_parent_detected_flips_to_independent(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "media_house",
+                "parent_name": "Vox Media",
+                "parent_match": None,
+                "ownership_confidence": 0.8,
+                "needs_review": False,
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "parent_match": None,
+                "confidence": 0.1,
+                "direct_parent": None,
+                "ultimate_parent": None,
+                "parent_name": None,
+            },
+        )
+        self.assertEqual(out["classification"], "independent")
+        self.assertTrue(out["requires_review"])
+        self.assertEqual(out["decision_reason"], "web_no_parent_detected")
+
+    def test_web_explicit_independent_flips_to_independent(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "media_house",
+                "parent_name": "Vox Media",
+                "parent_match": "Vox Media",
+                "ownership_confidence": 0.6,
+                "needs_review": False,
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "explicit_independent": True,
+                "explicit_independent_confidence": 0.92,
+                "parent_match": None,
+                "confidence": 0.1,
+                "direct_parent": None,
+                "ultimate_parent": None,
+            },
+        )
+        self.assertEqual(out["classification"], "independent")
+        self.assertFalse(out["requires_review"])
+        self.assertEqual(out["decision_reason"], "web_explicit_independent")
+
+    def test_web_parent_detected_flips_independent_to_media_house(self):
+        out = bdi.resolve_import_judgment(
+            classified_row={
+                "classification": "independent",
+                "parent_name": None,
+                "parent_match": None,
+                "ownership_confidence": 0.9,
+                "needs_review": False,
+                "ownership_rationale": "",
+            },
+            exists_db=False,
+            existing_advisor=None,
+            existing_parent="",
+            existing_parents=["Vox Media"],
+            verify_result={
+                "parent_match": "Vox Media",
+                "parent_name": "Vox Media",
+                "confidence": 0.95,
+                "direct_parent": "Vox Media",
+                "ultimate_parent": "Vox Media",
+            },
+        )
+        self.assertEqual(out["classification"], "media_house")
+        self.assertFalse(out["requires_review"])
+        self.assertEqual(out["parent_confirmed"], "Vox Media")
+        self.assertEqual(out["decision_reason"], "web_verified_parent_match")
+
 
 class TestCommitReviewGating(unittest.TestCase):
     @patch("services.bulk_domain_import.invalidate_group")

@@ -34,10 +34,6 @@ def _match_allowed(name: str, allowed: List[str]) -> Tuple[str | None, str]:
     by_key = {_norm_key(a): a for a in allowed if a}
     if nk and nk in by_key:
         return by_key[nk], f"norm_key({name}→{by_key[nk]})"
-    if nk:
-        for k, a in by_key.items():
-            if k and (k in nk or nk in k):
-                return a, f"norm_contains({name}→{a})"
     return None, "no_match"
 
 
@@ -72,6 +68,8 @@ def verify_parent_from_web(domain: str, allowed_parents: List[str], max_results_
         "parent_name": str|None,    # ultimate if present else direct
         "new_parent_candidate": str|None,  # if no match, parent to consider adding (ultimate preferred)
         "confidence": float,        # 0..1
+        "explicit_independent": bool,                 # true when evidence explicitly says site is independently owned/self-owned/independent operator
+        "explicit_independent_confidence": float,     # 0..1
         "evidence": [{"href","title","body"}, ...],
       }
     """
@@ -82,11 +80,18 @@ def verify_parent_from_web(domain: str, allowed_parents: List[str], max_results_
 
     # Domain-specific queries so evidence is about THIS site only (avoid confusion with other brands).
     queries = [
+        # Parent/ownership evidence
         f'"{domain}" owner parent company',
         f'"{domain}" acquired by who owns',
-        f'site owner {domain}',
         f'{domain} owned by',
         f'{domain} parent company acquisition',
+        f'site owner {domain}',
+        # Self-disclosure / "independently owned" evidence
+        f'site:{domain} about independently owned',
+        f'site:{domain} ownership independent',
+        f'"{domain}" "self-owned"',
+        f'"{domain}" "independently owned"',
+        f'"{domain}" "operates as an independent"',
     ]
     evidence = []
     seen = set()
@@ -122,7 +127,12 @@ CRITICAL:
 - Return direct_parent = the company that directly owns/operates {domain}; ultimate_parent = the TOP-LEVEL / MAIN parent company (the holding company or group that ultimately owns the brand). Example: for polygon.com, direct might be a division but ultimate_parent must be Vox Media (the main parent), NOT a subsidiary like "Group 9 Media" if that is owned by Vox. Always prefer the highest-level parent in the ownership chain.
 - When both a subsidiary and its parent appear in Allowed parents, prefer matching the PARENT (e.g. Vox Media over Group 9 Media when Group 9 is owned by Vox).
 - Do NOT guess. If evidence is unclear or mixed, set confidence low and only set direct_parent/ultimate_parent when clearly stated for this domain.
-- Output ONLY valid JSON with keys: domain, direct_parent, ultimate_parent, confidence (number 0 to 1).
+- Output ONLY valid JSON with keys: domain, direct_parent, ultimate_parent, confidence (number 0 to 1), explicit_independent (boolean), explicit_independent_confidence (number 0 to 1).
+
+Definition for explicit_independent:
+- Set explicit_independent=true ONLY if evidence explicitly states the site is independently owned/self-owned/independent operator (i.e. no parent/ownership company is presented as the owner/operator for {domain}).
+- If a parent company is explicitly named as owning/operating {domain}, explicit_independent must be false.
+- If evidence is unclear/mixed, set explicit_independent=false and explicit_independent_confidence low.
 
 Allowed parents (use these exact strings when matching evidence to your list; prefer the main/parent company when multiple apply):
 {allowed_block}
@@ -156,6 +166,14 @@ JSON only."""
         except Exception:
             conf = 0.0
         conf = max(0.0, min(1.0, conf))
+
+        explicit_independent = bool(parsed.get("explicit_independent")) if "explicit_independent" in parsed else False
+        econf = parsed.get("explicit_independent_confidence")
+        try:
+            econf = float(econf)
+        except Exception:
+            econf = 0.0
+        econf = max(0.0, min(1.0, econf))
         parent_match = None
         match_reason = "no_allowed"
         if allowed:
@@ -178,9 +196,11 @@ JSON only."""
             "parent_name": parent_name,
             "new_parent_candidate": new_candidate,
             "confidence": conf,
+            "explicit_independent": explicit_independent,
+            "explicit_independent_confidence": econf,
             "evidence": evidence,
         }
     except Exception as e:
         log.warning("verify_parent_from_web failed for %s: %s", domain, e)
-        return {"domain": domain, "direct_parent": None, "ultimate_parent": None, "parent_match": None, "match_reason": "error", "parent_name": None, "new_parent_candidate": None, "confidence": 0.0, "evidence": evidence}
+        return {"domain": domain, "direct_parent": None, "ultimate_parent": None, "parent_match": None, "match_reason": "error", "parent_name": None, "new_parent_candidate": None, "confidence": 0.0, "explicit_independent": False, "explicit_independent_confidence": 0.0, "evidence": evidence}
 
