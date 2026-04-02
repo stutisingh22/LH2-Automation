@@ -1059,6 +1059,16 @@ def undo_created(created: List[dict]) -> dict:
     return out
 
 
+def bulk_import_runtime_settings() -> dict:
+    """Effective bulk-import env (for diagnosing prod vs local). No secrets."""
+    return {
+        "judgment_stage": DEFAULT_JUDGMENT_STAGE,
+        "web_verify_workers": WEB_VERIFY_WORKERS,
+        "web_verify_conf_trigger": WEB_VERIFY_CONF_TRIGGER,
+        "verify_all_new_rows": BULK_VERIFY_ALL_NEW_ROWS,
+    }
+
+
 __all__ = [
     "_parse_entries_from_text",
     "analyze_from_file",
@@ -1070,4 +1080,5 @@ __all__ = [
     "get_existing_parent_media_houses",
     "get_bulk_judgment_baseline",
     "resolve_import_judgment",
+    "bulk_import_runtime_settings",
 ]
