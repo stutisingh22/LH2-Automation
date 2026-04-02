@@ -60,7 +60,6 @@ export default function StrategistPage() {
   const [gmailBusy, setGmailBusy] = useState(false)
   const [gmailMsg, setGmailMsg] = useState('')
   const [boardRows, setBoardRows] = useState<ContactsBoardRow[]>([])
-  const [fromExtraction, setFromExtraction] = useState(false)
   const [contactsBusy, setContactsBusy] = useState('')
   const [savingEmailKey, setSavingEmailKey] = useState('')
   const [draftEmailByRowKey, setDraftEmailByRowKey] = useState<Record<string, string>>({})
@@ -99,13 +98,11 @@ export default function StrategistPage() {
       opts?.silent === true ? { silent: true } : {},
     )
     setBoardRows(r.rows || [])
-    setFromExtraction(Boolean(r.from_extraction))
   }, [cid, selection.source, selection.advisorCompanyId])
 
   useEffect(() => {
     if (!cid) {
       setBoardRows([])
-      setFromExtraction(false)
       return
     }
     loadContactsBoard().catch(() => setBoardRows([]))
@@ -903,7 +900,6 @@ export default function StrategistPage() {
                 </button>
               )}
             </div>
-            {!!strategistRules && <p className="muted small">Custom rules active for this chat context.</p>}
           </section>
 
           {recipientResearch && (
@@ -918,7 +914,6 @@ export default function StrategistPage() {
                   }
                 />
               </div>
-              <p className="muted small">Passed into chat &amp; plan requests for personalization.</p>
             </section>
           )}
 
@@ -956,11 +951,6 @@ export default function StrategistPage() {
                   </button>
                 </div>
               </div>
-              <p className="muted small">
-                {fromExtraction
-                  ? 'From SPOC tables in deep research (saved on this company).'
-                  : 'Company contacts from the database. Run extract to pull from research.'}
-              </p>
               <div className="strategist-lookup-row">
                 <input
                   type="text"
@@ -1137,11 +1127,6 @@ export default function StrategistPage() {
                 </button>
               )}
             </div>
-            {!strategistRules && (
-              <p className="muted small strategist-rules-helper">
-                Add instructions the strategist must follow for this ongoing chat context.
-              </p>
-            )}
             {!!strategistRules && showRulesPreview && (
               <pre className="strategist-rules-preview">
                 {strategistRules}
@@ -1234,7 +1219,6 @@ export default function StrategistPage() {
         <div className="strategist-add-overlay" role="dialog" aria-modal="true" aria-label="Add to timeline">
           <div className="strategist-add-popup panel">
             <h3>Add to timeline</h3>
-            <p className="muted small">Choose how this draft should be added.</p>
             <label>
               Add mode
               <select
@@ -1325,7 +1309,6 @@ export default function StrategistPage() {
         <div className="strategist-add-overlay" role="dialog" aria-modal="true" aria-label="Strategist rules">
           <div className="strategist-add-popup panel">
             <h3>Strategist rules</h3>
-            <p className="muted small">These instructions are applied to the ongoing chat + full plan for the current company/recipient context.</p>
             <label>
               Rules / expectations
               <textarea

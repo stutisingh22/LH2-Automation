@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from db_ops import (
     delete_session,
     get_all_actions,
-    get_all_global_insights,
     get_all_sessions,
     get_message_count,
     get_session_actions,
@@ -16,7 +15,6 @@ router = APIRouter(prefix="/history", tags=["history"])
 @router.get("/summary")
 def history_summary(user: dict = Depends(get_current_user)):
     del user
-    ginsights = get_all_global_insights(limit=8)
     all_ua = get_all_actions(limit=200)
     analytics = None
     if all_ua:
@@ -49,7 +47,7 @@ def history_summary(user: dict = Depends(get_current_user)):
                 "action_count": len(get_session_actions(sx["id"])),
             }
         )
-    return {"global_insights": ginsights, "analytics": analytics, "sessions": enriched}
+    return {"analytics": analytics, "sessions": enriched}
 
 
 @router.delete("/sessions/{session_id}")

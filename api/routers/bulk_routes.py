@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from services.bulk_domain_import import analyze_from_file, analyze_from_text, commit_rows, undo_created
+from services.bulk_domain_import import (
+    analyze_from_file,
+    analyze_from_text,
+    commit_rows,
+    get_bulk_judgment_baseline,
+    undo_created,
+)
 from api.deps import get_current_user
 
 
@@ -17,6 +23,7 @@ class FileWrap:
 class BulkCommitIn(BaseModel):
     rows: list[dict]
     allow_new_parents: bool = False
+    campaign_id: int | None = None
 
 
 class BulkUndoIn(BaseModel):
@@ -52,10 +59,23 @@ def bulk_analyze_text(
 @router.post("/commit")
 def bulk_commit(body: BulkCommitIn, user: dict = Depends(get_current_user)):
     del user
-    return commit_rows(body.rows, allow_new_parents=body.allow_new_parents)
+    return commit_rows(
+        body.rows,
+        allow_new_parents=body.allow_new_parents,
+        campaign_id=body.campaign_id,
+    )
 
 
 @router.post("/undo")
 def bulk_undo(body: BulkUndoIn, user: dict = Depends(get_current_user)):
     del user
     return undo_created(body.created or [])
+
+
+@router.get("/judgment-baseline")
+def bulk_judgment_baseline(user: dict = Depends(get_current_user), days: int = 28):
+    del user
+    try:
+        return get_bulk_judgment_baseline(days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not compute baseline: {e}")

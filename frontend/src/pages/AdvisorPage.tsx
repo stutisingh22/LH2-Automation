@@ -48,7 +48,6 @@ export default function AdvisorPage() {
   return (
     <div className="page-wide">
       <h1>Advisor</h1>
-      <p className="muted">Pipeline-wide chat (same AI backend as Streamlit).</p>
       {convs.length > 0 && (
         <select
           className="search"

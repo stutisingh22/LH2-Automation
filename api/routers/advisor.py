@@ -22,7 +22,10 @@ from db_ops import (
     upsert_contact,
 )
 from integrations.ai.ai_engine import compute_lead_score
-from integrations.analytics import apply_syndication_refresh_to_advisor_company
+from integrations.analytics import (
+    apply_similarweb_traffic_to_advisor_company,
+    apply_syndication_refresh_to_advisor_company,
+)
 from api.deps import get_current_user, user_has_perm
 from api.routers.companies import PublisherContactIn
 
@@ -142,7 +145,10 @@ def create_advisor_brand(
     # Keep create API fast; refresh persists in background.
     def _refresh_syndication_async():
         try:
-            apply_syndication_refresh_to_advisor_company(advisor_id, dom, publisher_name=(body.leadership_name or dom))
+            apply_syndication_refresh_to_advisor_company(
+                advisor_id, dom, publisher_name=(body.leadership_name or dom)
+            )
+            apply_similarweb_traffic_to_advisor_company(advisor_id, dom)
         except Exception:
             pass
 

@@ -25,7 +25,7 @@ from models import (
     Base, User, Company, Contact, Session, Message,
     Action, MemoryEvent, GlobalInsight, AdvisorConversation, EnrichmentResult,
     ProcessedGmailMessage, SpocContact, CachedContext, AdvisorCompany,
-    GmailAccount, EmailThread, InboxEmail, GmailOutreachSyncEvent,
+    GmailAccount, EmailThread, InboxEmail, GmailOutreachSyncEvent, Campaign,
 )
 from sqlite_db_connection import get_local_db_directory, create_platform_engine
 
@@ -273,6 +273,61 @@ def _act_dict(a):
         "draft_revisions": revs,
         "draft_original": (orig or "").strip() or None,
     }
+
+
+def _campaign_dict(c):
+    return {
+        "id": c.id,
+        "name": c.name,
+        "status": c.status,
+        "starts_at": c.starts_at.isoformat() if c.starts_at else None,
+        "ends_at": c.ends_at.isoformat() if c.ends_at else None,
+        "extra_data": _normalize_extra_data(c.extra_data),
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+def list_campaigns(include_inactive: bool = True):
+    with db() as s:
+        q = s.query(Campaign)
+        if not include_inactive:
+            q = q.filter(Campaign.status == "active")
+        return [_campaign_dict(x) for x in q.order_by(Campaign.created_at.desc()).all()]
+
+
+def get_campaign(campaign_id: int):
+    with db() as s:
+        row = s.get(Campaign, int(campaign_id)) if campaign_id else None
+        return _campaign_dict(row) if row else None
+
+
+def create_campaign(
+    name: str,
+    *,
+    status: str = "active",
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
+    extra_data: dict | None = None,
+):
+    nm = (name or "").strip()
+    if not nm:
+        raise ValueError("Campaign name is required")
+    st = (status or "active").strip().lower() or "active"
+    with db() as s:
+        existing = s.query(Campaign).filter(func.lower(Campaign.name) == nm.lower()).first()
+        if existing:
+            return _campaign_dict(existing)
+        row = Campaign(
+            name=nm,
+            status=st,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            extra_data=extra_data or {},
+        )
+        s.add(row)
+        s.flush()
+        return _campaign_dict(row)
 
 
 # ── Users ─────────────────────────────────────────────────────

@@ -62,6 +62,23 @@ def _normalize_extra_dict(extra) -> dict:
     return ed if isinstance(ed, dict) else {}
 
 
+def _monthly_visits_from_platform_analytics_extra(extra) -> int | None:
+    """Visits from Similarweb snapshot or full platform analytics blob on extra_data."""
+    ed = _normalize_extra_dict(extra)
+    ppa = ed.get("platform_presence_analytics") or {}
+    if not isinstance(ppa, dict):
+        return None
+    top = ppa.get("monthly_visits")
+    if isinstance(top, (int, float)) and int(top) > 0:
+        return int(top)
+    sw = ppa.get("similarweb") or {}
+    if isinstance(sw, dict):
+        v = sw.get("latest_monthly_visits")
+        if isinstance(v, (int, float)) and int(v) > 0:
+            return int(v)
+    return None
+
+
 def _platform_links_from_extra(extra: dict) -> dict[str, str]:
     details = _normalize_extra_dict(extra).get("platform_presence_details") or {}
     if not isinstance(details, dict):
@@ -645,6 +662,8 @@ def build_publisher_crm_rows(
             monthly_visits = (shadow_company or {}).get("monthly_visits")
             if monthly_visits is None and child_domain:
                 monthly_visits = visits_by_norm.get(normalize_domain(child_domain))
+            if monthly_visits is None:
+                monthly_visits = _monthly_visits_from_platform_analytics_extra(ch.get("extra_data"))
 
             planned_sorted = sorted(planned, key=lambda a: a.get("scheduled_at") or "")
             planned_preview = [

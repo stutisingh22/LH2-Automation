@@ -258,6 +258,17 @@ button.ghost:hover {
   padding: 0;
   margin: 0;
 }
+
+.bulk-row-review {
+  background: rgba(232, 93, 93, 0.08);
+}
+
+.bulk-review-override {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
 .company-list li {
   border-bottom: 1px solid var(--border);
 }
@@ -1064,6 +1075,22 @@ button.sel-pill-clear:hover {
   margin-top: 0.75rem;
   max-height: 72vh;
   overflow-y: auto;
+}
+.bulk-campaign-inline-create {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.bulk-campaign-existing {
+  margin-top: 0.5rem;
+}
+.bulk-campaign-select {
+  margin-top: 0.6rem;
+}
+.bulk-campaign-upload {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border);
 }
 .strategist-lookup-row {
   display: flex;

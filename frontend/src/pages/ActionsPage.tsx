@@ -472,7 +472,6 @@ export default function ActionsPage() {
 
         <details className="panel actions-collapsible">
           <summary>Replan remaining steps</summary>
-          <p className="muted small">After a reply, get AI suggestions for the rest of the sequence.</p>
           <form className="stack-form" onSubmit={runReplan}>
             <label>
               Trigger step (action id)
@@ -569,9 +568,6 @@ export default function ActionsPage() {
                                   }
                                 />
                               </label>
-                              <p className="muted small step-plan-date-shift-hint">
-                                Changing this moves later steps with dates by the same number of days.
-                              </p>
                               {stepDraftText(st) ? (
                                 <pre className="action-step-draft-preview">{stepDraftText(st)}</pre>
                               ) : (
@@ -751,9 +747,6 @@ export default function ActionsPage() {
                   }
                 />
               </label>
-              {(detailStep.sequence_id != null && String(detailStep.sequence_id || '').trim()) ? (
-                <p className="muted small">Later dated steps in this sequence shift together.</p>
-              ) : null}
               <label>
                 Body / draft
                 <textarea rows={14} value={bodyDraft} onChange={(e) => setBodyDraft(e.target.value)} />
@@ -766,7 +759,6 @@ export default function ActionsPage() {
                   Gmail draft
                 </button>
               </div>
-              <p className="muted small">Gmail draft can be created even if recipient email is missing.</p>
               {revisions.length > 0 && (
                 <div className="rev-chooser">
                   <label>
@@ -830,17 +822,12 @@ export default function ActionsPage() {
                   >
                     {adaptBusy ? '…' : 'Align later steps'}
                   </button>
-                  <p className="muted small adapt-following-hint">
-                    Uses the draft in the editor (saved or not) as the source of truth so tone and new topics
-                    carry into the next steps naturally.
-                  </p>
                 </div>
               ) : null}
             </section>
           ) : (
             <section className="panel action-detail-placeholder">
               <h2>Draft editor</h2>
-              <p className="muted">Select any action and click “Edit draft” to open editor and Gmail actions.</p>
             </section>
           )}
         </aside>

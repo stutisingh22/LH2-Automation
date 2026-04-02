@@ -802,9 +802,7 @@ export default function IntelligencePage() {
             <span className="offering-key">{String(offering.product_key)}</span>
             <p className="offering-rationale">{String(offering.rationale || '')}</p>
           </div>
-        ) : (
-          <p className="muted small">Uses saved research, session summary, or Drive context (same as Streamlit).</p>
-        )}
+        ) : null}
       </section>
 
       <section className="panel intel-card">
@@ -874,9 +872,6 @@ export default function IntelligencePage() {
                 </button>
               ))}
             </nav>
-            <p className="muted small intel-section-nav-hint">
-              Each block is independent (like Streamlit expanders). Jump with the bar above; open several at once if you need to compare.
-            </p>
             <div className="intel-accordion">
             {sections.map((sec, i) => (
               <details
@@ -938,7 +933,6 @@ export default function IntelligencePage() {
 
       <section className="panel intel-card">
         <h2>Deep research command</h2>
-        <p className="muted small">Extend or revise the document (same AI command as Streamlit).</p>
         <div className="intel-cmd-row">
           <input
             type="text"
@@ -969,7 +963,6 @@ export default function IntelligencePage() {
 
       <section className="panel intel-card">
         <h2>Person lookup &amp; suggestions</h2>
-        <p className="muted small">LinkedIn URL, email, or free-text name; or ask what to add to research.</p>
         <div className="intel-lookup-stack">
           <textarea
             className="intel-lookup-textarea"
@@ -1008,9 +1001,6 @@ export default function IntelligencePage() {
       {ws && Array.isArray(ws.notion_notes) && ws.notion_notes.length > 0 && (
         <section className="panel intel-card intel-notion-panel">
           <h2>Linked Notion notes</h2>
-          <p className="muted small">
-            Child pages from the Notion company record (reference). Main deep research lives in <strong>Research document</strong> above.
-          </p>
           <ul className="intel-notion-list">
             {ws.notion_notes.map((n, i) => {
               const note = n as Record<string, unknown>

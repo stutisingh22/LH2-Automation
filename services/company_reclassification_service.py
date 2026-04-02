@@ -21,6 +21,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _append_bulk_feedback(extra: dict, event: dict) -> dict:
+    events = list(extra.get("bulk_judgment_feedback_events") or [])
+    if len(events) >= 50:
+        events = events[-49:]
+    events.append(event)
+    extra["bulk_judgment_feedback_events"] = events
+    return extra
+
+
 def _find_company_by_normalized_domain(db, domain: str) -> Company | None:
     norm = normalize_domain(domain) or (domain or "").strip().lower().lstrip(".")
     if not norm:
@@ -139,6 +148,18 @@ def reclassify_company(
                 "reclassified_by": actor_id,
                 "reclassified_reason": reason_txt,
             }
+            advisor.extra_data = _append_bulk_feedback(
+                _as_dict(advisor.extra_data),
+                {
+                    "event_type": "reclassification_feedback",
+                    "at": now_iso,
+                    "source_type": "independent",
+                    "target_type": "media_house",
+                    "domain": target_domain,
+                    "final_parent": parent,
+                    "reason": reason_txt,
+                },
+            )
 
             shadow = _ensure_shadow_company_for_advisor(db, advisor)
             moved = {"moved_contacts": 0, "moved_sessions": 0, "moved_spoc_rows": 0}
@@ -202,6 +223,18 @@ def reclassify_company(
                 "reclassified_reason": reason_txt,
                 "reclassified_source_advisor_id": int(source.id),
             }
+            target.extra_data = _append_bulk_feedback(
+                _as_dict(target.extra_data),
+                {
+                    "event_type": "reclassification_feedback",
+                    "at": now_iso,
+                    "source_type": "media_house",
+                    "target_type": "independent",
+                    "domain": source_domain,
+                    "previous_parent": source.parent_name,
+                    "reason": reason_txt,
+                },
+            )
             db.delete(source)
             db.commit()
             return {

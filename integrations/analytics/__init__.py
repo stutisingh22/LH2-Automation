@@ -2,7 +2,11 @@
 Platform analytics and tracker sources. Implementation: .platform_analytics, .tracker_sources
 """
 
-from .platform_analytics import build_platform_analytics_for_domain
+from .platform_analytics import (
+    apply_similarweb_traffic_to_advisor_company,
+    apply_similarweb_traffic_to_company,
+    build_platform_analytics_for_domain,
+)
 from .tracker_sources import (
     load_domain_to_platforms,
     get_presence_for_domain,
@@ -13,6 +17,8 @@ from .tracker_sources import (
 )
 
 __all__ = [
+    "apply_similarweb_traffic_to_advisor_company",
+    "apply_similarweb_traffic_to_company",
     "build_platform_analytics_for_domain",
     "load_domain_to_platforms",
     "get_presence_for_domain",

@@ -496,7 +496,6 @@ export default function CompaniesPage() {
         <p className="muted">Loading…</p>
       ) : crmSource === 'independent' ? (
         <>
-          <p className="muted small companies-row-hint">Click a row to open Intelligence for that company.</p>
           <div className="lh2-table-wrap crm-table-wrap">
             <table className="lh2-data-table crm-table">
               <thead>
@@ -579,7 +578,6 @@ export default function CompaniesPage() {
         </>
       ) : (
         <>
-          <p className="muted small companies-row-hint">Click a child row to open Intelligence (media property).</p>
           <div className="lh2-table-wrap crm-table-wrap">
             <table className="lh2-data-table crm-table">
               <thead>

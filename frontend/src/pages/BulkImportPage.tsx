@@ -12,8 +12,15 @@ const COL_ORDER = [
   'parent_name',
   'parent_suggested',
   'match_reason',
+  'match_method',
+  'match_score',
   'evidence',
   'new_parent_candidate',
+  'requires_review',
+  'decision_reason',
+  'decision_confidence',
+  'ownership_rationale',
+  'needs_review',
   'parent_confirmed',
   'status',
 ] as const
@@ -29,8 +36,15 @@ const COL_LABEL: Record<string, string> = {
   parent_name: 'AI parent',
   parent_suggested: 'DB match',
   match_reason: 'Match',
+  match_method: 'Method',
+  match_score: 'Score',
   evidence: 'Evidence',
   new_parent_candidate: 'New parent cand.',
+  requires_review: 'Needs review',
+  decision_reason: 'Decision',
+  decision_confidence: 'Confidence',
+  ownership_rationale: 'Rationale',
+  needs_review: 'Model review',
   parent_confirmed: 'Parent ✓',
   status: 'Status',
 }
@@ -42,8 +56,15 @@ const READONLY = new Set([
   'parent_name',
   'parent_suggested',
   'match_reason',
+  'match_method',
+  'match_score',
   'evidence',
   'new_parent_candidate',
+  'requires_review',
+  'decision_reason',
+  'decision_confidence',
+  'ownership_rationale',
+  'needs_review',
   'status',
 ])
 
@@ -64,6 +85,13 @@ export default function BulkImportPage() {
   const [lastCreated, setLastCreated] = useState<unknown[]>([])
   const [showAllColumns, setShowAllColumns] = useState(false)
   const [doImportAllState, setDoImportAllState] = useState<'all' | 'some' | 'none'>('none')
+  const [campaigns, setCampaigns] = useState<Array<{ id: number; name: string; status?: string }>>([])
+  const [campaignName, setCampaignName] = useState('')
+  const [selectedCampaignId, setSelectedCampaignId] = useState<number | ''>('')
+  const [campaignBusy, setCampaignBusy] = useState(false)
+  const [showOnlyAmbiguous, setShowOnlyAmbiguous] = useState(false)
+  const [commitSummary, setCommitSummary] = useState<Record<string, unknown> | null>(null)
+  const [qualityBaseline, setQualityBaseline] = useState<Record<string, unknown> | null>(null)
   const doImportHeaderRef = useRef<HTMLInputElement | null>(null)
 
   const existingParents = useMemo(() => {
@@ -114,6 +142,36 @@ export default function BulkImportPage() {
   }, [columns, showAllColumns])
 
   useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await apiFetch<Array<{ id: number; name: string; status?: string }>>('/api/campaigns', { silent: true })
+        if (!cancelled) setCampaigns(rows || [])
+      } catch {
+        if (!cancelled) setCampaigns([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const baseline = await apiFetch<Record<string, unknown>>('/api/bulk/judgment-baseline?days=28', { silent: true })
+        if (!cancelled) setQualityBaseline(baseline || null)
+      } catch {
+        if (!cancelled) setQualityBaseline(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     if (!rows.length) {
       setDoImportAllState('none')
       if (doImportHeaderRef.current) doImportHeaderRef.current.indeterminate = false
@@ -151,6 +209,8 @@ export default function BulkImportPage() {
       const j = await res.json()
       setPreview(j)
       setRows((j.rows as Record<string, unknown>[]) || [])
+      setQualityBaseline((j.quality_baseline as Record<string, unknown>) || qualityBaseline)
+      setCommitSummary(null)
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Failed')
     } finally {
@@ -175,6 +235,8 @@ export default function BulkImportPage() {
       const j = await res.json()
       setPreview(j)
       setRows((j.rows as Record<string, unknown>[]) || [])
+      setQualityBaseline((j.quality_baseline as Record<string, unknown>) || qualityBaseline)
+      setCommitSummary(null)
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : 'Failed')
     } finally {
@@ -182,16 +244,29 @@ export default function BulkImportPage() {
     }
   }
 
+  async function analyzeCampaignFile(file: File | null) {
+    if (!selectedCampaignId) {
+      setErr('Select or create a campaign first, then upload campaign sheet.')
+      return
+    }
+    await analyzeFile(file)
+  }
+
   async function commit() {
     setBusy(true)
     setErr('')
     try {
-      const summary = await apiFetch<{ created?: unknown[] }>('/api/bulk/commit', {
+      const summary = await apiFetch<Record<string, unknown>>('/api/bulk/commit', {
         method: 'POST',
         silent: true,
-        json: { rows, allow_new_parents: allowNewParents },
+        json: {
+          rows,
+          allow_new_parents: allowNewParents,
+          campaign_id: selectedCampaignId || null,
+        },
       })
-      setLastCreated(summary.created || [])
+      setLastCreated((summary.created as unknown[]) || [])
+      setCommitSummary(summary)
       setPreview(null)
       setRows([])
     } catch (ex) {
@@ -223,6 +298,36 @@ export default function BulkImportPage() {
     setRows((prev) => prev.map((r, j) => (j === i ? { ...r, [key]: value } : r)))
   }
 
+  const displayRows = useMemo(() => {
+    const indexed = rows.map((row, index) => ({ row, index }))
+    if (!showOnlyAmbiguous) return indexed
+    return indexed.filter((x) => Boolean(x.row.requires_review))
+  }, [rows, showOnlyAmbiguous])
+
+  async function createCampaign() {
+    const nm = campaignName.trim()
+    if (!nm || campaignBusy) return
+    setCampaignBusy(true)
+    setErr('')
+    try {
+      const out = await apiFetch<{ id: number; name: string; status?: string }>('/api/campaigns', {
+        method: 'POST',
+        json: { name: nm, status: 'active' },
+      })
+      setCampaigns((prev) => {
+        const next = [...prev]
+        if (!next.some((x) => x.id === out.id)) next.unshift(out)
+        return next
+      })
+      setSelectedCampaignId(out.id)
+      setCampaignName('')
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : 'Could not create campaign')
+    } finally {
+      setCampaignBusy(false)
+    }
+  }
+
   return (
     <div className="page-wide bulk-import-page">
       <header className="intel-hero strategist-header">
@@ -231,7 +336,62 @@ export default function BulkImportPage() {
           <h1>Bulk domain import</h1>
         </div>
       </header>
+      <div className="panel">
+        <h2>Campaigns (separate from import)</h2>
+        <label className="crm-add-field bulk-campaign-select">
+          <span>Select campaign</span>
+          <select
+            className="lh2-dt-input wide"
+            value={selectedCampaignId}
+            onChange={(e) => setSelectedCampaignId(e.target.value ? Number(e.target.value) : '')}
+          >
+            <option value="">None</option>
+            {campaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="bulk-campaign-inline-create">
+          <input
+            className="lh2-dt-input wide"
+            type="text"
+            value={campaignName}
+            onChange={(e) => setCampaignName(e.target.value)}
+            placeholder="+ Add campaign name"
+            autoComplete="off"
+          />
+          <button type="button" className="secondary sm" onClick={() => void createCampaign()} disabled={campaignBusy || !campaignName.trim()}>
+            {campaignBusy ? 'Adding…' : '+ Add campaign'}
+          </button>
+        </div>
+        {campaigns.length ? (
+          <p className="muted small bulk-campaign-existing">
+            Existing: {campaigns.slice(0, 6).map((c) => c.name).join(', ')}
+          </p>
+        ) : null}
+        <div className="bulk-campaign-upload">
+          <h2>Upload campaign sheet (XLSX/CSV)</h2>
+          <input
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            title="Upload campaign sheet"
+            aria-label="Upload campaign sheet"
+            onChange={(e) => void analyzeCampaignFile(e.target.files?.[0] || null)}
+          />
+        </div>
+      </div>
       {err && <p className="error">{err}</p>}
+      {qualityBaseline && (
+        <div className="panel">
+          <h2>28-day quality baseline</h2>
+          <p className="muted small">
+            Imported: {fmtCell(qualityBaseline.imported_rows)} | Reclassifications: {fmtCell(qualityBaseline.reclassified_rows)} | Review rate:{' '}
+            {fmtCell(qualityBaseline.review_rate)} | Override rate: {fmtCell(qualityBaseline.override_rate)}
+          </p>
+        </div>
+      )}
       <form onSubmit={analyzeText} className="panel">
         <h2>Input</h2>
         <textarea
@@ -279,6 +439,17 @@ export default function BulkImportPage() {
           </button>
         </div>
       )}
+      {commitSummary && (
+        <div className="panel">
+          <h2>Commit outcome</h2>
+          <p className="muted small">
+            Added independent: {Array.isArray(commitSummary.added_independent) ? (commitSummary.added_independent as unknown[]).length : 0} | Added media
+            house: {Array.isArray(commitSummary.added_media_house) ? (commitSummary.added_media_house as unknown[]).length : 0} | Flagged for review:{' '}
+            {Array.isArray(commitSummary.flagged_for_review) ? (commitSummary.flagged_for_review as unknown[]).length : 0} | Errors:{' '}
+            {Array.isArray(commitSummary.errors) ? (commitSummary.errors as unknown[]).length : 0}
+          </p>
+        </div>
+      )}
       {Array.isArray(preview?.errors) && (preview!.errors as string[]).length > 0 && (
         <ul className="error">
           {(preview!.errors as string[]).map((x, i) => (
@@ -290,11 +461,15 @@ export default function BulkImportPage() {
         <>
           <section className="panel">
             <div className="intel-card-head">
-              <h2>Review ({rows.length} rows)</h2>
+              <h2>Review ({displayRows.length}/{rows.length} rows)</h2>
               <div className="bulk-review-right">
                 <span className="muted small">
                   {doImportSelectedCount}/{rows.length} selected for import
                 </span>
+                <label className="chk-inline">
+                  <input type="checkbox" checked={showOnlyAmbiguous} onChange={(e) => setShowOnlyAmbiguous(e.target.checked)} />
+                  Show only ambiguous rows
+                </label>
                 <button
                   type="button"
                   className="secondary sm"
@@ -304,13 +479,10 @@ export default function BulkImportPage() {
                   {showAllColumns ? 'Show key columns' : 'Show all columns'}
                 </button>
                 <button type="button" className="primary" disabled={busy} onClick={commit}>
-                  Commit reviewed rows
+                  {selectedCampaignId ? 'Commit reviewed rows to campaign' : 'Commit reviewed rows'}
                 </button>
               </div>
             </div>
-            <p className="muted small">
-              Edit classification and parent (confirmed). Review is scrollable; table may still require horizontal scroll.
-            </p>
             <div className="lh2-table-wrap bulk-import-table-wrap">
               <table className="lh2-data-table bulk-import-table">
                 <thead>
@@ -336,33 +508,42 @@ export default function BulkImportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, ri) => (
-                    <tr key={ri}>
+                  {displayRows.map(({ row, index }) => (
+                    <tr key={index} className={Boolean(row.requires_review) ? 'bulk-row-review' : ''}>
                       {visibleColumns.map((col) => (
                         <td key={col}>
                           {col === 'do_import' ? (
                             <input
                               type="checkbox"
                               checked={Boolean(row.do_import)}
-                              onChange={(e) => patchRow(ri, 'do_import', e.target.checked)}
-                              aria-label={`Import row ${ri + 1}`}
+                              onChange={(e) => patchRow(index, 'do_import', e.target.checked)}
+                              aria-label={`Import row ${index + 1}`}
                             />
                           ) : col === 'classification' ? (
                             <select
                               className="lh2-dt-input"
                               value={String(row.classification || 'independent')}
-                              onChange={(e) => patchRow(ri, 'classification', e.target.value)}
-                              aria-label={`Classification ${ri + 1}`}
+                              onChange={(e) => patchRow(index, 'classification', e.target.value)}
+                              aria-label={`Classification ${index + 1}`}
                             >
                               <option value="independent">independent</option>
                               <option value="media_house">media_house</option>
                             </select>
+                          ) : col === 'requires_review' ? (
+                            <label className="bulk-review-override">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(row.override_review_block)}
+                                onChange={(e) => patchRow(index, 'override_review_block', e.target.checked)}
+                              />
+                              {Boolean(row.requires_review) ? 'Required' : 'Clear'}
+                            </label>
                           ) : col === 'parent_confirmed' ? (
                             <select
                               className="lh2-dt-input wide"
                               value={String(row.parent_confirmed ?? '')}
-                              onChange={(e) => patchRow(ri, 'parent_confirmed', e.target.value || null)}
-                              aria-label={`Parent confirmed ${ri + 1}`}
+                              onChange={(e) => patchRow(index, 'parent_confirmed', e.target.value || null)}
+                              aria-label={`Parent confirmed ${index + 1}`}
                             >
                               {parentOptions.map((p) => (
                                 <option key={p || 'empty'} value={p}>
@@ -378,8 +559,8 @@ export default function BulkImportPage() {
                             <input
                               className="lh2-dt-input wide"
                               value={fmtCell(row[col])}
-                              onChange={(e) => patchRow(ri, col, e.target.value)}
-                              aria-label={`${col} row ${ri + 1}`}
+                              onChange={(e) => patchRow(index, col, e.target.value)}
+                              aria-label={`${col} row ${index + 1}`}
                             />
                           )}
                         </td>

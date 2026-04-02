@@ -11,8 +11,10 @@ Flow:
 
 import io
 import logging
+import os
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 import pandas as pd
@@ -24,7 +26,15 @@ else:
     import streamlit as st
 
 from config import normalize_domain
-from db_ops import get_company_by_domain, upsert_company, delete_company_by_domain
+from db_ops import (
+    get_company_by_domain,
+    upsert_company,
+    delete_company_by_domain,
+    get_campaign,
+    merge_company_extra_data,
+    merge_advisor_company_extra_data,
+)
+from db_ops import SessionFactory
 from db_ops import (
     get_advisor_company_by_domain, upsert_advisor_company, delete_advisor_company,
     get_or_create_advisor_company_for_parent, delete_advisor_parent,
@@ -36,11 +46,22 @@ from integrations import (
 )
 from services.ui_data_loader import clear_ui_cache, load_advisor_parents_with_children
 from services.cache_registry import invalidate_group
+from models import AdvisorCompany, Company
 
 log = logging.getLogger(__name__)
 
 # Column names we treat as domain (first match wins)
 DOMAIN_COLUMN_CANDIDATES = ("domain", "Domain", "website", "Website", "url", "URL", "site", "Site", "domain_name")
+SAFE_MIN_PARENT_KEY_LEN = 6
+DEFAULT_JUDGMENT_STAGE = os.getenv("BULK_IMPORT_JUDGMENT_STAGE", "stage_b").strip().lower()
+PARENT_ALIAS_MAP = {
+    "conde nast": "Condé Nast",
+    "conde nast media": "Condé Nast",
+    "vox media group": "Vox Media",
+    "dow jones and company": "Dow Jones",
+    "ny times": "The New York Times Company",
+    "new york times": "The New York Times Company",
+}
 
 def _norm_parent_key(name: str) -> str:
     """Normalize parent/company names for matching (case/space/punctuation-insensitive)."""
@@ -48,29 +69,279 @@ def _norm_parent_key(name: str) -> str:
     return "".join(ch for ch in s if ch.isalnum())
 
 
-def _suggest_parent_from_data(ai_parent_name: str, ai_parent_match: str, existing_parents: List[str]) -> tuple[str, str]:
+def _as_float(val, default: float = 0.0) -> float:
+    try:
+        out = float(val)
+    except (TypeError, ValueError):
+        return default
+    if out < 0:
+        return 0.0
+    if out > 1:
+        return 1.0
+    return out
+
+
+def _extract_evidence_urls(ver: dict | None) -> str:
+    if not isinstance(ver, dict):
+        return ""
+    ev = ver.get("evidence") or []
+    return "\n".join([e.get("href", "") for e in ev[:5] if isinstance(e, dict) and e.get("href")])
+
+
+def _suggest_parent_from_data(ai_parent_name: str, ai_parent_match: str, existing_parents: List[str]) -> tuple[str, str, str, float, bool]:
     """
-    Suggest a parent from the existing list only. Returns (suggested_parent, reason).
+    Suggest a parent from the existing list only.
+    Returns (suggested_parent, reason, match_method, match_score, requires_review).
     Never returns a value not present in existing_parents.
     """
     if not existing_parents:
-        return "", "no existing parents"
+        return "", "no existing parents", "none", 0.0, True
     existing = list(existing_parents)
+    by_display = {p: _norm_parent_key(p) for p in existing if p}
     by_key = {_norm_parent_key(p): p for p in existing if p}
 
-    # Do NOT trust model-provided matches by themselves; they must be verified via evidence (or deterministic normalization).
+    # Deterministic exact parent_match from model (if it is truly present) is safe.
+    pm = (ai_parent_match or "").strip()
+    if pm and pm in by_display:
+        return pm, f"exact_allowed_parent_match({pm})", "exact_allowed_match", 1.0, False
+
+    # Do NOT trust model-provided freeform matches by themselves; they must be deterministic.
 
     k = _norm_parent_key(ai_parent_name or "")
     if k and k in by_key:
-        return by_key[k], f"normalized_key_match({ai_parent_name}→{by_key[k]})"
+        return by_key[k], f"normalized_key_match({ai_parent_name}→{by_key[k]})", "normalized_key_match", 0.98, False
 
-    # Containment heuristic on normalized keys (e.g. 'voxmedia' vs 'voxmediagroup')
+    # Alias map supports high-signal common parent naming variants.
+    alias_target = PARENT_ALIAS_MAP.get((ai_parent_name or "").strip().lower())
+    if alias_target and alias_target in by_display:
+        return alias_target, f"alias_map_match({ai_parent_name}→{alias_target})", "alias_map_match", 0.95, False
+
+    # Containment is ambiguous by nature: return candidate but force review.
     if k:
         for ek, disp in by_key.items():
-            if ek and (ek in k or k in ek):
-                return disp, f"normalized_contains({ai_parent_name}→{disp})"
+            if not ek:
+                continue
+            if min(len(ek), len(k)) < SAFE_MIN_PARENT_KEY_LEN:
+                continue
+            if ek in k or k in ek:
+                return disp, f"ambiguous_contains({ai_parent_name}→{disp})", "contains_ambiguous", 0.55, True
 
-    return "", "no_safe_match"
+    return "", "no_safe_match", "none", 0.0, True
+
+
+def _decision_stage() -> str:
+    stage = (DEFAULT_JUDGMENT_STAGE or "stage_b").lower()
+    if stage not in {"stage_a", "stage_b", "stage_c"}:
+        return "stage_b"
+    return stage
+
+
+def _build_feedback_event(row: dict, final_classification: str, final_parent: str, campaign_id: int | None) -> dict:
+    return {
+        "source": "bulk_import",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "input": (row.get("input") or "").strip(),
+        "domain": (row.get("domain") or "").strip(),
+        "predicted_classification": (row.get("classification") or "").strip(),
+        "final_classification": final_classification,
+        "predicted_parent": (row.get("parent_name") or "").strip(),
+        "final_parent": final_parent,
+        "decision_reason": (row.get("decision_reason") or "").strip(),
+        "decision_confidence": _as_float(row.get("decision_confidence"), 0.0),
+        "campaign_id": int(campaign_id) if campaign_id is not None else None,
+    }
+
+
+def resolve_import_judgment(
+    *,
+    classified_row: dict,
+    exists_db: bool,
+    existing_advisor: dict | None,
+    existing_parent: str,
+    existing_parents: List[str],
+    verify_result: dict | None = None,
+) -> dict:
+    """
+    Deterministic policy layer for analyze output.
+    """
+    decision = {
+        "classification": "independent",
+        "parent_name": "",
+        "parent_suggested": "",
+        "parent_confirmed": "",
+        "match_reason": "",
+        "match_method": "none",
+        "match_score": 0.0,
+        "evidence": _extract_evidence_urls(verify_result),
+        "new_parent_candidate": "",
+        "requires_review": False,
+        "decision_reason": "",
+        "decision_confidence": 0.0,
+        "ownership_rationale": "",
+        "needs_review": False,
+        "is_parent_company": False if exists_db else bool(classified_row.get("is_parent_company")),
+    }
+
+    if exists_db:
+        if existing_advisor:
+            decision["classification"] = "media_house"
+            decision["parent_name"] = existing_parent
+            decision["parent_suggested"] = existing_parent
+            decision["parent_confirmed"] = existing_parent
+            decision["match_reason"] = "existing_in_db"
+            decision["match_method"] = "db_override"
+            decision["match_score"] = 1.0
+            decision["decision_reason"] = "db_authoritative_media_house"
+            decision["decision_confidence"] = 1.0
+            return decision
+        decision["classification"] = "independent"
+        decision["decision_reason"] = "db_authoritative_independent"
+        decision["decision_confidence"] = 1.0
+        decision["match_reason"] = "existing_in_db (independent)"
+        decision["match_method"] = "db_override"
+        decision["match_score"] = 1.0
+        return decision
+
+    cl = (classified_row.get("classification") or "").strip().lower().replace(" ", "_")
+    if cl not in ("independent", "media_house"):
+        cl = "independent"
+        decision["needs_review"] = True
+    parent = (classified_row.get("parent_name") or "").strip()
+    parent_match = (classified_row.get("parent_match") or "").strip()
+    confidence = _as_float(classified_row.get("ownership_confidence"), 0.0)
+    model_needs_review = bool(classified_row.get("needs_review"))
+    rationale = (classified_row.get("ownership_rationale") or "").strip()
+
+    decision["classification"] = cl
+    decision["parent_name"] = parent
+    decision["decision_confidence"] = confidence
+    decision["ownership_rationale"] = rationale
+    decision["needs_review"] = model_needs_review
+
+    is_parent_company = bool(classified_row.get("is_parent_company"))
+    if is_parent_company and parent:
+        decision["parent_suggested"] = parent
+        decision["parent_confirmed"] = parent
+        decision["match_reason"] = "parent_company (add as new parent)"
+        decision["match_method"] = "parent_company"
+        decision["match_score"] = 1.0
+        decision["decision_reason"] = "parent_company_candidate"
+        decision["requires_review"] = False
+        decision["classification"] = "media_house"
+        decision["decision_confidence"] = max(confidence, 0.9)
+        return decision
+
+    if cl == "media_house":
+        if verify_result and verify_result.get("parent_match"):
+            matched = str(verify_result["parent_match"]).strip()
+            decision["parent_suggested"] = matched
+            decision["parent_confirmed"] = matched
+            decision["parent_name"] = matched
+            decision["match_reason"] = f"web_verified({verify_result.get('match_reason','')},conf={_as_float(verify_result.get('confidence'), 0.0):.2f})"
+            decision["match_method"] = "web_verified"
+            decision["match_score"] = max(_as_float(verify_result.get("confidence"), 0.0), 0.7)
+            decision["decision_reason"] = "web_verified_parent_match"
+            decision["requires_review"] = False
+            decision["decision_confidence"] = max(confidence, _as_float(verify_result.get("confidence"), 0.0))
+            return decision
+
+        if verify_result and (verify_result.get("direct_parent") or verify_result.get("ultimate_parent")):
+            decision["parent_name"] = str(verify_result.get("ultimate_parent") or verify_result.get("direct_parent") or "").strip()
+            decision["new_parent_candidate"] = str(verify_result.get("new_parent_candidate") or "").strip()
+
+        suggested, reason, method, score, ambiguous = _suggest_parent_from_data(parent, parent_match, existing_parents)
+        decision["parent_suggested"] = suggested
+        decision["parent_confirmed"] = suggested
+        decision["match_reason"] = reason
+        decision["match_method"] = method
+        decision["match_score"] = score
+        if suggested:
+            decision["parent_name"] = suggested
+        if ambiguous:
+            decision["requires_review"] = True
+            decision["decision_reason"] = "ambiguous_parent_match"
+        elif not suggested:
+            decision["requires_review"] = True
+            decision["decision_reason"] = "no_parent_evidence"
+        else:
+            decision["decision_reason"] = "deterministic_parent_match"
+            decision["requires_review"] = False
+            decision["decision_confidence"] = max(confidence, score)
+        if model_needs_review:
+            decision["requires_review"] = True
+            decision["decision_reason"] = "model_marked_uncertain"
+        return decision
+
+    # independent branch
+    decision["decision_reason"] = "model_independent"
+    if model_needs_review or confidence < 0.55:
+        decision["requires_review"] = True
+        decision["decision_reason"] = "low_confidence_independent"
+    return decision
+
+
+def _append_audit_event(extra_data: dict, event: dict) -> dict:
+    events = list(extra_data.get("bulk_judgment_events") or [])
+    if len(events) >= 50:
+        events = events[-49:]
+    events.append(event)
+    extra_data["bulk_judgment_events"] = events
+    return extra_data
+
+
+def get_bulk_judgment_baseline(days: int = 28) -> dict:
+    """
+    Baseline snapshot from stored judgment/reclassification metadata.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(int(days or 1), 1))
+    session = SessionFactory()
+    try:
+        companies = session.query(Company).all()
+        advisors = session.query(AdvisorCompany).all()
+        imported = 0
+        reclassified = 0
+        overrides = 0
+        review_required = 0
+        wrong_parent = 0
+        for c in companies:
+            if not c.created_at or c.created_at.replace(tzinfo=timezone.utc) < cutoff:
+                continue
+            extra = c.extra_data if isinstance(c.extra_data, dict) else {}
+            if extra.get("bulk_import_source") == "bulk_import":
+                imported += 1
+                if extra.get("bulk_requires_review"):
+                    review_required += 1
+                if extra.get("bulk_override_used"):
+                    overrides += 1
+            if extra.get("reclassified_from"):
+                reclassified += 1
+        for a in advisors:
+            if not a.created_at or a.created_at.replace(tzinfo=timezone.utc) < cutoff:
+                continue
+            extra = a.extra_data if isinstance(a.extra_data, dict) else {}
+            if extra.get("bulk_import_source") == "bulk_import":
+                imported += 1
+                if extra.get("bulk_requires_review"):
+                    review_required += 1
+                if extra.get("bulk_override_used"):
+                    overrides += 1
+            if extra.get("reclassified_from"):
+                reclassified += 1
+                if extra.get("reclassified_reason") and "parent" in str(extra.get("reclassified_reason")).lower():
+                    wrong_parent += 1
+        return {
+            "window_days": max(int(days or 1), 1),
+            "imported_rows": imported,
+            "reclassified_rows": reclassified,
+            "review_required_rows": review_required,
+            "override_rows": overrides,
+            "wrong_parent_reclassifications": wrong_parent,
+            "reclassification_rate": round((reclassified / imported), 4) if imported else 0.0,
+            "review_rate": round((review_required / imported), 4) if imported else 0.0,
+            "override_rate": round((overrides / imported), 4) if imported else 0.0,
+        }
+    finally:
+        session.close()
 
 
 def _parse_domains_from_file(uploaded_file) -> List[str]:
@@ -171,71 +442,43 @@ def analyze_from_domains(domains_raw: List[str], verify_ownership: bool = True, 
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
 
         c = by_dom.get(d) or {}
-        suggested, reason = ("", "")
-        evidence_urls = ""
-        new_parent_candidate = ""
-
-        # If domain exists in DB in any form: use only DB classification and parent — never override with AI.
-        if exists_db:
-            if existing_advisor:
-                cl = "media_house"
-                display_parent = existing_parent
-                suggested = existing_parent
-                reason = "existing_in_db"
-            else:
-                cl = "independent"
-                display_parent = ""
-                suggested = ""
-                reason = "existing_in_db (independent)"
-        else:
-            cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
-            if cl not in ("independent", "media_house"):
-                cl = "independent"
-            parent = (c.get("parent_name") or "").strip()
-            parent_match = (c.get("parent_match") or "").strip()
-            display_parent = parent
-
-            is_parent_company = bool(c.get("is_parent_company"))
-            if is_parent_company and parent:
-                # Entry is the parent media company itself: suggest adding as new parent.
-                display_parent = parent
-                suggested = parent
-                reason = "parent_company (add as new parent)"
-            elif cl == "media_house":
-                # New domain: run full research (web verification) to get operational/ultimate parent, then suggest from existing only.
-                if verify_ownership and max_verify > 0:
-                    ver = verify_parent_from_web(d, existing_parents)
-                    if ver.get("parent_match"):
-                        suggested = ver["parent_match"]
-                        display_parent = suggested
-                        reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
-                    elif ver.get("direct_parent") or ver.get("ultimate_parent"):
-                        display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
-                        new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
-                    ev = ver.get("evidence") or []
-                    evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
-                    max_verify -= 1
-                if not suggested:
-                    suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
-                    if suggested:
-                        display_parent = suggested
+        ver = None
+        if (not exists_db) and ((c.get("classification") or "").strip().lower().replace(" ", "_") == "media_house") and verify_ownership and max_verify > 0:
+            ver = verify_parent_from_web(d, existing_parents)
+            max_verify -= 1
+        decision = resolve_import_judgment(
+            classified_row=c,
+            exists_db=exists_db,
+            existing_advisor=existing_advisor,
+            existing_parent=existing_parent,
+            existing_parents=existing_parents,
+            verify_result=ver,
+        )
         result["rows"].append({
             "do_import": not exists,
             "input": d,
             "domain": d,
             "exists": exists,
             "exists_source": ("db" if exists_db else ""),
-            "classification": cl,
-            "parent_name": display_parent,
-            "parent_suggested": suggested,
-            "match_reason": reason,
-            "evidence": evidence_urls,
-            "new_parent_candidate": new_parent_candidate,
-            "parent_confirmed": suggested,
-            "is_parent_company": False if exists_db else bool(c.get("is_parent_company")),
+            "classification": decision["classification"],
+            "parent_name": decision["parent_name"],
+            "parent_suggested": decision["parent_suggested"],
+            "match_reason": decision["match_reason"],
+            "match_method": decision["match_method"],
+            "match_score": decision["match_score"],
+            "evidence": decision["evidence"],
+            "new_parent_candidate": decision["new_parent_candidate"],
+            "parent_confirmed": decision["parent_confirmed"],
+            "is_parent_company": decision["is_parent_company"],
+            "requires_review": decision["requires_review"],
+            "decision_reason": decision["decision_reason"],
+            "decision_confidence": decision["decision_confidence"],
+            "ownership_rationale": decision["ownership_rationale"],
+            "needs_review": decision["needs_review"],
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents
+    result["quality_baseline"] = get_bulk_judgment_baseline(28)
     return result
 
 
@@ -261,73 +504,56 @@ def analyze_from_entries(entries: List[str], verify_ownership: bool = True, max_
         existing_parent = (existing_advisor or {}).get("parent_name") or ""
         existing_parent = (existing_parent or "").strip() if existing_parent else ""
 
-        suggested, reason = ("", "")
-        evidence_urls = ""
-        new_parent_candidate = ""
-
-        # If domain exists in DB in any form: use only DB classification and parent — never override with AI.
-        if exists_db:
-            if existing_advisor:
-                cl = "media_house"
-                display_parent = existing_parent
-                suggested = existing_parent
-                reason = "existing_in_db"
-            else:
-                cl = "independent"
-                display_parent = ""
-                suggested = ""
-                reason = "existing_in_db (independent)"
-        else:
-            cl = (c.get("classification") or "independent").strip().lower().replace(" ", "_")
-            if cl not in ("independent", "media_house"):
-                cl = "independent"
-            parent = (c.get("parent_name") or "").strip()
-            parent_match = (c.get("parent_match") or "").strip()
-            display_parent = parent
-
-            is_parent_company = bool(c.get("is_parent_company"))
-            if is_parent_company and parent:
-                display_parent = parent
-                suggested = parent
-                reason = "parent_company (add as new parent)"
-            elif cl == "media_house":
-                if verify_ownership and max_verify > 0:
-                    ver = verify_parent_from_web(dom, existing_parents)
-                    if ver.get("parent_match"):
-                        suggested = ver["parent_match"]
-                        display_parent = suggested
-                        reason = f"web_verified({ver.get('match_reason','')},conf={ver.get('confidence', 0):.2f})"
-                    elif ver.get("direct_parent") or ver.get("ultimate_parent"):
-                        display_parent = ver.get("ultimate_parent") or ver.get("direct_parent") or ""
-                        new_parent_candidate = (ver.get("new_parent_candidate") or "").strip()
-                    ev = ver.get("evidence") or []
-                    evidence_urls = "\n".join([e.get("href", "") for e in ev[:5] if e.get("href")])
-                    max_verify -= 1
-                if not suggested:
-                    suggested, reason = _suggest_parent_from_data(parent, parent_match, existing_parents)
-                    if suggested:
-                        display_parent = suggested
+        ver = None
+        if (not exists_db) and ((c.get("classification") or "").strip().lower().replace(" ", "_") == "media_house") and verify_ownership and max_verify > 0:
+            ver = verify_parent_from_web(dom, existing_parents)
+            max_verify -= 1
+        decision = resolve_import_judgment(
+            classified_row=c,
+            exists_db=exists_db,
+            existing_advisor=existing_advisor,
+            existing_parent=existing_parent,
+            existing_parents=existing_parents,
+            verify_result=ver,
+        )
         result["rows"].append({
             "do_import": not exists,
             "input": inp,
             "domain": dom,
             "exists": exists,
             "exists_source": ("db" if exists_db else ""),
-            "classification": cl,
-            "parent_name": display_parent,
-            "parent_suggested": suggested,
-            "match_reason": reason,
-            "evidence": evidence_urls,
-            "new_parent_candidate": new_parent_candidate,
-            "parent_confirmed": suggested,
-            "is_parent_company": False if exists_db else bool(c.get("is_parent_company")),
+            "classification": decision["classification"],
+            "parent_name": decision["parent_name"],
+            "parent_suggested": decision["parent_suggested"],
+            "match_reason": decision["match_reason"],
+            "match_method": decision["match_method"],
+            "match_score": decision["match_score"],
+            "evidence": decision["evidence"],
+            "new_parent_candidate": decision["new_parent_candidate"],
+            "parent_confirmed": decision["parent_confirmed"],
+            "is_parent_company": decision["is_parent_company"],
+            "requires_review": decision["requires_review"],
+            "decision_reason": decision["decision_reason"],
+            "decision_confidence": decision["decision_confidence"],
+            "ownership_rationale": decision["ownership_rationale"],
+            "needs_review": decision["needs_review"],
             "status": "exists" if exists else "new",
         })
     result["existing_parents"] = existing_parents
+    result["quality_baseline"] = get_bulk_judgment_baseline(28)
     return result
 
 
-def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
+def _append_campaign_id_patch(current: dict, campaign_id: int) -> dict:
+    ids = list(current.get("imported_campaign_ids") or [])
+    if int(campaign_id) not in ids:
+        ids.append(int(campaign_id))
+    current["imported_campaign_ids"] = ids
+    current["last_imported_campaign_id"] = int(campaign_id)
+    return current
+
+
+def commit_rows(rows: List[dict], allow_new_parents: bool = False, campaign_id: int | None = None) -> dict:
     """
     Commit reviewed rows into DB only. Requires explicit parent_confirmed for media_house rows.
     Returns summary + created items for undo.
@@ -339,7 +565,14 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
         "flagged_for_review": [],
         "errors": [],
         "created": [],  # for undo: list of dicts
+        "overrides_used": [],
+        "blocked_for_review_details": [],
+        "judgment_stage": _decision_stage(),
     }
+    if campaign_id is not None:
+        if not get_campaign(int(campaign_id)):
+            result["errors"].append("campaign_id not found")
+            return result
     existing_parents = set(get_existing_parent_media_houses())
     syndication_targets_independent: list[tuple[int, str, str]] = []
     syndication_targets_media: list[tuple[int, str, str]] = []
@@ -358,18 +591,54 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
         cl = (r.get("classification") or "").strip().lower().replace(" ", "_")
         if cl not in ("independent", "media_house"):
             cl = "independent"
+        requires_review = bool(r.get("requires_review"))
+        decision_confidence = _as_float(r.get("decision_confidence"), 0.0)
+        override_review_block = bool(r.get("override_review_block"))
+        stage = _decision_stage()
+        should_gate = (
+            (stage == "stage_b" and cl == "media_house")
+            or (stage == "stage_c")
+        )
+        if should_gate and requires_review and not override_review_block:
+            result["flagged_for_review"].append(label)
+            result["blocked_for_review_details"].append({
+                "label": label,
+                "domain": dom,
+                "classification": cl,
+                "decision_reason": (r.get("decision_reason") or "").strip(),
+                "decision_confidence": decision_confidence,
+            })
+            continue
+        if override_review_block and requires_review:
+            result["overrides_used"].append(label)
 
         if cl == "independent":
             try:
                 company_id = upsert_company(dom, name=label, notion_page_id=None)
                 if company_id:
                     syndication_targets_independent.append((int(company_id), dom, label))
+                    existing = (get_company_by_domain(dom) or {}).get("extra_data") or {}
+                    patch = dict(existing) if isinstance(existing, dict) else {}
+                    if campaign_id is not None:
+                        patch = _append_campaign_id_patch(patch, int(campaign_id))
+                    patch["bulk_import_source"] = "bulk_import"
+                    patch["bulk_requires_review"] = requires_review
+                    patch["bulk_override_used"] = override_review_block
+                    patch["bulk_judgment_stage"] = stage
+                    patch["bulk_decision_confidence"] = decision_confidence
+                    patch["bulk_decision_reason"] = (r.get("decision_reason") or "").strip()
+                    patch = _append_audit_event(
+                        patch,
+                        _build_feedback_event(r, "independent", "", campaign_id),
+                    )
+                    merge_company_extra_data(int(company_id), patch)
                 result["added_independent"].append(label)
                 result["created"].append({
                     "type": "independent",
                     "domain": dom,
                     "company_id": company_id,
                     "notion_page_id": None,
+                    "campaign_id": int(campaign_id) if campaign_id is not None else None,
                 })
             except Exception as e:
                 log.exception("Commit independent failed for %s: %s", dom, e)
@@ -397,6 +666,21 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                     advisor_id = upsert_advisor_company(dom, parent_confirmed, notion_page_id=None)
                     if advisor_id:
                         syndication_targets_media.append((int(advisor_id), dom, label))
+                        existing_adv = (get_advisor_company_by_domain(dom) or {}).get("extra_data") or {}
+                        patch_adv = dict(existing_adv) if isinstance(existing_adv, dict) else {}
+                        if campaign_id is not None:
+                            patch_adv = _append_campaign_id_patch(patch_adv, int(campaign_id))
+                        patch_adv["bulk_import_source"] = "bulk_import"
+                        patch_adv["bulk_requires_review"] = requires_review
+                        patch_adv["bulk_override_used"] = override_review_block
+                        patch_adv["bulk_judgment_stage"] = stage
+                        patch_adv["bulk_decision_confidence"] = decision_confidence
+                        patch_adv["bulk_decision_reason"] = (r.get("decision_reason") or "").strip()
+                        patch_adv = _append_audit_event(
+                            patch_adv,
+                            _build_feedback_event(r, "media_house", parent_confirmed, campaign_id),
+                        )
+                        merge_advisor_company_extra_data(int(advisor_id), patch_adv)
                     result["added_media_house"].append(label)
                     result["created"].append({
                         "type": "media_house",
@@ -404,22 +688,31 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                         "parent_name": parent_confirmed,
                         "advisor_id": advisor_id,
                         "notion_page_id": None,
+                        "campaign_id": int(campaign_id) if campaign_id is not None else None,
                     })
             except Exception as e:
                 log.exception("Commit media_house failed for %s: %s", dom, e)
                 result["errors"].append(f"{label}: {e}")
 
-    # Post-commit async syndication refresh:
-    # keeps bulk commit response fast while still persisting syndication after commit.
-    def _run_syndication_refresh_async(
+    # Post-commit async syndication + Similarweb traffic (rate-limited):
+    # keeps bulk commit fast; persists platform presence and traffic after commit.
+    def _run_post_import_analytics_async(
         ind_targets: list[tuple[int, str, str]],
         media_targets: list[tuple[int, str, str]],
     ):
+        import random
+        import time
+
         try:
             from integrations.analytics import (
                 apply_syndication_refresh_to_company,
                 apply_syndication_refresh_to_advisor_company,
             )
+            from integrations.analytics.platform_analytics import (
+                apply_similarweb_traffic_to_advisor_company,
+                apply_similarweb_traffic_to_company,
+            )
+
             for cid, dom, label in ind_targets:
                 try:
                     apply_syndication_refresh_to_company(cid, dom, publisher_name=label)
@@ -430,15 +723,55 @@ def commit_rows(rows: List[dict], allow_new_parents: bool = False) -> dict:
                     apply_syndication_refresh_to_advisor_company(aid, dom, publisher_name=label)
                 except Exception as e:
                     log.warning("Syndication refresh failed for advisor company %s (%s): %s", aid, dom, e)
+
+            traffic_jobs: list[tuple[str, tuple[int, str, str]]] = (
+                [("independent", t) for t in ind_targets]
+                + [("media", t) for t in media_targets]
+            )
+            for i, (kind, (eid, dom, _label)) in enumerate(traffic_jobs):
+                try:
+                    if kind == "independent":
+                        _sw_ok, sw_err = apply_similarweb_traffic_to_company(eid, dom)
+                    else:
+                        _sw_ok, sw_err = apply_similarweb_traffic_to_advisor_company(eid, dom)
+                    if sw_err == "cookie_expired":
+                        log.warning("Stopping bulk-import Similarweb traffic run: cookie expired")
+                        break
+                except Exception as e:
+                    log.warning(
+                        "Similarweb traffic refresh failed for %s id=%s (%s): %s",
+                        kind,
+                        eid,
+                        dom,
+                        e,
+                    )
+                if i < len(traffic_jobs) - 1:
+                    time.sleep(random.uniform(2.0, 5.0))
         except Exception as e:
-            log.warning("Syndication refresh stage skipped: %s", e)
+            log.warning("Post-import analytics stage skipped: %s", e)
+        finally:
+            try:
+                clear_ui_cache()
+                invalidate_group("advisor")
+            except Exception as e:
+                log.warning("Cache refresh after bulk-import analytics failed: %s", e)
 
     if syndication_targets_independent or syndication_targets_media:
         threading.Thread(
-            target=_run_syndication_refresh_async,
+            target=_run_post_import_analytics_async,
             args=(list(syndication_targets_independent), list(syndication_targets_media)),
             daemon=True,
         ).start()
+
+    log.info(
+        "bulk_import_commit_summary stage=%s added_independent=%s added_media_house=%s flagged_for_review=%s overrides=%s errors=%s",
+        result.get("judgment_stage"),
+        len(result.get("added_independent") or []),
+        len(result.get("added_media_house") or []),
+        len(result.get("flagged_for_review") or []),
+        len(result.get("overrides_used") or []),
+        len(result.get("errors") or []),
+    )
 
     clear_ui_cache()
     invalidate_group("advisor")
@@ -476,4 +809,6 @@ __all__ = [
     "commit_rows",
     "undo_created",
     "get_existing_parent_media_houses",
+    "get_bulk_judgment_baseline",
+    "resolve_import_judgment",
 ]

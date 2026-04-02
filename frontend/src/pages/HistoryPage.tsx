@@ -41,22 +41,11 @@ export default function HistoryPage() {
   if (!data) return err ? <p className="error">{err}</p> : <p className="muted">Loading…</p>
 
   const sessions = (data.sessions as Record<string, unknown>[]) || []
-  const insights = (data.global_insights as Record<string, unknown>[]) || []
   const analytics = data.analytics as Record<string, unknown> | null
 
   return (
     <div className="page-wide">
       <h1>History</h1>
-      {insights.length > 0 && (
-        <section className="panel">
-          <h2>Global patterns</h2>
-          <ul>
-            {insights.map((g, i) => (
-              <li key={i}>{String(g.insight)}</li>
-            ))}
-          </ul>
-        </section>
-      )}
       {analytics && (
         <section className="panel">
           <h2>Analytics</h2>

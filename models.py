@@ -23,6 +23,18 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    starts_at = Column(DateTime)
+    ends_at = Column(DateTime)
+    extra_data = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Company(Base):
     __tablename__ = "companies"
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -1358,7 +1358,7 @@ def classify_domains_independent_or_media_house(domains, allowed_parents: list[s
     """
     Classify each domain as independent (standalone publisher) or media_house (owned/held/acquired by another company).
     domains: list of domain strings (e.g. ["example.com", "outlet.org"]).
-    Returns list of dicts: [{"domain": str, "classification": "independent"|"media_house", "parent_name": str or None}, ...].
+Returns list of dicts with explicit uncertainty metadata.
     """
     if not domains:
         return []
@@ -1390,18 +1390,21 @@ Rules:
 
 Output requirements (STRICT):
 - Output only a single JSON array. No markdown, no code fence, no explanation.
-- Each element must have keys: \"domain\", \"classification\", \"parent_name\", \"parent_match\", \"is_parent_company\".
+- Each element must have keys: \"domain\", \"classification\", \"parent_name\", \"parent_match\", \"is_parent_company\", \"ownership_confidence\", \"needs_review\", \"ownership_rationale\".
 - classification must be exactly \"independent\" or \"media_house\".
 - parent_name: null for independent; for media_house the parent company name (or the company's own name when it is the parent).
 - parent_match: null for independent; for media_house set to exact Allowed parent string when one matches; otherwise null.
 - is_parent_company: true only when the domain is the main site of a company that owns multiple media brands and is not owned by another company; false otherwise.
+- ownership_confidence: number in [0,1].
+- needs_review: true when ownership/parent mapping is uncertain or conflicting.
+- ownership_rationale: short plain-text reason (max 18 words).
 - Keep domain values aligned to the input list (same order).
 
 Domains to classify (one per line):
 {domains_list}
 {allowed_block}
 
-Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null, "is_parent_company": false}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": "Vox Media", "is_parent_company": false}}, {{"domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true}}]"""
+Example: [{{"domain": "example.com", "classification": "independent", "parent_name": null, "parent_match": null, "is_parent_company": false, "ownership_confidence": 0.67, "needs_review": false, "ownership_rationale": "No credible evidence of acquisition"}}, {{"domain": "theverge.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": "Vox Media", "is_parent_company": false, "ownership_confidence": 0.93, "needs_review": false, "ownership_rationale": "Widely documented Vox Media property"}}, {{"domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true, "ownership_confidence": 0.89, "needs_review": false, "ownership_rationale": "Corporate site of multi-brand publisher"}}]"""
     for attempt in range(2):
         try:
             r = create_with_retry(
@@ -1442,6 +1445,17 @@ Example: [{{"domain": "example.com", "classification": "independent", "parent_na
                 cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
                 if cl not in ("independent", "media_house"):
                     cl = "independent"
+                confidence = item.get("ownership_confidence")
+                try:
+                    confidence = max(0.0, min(1.0, float(confidence)))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                needs_review = bool(item.get("needs_review"))
+                rationale = item.get("ownership_rationale")
+                if rationale is not None and not isinstance(rationale, str):
+                    rationale = str(rationale).strip() or ""
+                elif rationale is None:
+                    rationale = ""
                 parent = item.get("parent_name")
                 if parent is not None and not isinstance(parent, str):
                     parent = str(parent).strip() or None
@@ -1456,7 +1470,16 @@ Example: [{{"domain": "example.com", "classification": "independent", "parent_na
                 if pm and pm not in allowed_set:
                     pm = None
                 is_parent = bool(item.get("is_parent_company")) if isinstance(item.get("is_parent_company"), bool) else False
-                out.append({"domain": canonical_domain, "classification": cl, "parent_name": parent, "parent_match": pm, "is_parent_company": is_parent})
+                out.append({
+                    "domain": canonical_domain,
+                    "classification": cl,
+                    "parent_name": parent,
+                    "parent_match": pm,
+                    "is_parent_company": is_parent,
+                    "ownership_confidence": confidence,
+                    "needs_review": needs_review,
+                    "ownership_rationale": rationale,
+                })
             return out
         except json.JSONDecodeError as e:
             log.warning("classify_domains JSON parse failed (attempt %s): %s", attempt + 1, e)
@@ -1498,7 +1521,7 @@ Rules:
 - Classify based on current ownership. Subsidiaries or brands of a parent are media_house (is_parent_company = false).
 - When the entry is the name of a parent media company (owns multiple brands, not owned by another), classify as media_house with parent_name = that name and is_parent_company = true.
 - parent_name must be the MAIN / ULTIMATE parent. When matching to Allowed parents, use the exact string for parent_match when applicable.
-- If unsure about ownership, use "independent" and parent_name null.
+- If ownership is uncertain, still choose the best classification guess, but set needs_review=true and lower ownership_confidence.
 - Return results in the same order as the input list.
 - Output only a single JSON array. No markdown, no code fence, no explanation.
 
@@ -1509,12 +1532,15 @@ Output format — a JSON array. Each object must have exactly:
 - "parent_name": null for independent; for media_house the parent company name (or the company's own name when it is the parent); null if unknown.
 - "parent_match": null for independent; for media_house set to exact Allowed parent string when one matches; otherwise null.
 - "is_parent_company": true only when the entry is the name (or main site) of a company that owns multiple media brands and is not owned by another company; false otherwise.
+- "ownership_confidence": number in [0,1]
+- "needs_review": true when ownership or parent mapping is uncertain/conflicting
+- "ownership_rationale": short plain-text reason (max 18 words)
 
 Entries (one per line):
 {entries_list}
 {allowed_block}
 
-Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo", "parent_match": "Yahoo", "is_parent_company": false}}, {{"input": "Vox Media", "domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true}}]"""
+Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification": "media_house", "parent_name": "Yahoo", "parent_match": "Yahoo", "is_parent_company": false, "ownership_confidence": 0.9, "needs_review": false, "ownership_rationale": "Owned by Yahoo portfolio"}}, {{"input": "Vox Media", "domain": "voxmedia.com", "classification": "media_house", "parent_name": "Vox Media", "parent_match": null, "is_parent_company": true, "ownership_confidence": 0.88, "needs_review": false, "ownership_rationale": "Parent media company site"}}]"""
     for attempt in range(2):
         try:
             r = create_with_retry(
@@ -1555,6 +1581,17 @@ Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification":
                 cl = (item.get("classification") or "").strip().lower().replace(" ", "_")
                 if cl not in ("independent", "media_house"):
                     cl = "independent"
+                confidence = item.get("ownership_confidence")
+                try:
+                    confidence = max(0.0, min(1.0, float(confidence)))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                needs_review = bool(item.get("needs_review"))
+                rationale = item.get("ownership_rationale")
+                if rationale is not None and not isinstance(rationale, str):
+                    rationale = str(rationale).strip() or ""
+                elif rationale is None:
+                    rationale = ""
                 parent = item.get("parent_name")
                 if parent is not None and not isinstance(parent, str):
                     parent = str(parent).strip() or None
@@ -1568,7 +1605,17 @@ Example: [{{"input": "TechCrunch", "domain": "techcrunch.com", "classification":
                 if pm and pm not in allowed_set:
                     pm = None
                 is_parent = bool(item.get("is_parent_company")) if isinstance(item.get("is_parent_company"), bool) else False
-                out.append({"input": inp, "domain": dom, "classification": cl, "parent_name": parent, "parent_match": pm, "is_parent_company": is_parent})
+                out.append({
+                    "input": inp,
+                    "domain": dom,
+                    "classification": cl,
+                    "parent_name": parent,
+                    "parent_match": pm,
+                    "is_parent_company": is_parent,
+                    "ownership_confidence": confidence,
+                    "needs_review": needs_review,
+                    "ownership_rationale": rationale,
+                })
             return out
         except json.JSONDecodeError as e:
             log.warning("classify_entries JSON parse failed (attempt %s): %s", attempt + 1, e)

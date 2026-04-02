@@ -636,6 +636,76 @@ def _similarweb_snapshot_from_fetch(sw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def apply_similarweb_traffic_to_company(company_id: int, domain: str) -> tuple[bool, str | None]:
+    """
+    Fetch Similarweb visits for one independent company and persist to
+    Company.monthly_visits and extra_data.platform_presence_analytics.similarweb.
+    Uses SIMILARWEB_COOKIES from the environment when set (e.g. keys.env).
+    Returns (ok, None) or (False, "cookie_expired") without writing on cookie expiry.
+    """
+    from db_ops import get_company, merge_company_extra_data, upsert_company
+
+    dom = normalize_domain(domain or "")
+    if not dom or not company_id:
+        return False, None
+    sw = _similarweb_monthly_visits(dom)
+    if sw.get("error") == "cookie_expired":
+        log.warning(
+            "Similarweb cookie expired during traffic refresh for company %s (%s)",
+            company_id,
+            dom,
+        )
+        return False, "cookie_expired"
+    visits = sw.get("visits")
+    existing = (get_company(int(company_id)) or {}).get("extra_data") or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    analytics = dict(existing.get("platform_presence_analytics") or {})
+    if not isinstance(analytics, dict):
+        analytics = {}
+    analytics["similarweb"] = _similarweb_snapshot_from_fetch(sw)
+    analytics["updated_at"] = datetime.utcnow().isoformat()
+    analytics["status"] = "ok" if visits is not None else "no_data"
+    ok = bool(merge_company_extra_data(int(company_id), {"platform_presence_analytics": analytics}))
+    if visits is not None:
+        upsert_company(dom, monthly_visits=visits)
+    return ok, None
+
+
+def apply_similarweb_traffic_to_advisor_company(advisor_company_id: int, domain: str) -> tuple[bool, str | None]:
+    """
+    Same as apply_similarweb_traffic_to_company for a media-house child row.
+    AdvisorCompany has no monthly_visits column; traffic lives in extra_data only.
+    """
+    from db_ops import get_advisor_company, merge_advisor_company_extra_data
+
+    dom = normalize_domain(domain or "")
+    if not dom or not advisor_company_id:
+        return False, None
+    sw = _similarweb_monthly_visits(dom)
+    if sw.get("error") == "cookie_expired":
+        log.warning(
+            "Similarweb cookie expired during traffic refresh for advisor company %s (%s)",
+            advisor_company_id,
+            dom,
+        )
+        return False, "cookie_expired"
+    visits = sw.get("visits")
+    existing = (get_advisor_company(int(advisor_company_id)) or {}).get("extra_data") or {}
+    if not isinstance(existing, dict):
+        existing = {}
+    analytics = dict(existing.get("platform_presence_analytics") or {})
+    if not isinstance(analytics, dict):
+        analytics = {}
+    analytics["similarweb"] = _similarweb_snapshot_from_fetch(sw)
+    analytics["updated_at"] = datetime.utcnow().isoformat()
+    analytics["status"] = "ok" if visits is not None else "no_data"
+    if visits is not None:
+        analytics["monthly_visits"] = int(visits)
+    ok = bool(merge_advisor_company_extra_data(int(advisor_company_id), {"platform_presence_analytics": analytics}))
+    return ok, None
+
+
 def run_similarweb_for_independent_companies(
     progress_callback=None,
     min_delay_sec: float = 2.0,

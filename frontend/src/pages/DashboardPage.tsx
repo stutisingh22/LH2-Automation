@@ -3251,11 +3251,6 @@ export default function DashboardPage() {
             <h2 id="crm-add-publisher-title" style={{ marginTop: 0 }}>
               Add publisher
             </h2>
-            <p className="muted small" style={{ marginTop: 0 }}>
-              {crmSource === 'independent'
-                ? 'Creates a company and optional SPOCs (saved as contacts). Use + Add SPOC for more people. New publisher appears under Total until planned outreach matches Syndication / General-Acq labels.'
-                : 'Creates a media brand, shadow workspace, and contacts. First SPOC maps to the Leadership row; additional SPOCs are extra contacts on the same brand. Gmail and action sync use all emails you save.'}
-            </p>
             {crmSource === 'independent' ? (
               <div className="crm-add-publisher-fields">
                 <label className="crm-add-field">

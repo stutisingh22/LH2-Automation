@@ -45,7 +45,6 @@ export default function PipelinePage() {
     return (
       <div className="page-wide pipeline-page">
         <h1>Pipeline</h1>
-        <p className="muted small pipeline-subtitle">Track outreach stages for independent publishers.</p>
         {cols.length === 0 && <p className="muted">No pipeline stages available yet.</p>}
         <div className="pipe-kpi">
           {cols.map((s) => (
@@ -84,7 +83,6 @@ export default function PipelinePage() {
   return (
     <div className="page-wide pipeline-page">
       <h1>Media houses pipeline</h1>
-      <p className="muted small pipeline-subtitle">Review child publishers and update advisor status quickly.</p>
       {groups.length === 0 && <p className="muted">No media house groups available yet.</p>}
       {groups.map((g) => (
         <section key={g.parent_name} className="panel pipeline-parent-card">

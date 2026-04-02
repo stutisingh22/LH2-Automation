@@ -7,6 +7,7 @@ from api.routers import (
     advisor_chat_routes,
     auth,
     bulk_routes,
+    campaigns,
     calendar_routes,
     chat,
     companies,
@@ -61,6 +62,7 @@ app.include_router(history_routes.router, prefix="/api")
 app.include_router(intelligence_routes.router, prefix="/api")
 app.include_router(advisor_chat_routes.router, prefix="/api")
 app.include_router(bulk_routes.router, prefix="/api")
+app.include_router(campaigns.router, prefix="/api")
 app.include_router(workflows_routes.router, prefix="/api")
 
 
