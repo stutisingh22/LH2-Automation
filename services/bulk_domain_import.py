@@ -55,13 +55,13 @@ log = logging.getLogger(__name__)
 DOMAIN_COLUMN_CANDIDATES = ("domain", "Domain", "website", "Website", "url", "URL", "site", "Site", "domain_name")
 SAFE_MIN_PARENT_KEY_LEN = 6
 DEFAULT_JUDGMENT_STAGE = os.getenv("BULK_IMPORT_JUDGMENT_STAGE", "stage_b").strip().lower()
-WEB_VERIFY_WORKERS = int(os.getenv("BULK_WEB_VERIFY_WORKERS", "20"))
+WEB_VERIFY_WORKERS = int(os.getenv("BULK_WEB_VERIFY_WORKERS", "6"))
 # When a classifier row is uncertain (low confidence or flagged), we route it to web verification.
 # Keep this threshold consistent across both analyze_from_domains and analyze_from_entries.
 WEB_VERIFY_CONF_TRIGGER = float(os.getenv("BULK_WEB_VERIFY_CONF_TRIGGER", "0.65"))
-# Run web verification for every new row by default. This is accuracy-first and avoids
-# over-confident model misclassifications skipping verification.
-BULK_VERIFY_ALL_NEW_ROWS = os.getenv("BULK_VERIFY_ALL_NEW_ROWS", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Web verification can be slow/unreliable in some deployments (rate limits / blocks).
+# Default to verifying only uncertain rows; can be forced on via BULK_VERIFY_ALL_NEW_ROWS=true.
+BULK_VERIFY_ALL_NEW_ROWS = os.getenv("BULK_VERIFY_ALL_NEW_ROWS", "false").strip().lower() in {"1", "true", "yes", "on"}
 PARENT_ALIAS_MAP = {
     "conde nast": "Condé Nast",
     "conde nast media": "Condé Nast",
@@ -263,12 +263,15 @@ def resolve_import_judgment(
         return decision
 
     if cl == "media_house":
+        # If web verification fails (network/rate limit), don't hard-block committing.
+        # Fall back to classifier + allowed-parent matching policy and mark the reason for visibility.
         if verify_result and str(verify_result.get("match_reason") or "").strip().lower() == "error":
-            decision["requires_review"] = True
-            decision["decision_reason"] = "web_verification_error"
             decision["match_method"] = "web_verification_error"
             decision["match_reason"] = "web_verification_error"
-            return decision
+            decision["decision_reason"] = "web_verification_error_fallback_to_model"
+            # Keep review gating driven by model confidence/uncertainty (not by network errors).
+            decision["requires_review"] = bool(model_needs_review) or confidence < 0.65
+            # Continue into model/allowed-parent logic below (do not return).
         if verify_result and verify_result.get("parent_match"):
             matched = str(verify_result["parent_match"]).strip()
             decision["parent_suggested"] = matched
@@ -302,8 +305,8 @@ def resolve_import_judgment(
                 decision["match_score"] = web_conf
                 decision["ownership_rationale"] = (rationale or decision["ownership_rationale"]).strip()
                 decision["decision_reason"] = "web_no_parent_detected"
-                # Hard stop: "no parent found" is unverified, never auto-commit.
-                decision["requires_review"] = True
+                # Treat as independent but still gate on model uncertainty/low confidence.
+                decision["requires_review"] = bool(model_needs_review) or confidence < 0.65
                 decision["decision_confidence"] = max(confidence, web_conf)
                 return decision
 
@@ -349,8 +352,11 @@ def resolve_import_judgment(
     if verify_result is not None:
         if str(verify_result.get("match_reason") or "").strip().lower() == "error":
             decision["classification"] = "independent"
-            decision["decision_reason"] = "web_verification_error"
-            decision["requires_review"] = True
+            decision["decision_reason"] = "web_verification_error_fallback_to_model"
+            decision["match_method"] = "web_verification_error"
+            decision["match_reason"] = "web_verification_error"
+            # Don't hard-block commits on verifier/network failures.
+            decision["requires_review"] = bool(model_needs_review) or confidence < 0.65
             return decision
         web_conf = _as_float(verify_result.get("confidence"), 0.0)
         direct_parent = (verify_result.get("direct_parent") or "").strip()
@@ -362,7 +368,7 @@ def resolve_import_judgment(
             # Hard stop: "no parent found" during web verification is unverified → never auto-commit.
             decision["classification"] = "independent"
             decision["decision_reason"] = "web_no_parent_detected_unverified"
-            decision["requires_review"] = True
+            decision["requires_review"] = bool(model_needs_review) or confidence < 0.65
             decision["decision_confidence"] = max(confidence, web_conf)
             return decision
 

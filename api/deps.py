@@ -6,6 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from db_ops import get_user
 from api.security import decode_token
 from config import ROLE_PERMISSIONS
+from config import is_allowed_user_email
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -38,4 +39,6 @@ def get_current_user(
     user = get_user(uid)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not is_allowed_user_email(user.get("email")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is not allowed")
     return user

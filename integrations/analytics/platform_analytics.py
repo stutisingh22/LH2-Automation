@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -29,6 +30,30 @@ MIN_SOCIAL_RESULTS_TO_CONFIRM = 2
 
 # Worldwide (999) to match SimilarWeb Pro UI; use "840" for US-only
 SIMWEB_COUNTRY_CODE = "999"
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_similarweb_cookies() -> str:
+    """
+    Return Similarweb cookie string.
+    Order:
+    - SIMILARWEB_COOKIES / SIMWEB_COOKIES env
+    - SIMILARWEB_COOKIES_FILE path (defaults to <repo>/similarweb_cookies.txt)
+    """
+    cookies = (os.getenv("SIMILARWEB_COOKIES") or os.getenv("SIMWEB_COOKIES") or "").strip()
+    if cookies:
+        return cookies
+    cookie_file = (os.getenv("SIMILARWEB_COOKIES_FILE") or "").strip()
+    if not cookie_file:
+        cookie_file = str(_REPO_ROOT / "similarweb_cookies.txt")
+    try:
+        p = Path(cookie_file)
+        if p.exists() and p.is_file():
+            return (p.read_text(encoding="utf-8") or "").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _get_similarweb_date_range_single_month() -> tuple[str, str]:
@@ -71,7 +96,7 @@ def _similarweb_monthly_visits(domain: str) -> dict[str, Any]:
     Falls back to public page scrape if cookie is missing or expired.
     Uses worldwide traffic (country 999) by default.
     """
-    cookies = (os.getenv("SIMILARWEB_COOKIES") or os.getenv("SIMWEB_COOKIES") or "").strip()
+    cookies = _load_similarweb_cookies()
     if cookies:
         result = _similarweb_pro_fetch(domain, cookies)
         if result.get("visits"):

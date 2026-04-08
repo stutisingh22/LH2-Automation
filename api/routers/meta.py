@@ -53,10 +53,22 @@ def build_info():
     db_url = os.getenv("DATABASE_URL") or os.getenv("SQLALCHEMY_DATABASE_URI") or ""
     db_backend = "postgres" if "postgres" in db_url.lower() else ("sqlite" if "sqlite" in db_url.lower() else ("set" if db_url else "unset"))
 
+    similarweb_cookie_set = bool((os.getenv("SIMILARWEB_COOKIES") or os.getenv("SIMWEB_COOKIES") or "").strip())
+    similarweb_cookie_file = (os.getenv("SIMILARWEB_COOKIES_FILE") or "").strip()
+    if not similarweb_cookie_file:
+        similarweb_cookie_file = str(_REPO_ROOT / "similarweb_cookies.txt")
+    similarweb_cookie_file_exists = False
+    try:
+        similarweb_cookie_file_exists = Path(similarweb_cookie_file).exists()
+    except Exception:
+        similarweb_cookie_file_exists = False
+
     return {
         "git_revision": _resolve_git_revision(),
         "database_backend_hint": db_backend,
         "bulk_import": bulk_import_runtime_settings(),
+        "similarweb_cookie_set": similarweb_cookie_set,
+        "similarweb_cookie_file_exists": similarweb_cookie_file_exists,
     }
 
 

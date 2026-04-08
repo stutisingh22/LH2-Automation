@@ -48,6 +48,21 @@ SIGNALHIRE_API_KEY = os.getenv("SIGNALHIRE_API_KEY", "")
 SIMWEB_API_KEY = os.getenv("SIMWEB_API_KEY", "")
 # Optional: base URL for your server that receives SignalHire callback (e.g. https://yourdomain.com)
 SIGNALHIRE_CALLBACK_BASE_URL = os.getenv("SIGNALHIRE_CALLBACK_BASE_URL", "").rstrip("/")
+
+# ── Auth / Access Control ─────────────────────────────────────
+# Restrict who can register/login to the platform.
+ALLOWED_USER_EMAILS = {
+    e.strip().lower()
+    for e in (
+        os.getenv("ALLOWED_USER_EMAILS", "")
+        or "stuti.singh@lh2holdings.com,stuti2213@gmail.com,aman.taneja@lh2holdings.com,upneet.grover@lh2holdings.com,shobhit.bhatnagar@lh2holdings.com,ashish.sethi@lh2holdings.com,yash.choudhary@lh2holdings.com"
+    ).split(",")
+    if e and e.strip()
+}
+
+
+def is_allowed_user_email(email: str | None) -> bool:
+    return bool((email or "").strip()) and (email or "").strip().lower() in ALLOWED_USER_EMAILS
 # ── Notion DB ID (sanitized) ─────────────────────────────────
 def _clean_notion_id(raw: str) -> str:
     """Accept full URLs, IDs with/without dashes, IDs with ?v= params."""

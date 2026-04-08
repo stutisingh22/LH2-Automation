@@ -9,14 +9,23 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import time
 from typing import List, Dict, Tuple
 
-from ddgs import DDGS
+import requests
 
 from integrations.ai import create_with_retry
 from config import AI_MODEL
 
 log = logging.getLogger(__name__)
+
+REQUEST_TIMEOUT_SEC = 4
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def _norm_key(name: str) -> str:
@@ -37,21 +46,61 @@ def _match_allowed(name: str, allowed: List[str]) -> Tuple[str | None, str]:
     return None, "no_match"
 
 
-def _ddg_search(query: str, max_results: int = 6) -> List[Dict]:
+def _ddg_html_search(query: str, max_results: int = 6) -> List[Dict]:
+    """
+    Lightweight DuckDuckGo HTML search (single endpoint).
+    This avoids the ddgs library's provider fallbacks (yandex/yahoo/etc.) which can be blocked in some environments.
+    """
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        out = []
-        for r in results or []:
-            out.append({
-                "title": (r.get("title") or "").strip(),
-                "href": (r.get("href") or "").strip(),
-                "body": (r.get("body") or "").strip(),
-            })
+        headers = {"user-agent": USER_AGENT, "accept-language": "en-US,en;q=0.9"}
+        # DDG HTML endpoint is more stable with POST
+        r = requests.post(
+            "https://html.duckduckgo.com/html/",
+            headers=headers,
+            data={"q": query},
+            timeout=REQUEST_TIMEOUT_SEC,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"http_{r.status_code}")
+        html = r.text or ""
+
+        import re
+
+        # Extract result blocks: title + href + snippet.
+        # This parser is intentionally forgiving: DDG markup changes occasionally.
+        links = []
+        for m in re.finditer(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.I | re.S):
+            href = re.sub(r"&amp;", "&", (m.group(1) or "").strip())
+            title = re.sub(r"<[^>]+>", "", (m.group(2) or "")).strip()
+            if href and title:
+                links.append((href, title))
+            if len(links) >= max_results:
+                break
+
+        snippets = []
+        for m in re.finditer(r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', html, re.I | re.S):
+            body = re.sub(r"<[^>]+>", "", (m.group(1) or "")).strip()
+            if body:
+                snippets.append(body)
+            if len(snippets) >= max_results:
+                break
+
+        out: List[Dict] = []
+        for i, (href, title) in enumerate(links[:max_results]):
+            out.append({"title": title, "href": href, "body": (snippets[i] if i < len(snippets) else "")})
         return out
     except Exception as e:
-        log.warning("DDG search failed for %s: %s", query, e)
+        log.warning("DDG html search failed for %s: %s", query, e)
         return []
+
+
+def _ddg_search(query: str, max_results: int = 6) -> List[Dict]:
+    # Keep bulk import responsive: one attempt + tiny jitter.
+    out = _ddg_html_search(query, max_results=max_results)
+    if out:
+        return out
+    time.sleep(0.15 + random.random() * 0.25)
+    return _ddg_html_search(query, max_results=max_results)
 
 
 def verify_parent_from_web(domain: str, allowed_parents: List[str], max_results_per_query: int = 5) -> dict:
@@ -79,33 +128,31 @@ def verify_parent_from_web(domain: str, allowed_parents: List[str], max_results_
         return {"domain": domain, "direct_parent": None, "ultimate_parent": None, "parent_match": None, "match_reason": "no_domain", "parent_name": None, "new_parent_candidate": None, "confidence": 0.0, "evidence": []}
 
     # Domain-specific queries so evidence is about THIS site only (avoid confusion with other brands).
+    # Keep this small: web search is the slowest step and can be blocked in some deployments.
     queries = [
-        # Parent/ownership evidence
-        f'"{domain}" owner parent company',
-        f'"{domain}" acquired by who owns',
         f'{domain} owned by',
-        f'{domain} parent company acquisition',
+        f'"{domain}" owner parent company',
+        f'"{domain}" acquired by',
         f'site owner {domain}',
-        # Self-disclosure / "independently owned" evidence
-        f'site:{domain} about independently owned',
-        f'site:{domain} ownership independent',
-        f'"{domain}" "self-owned"',
-        f'"{domain}" "independently owned"',
-        f'"{domain}" "operates as an independent"',
+        f'site:{domain} independently owned',
     ]
     evidence = []
     seen = set()
+    # Hard cap total time spent collecting snippets.
+    t0 = time.time()
     for q in queries:
-        for r in _ddg_search(q, max_results=max_results_per_query + 2):
+        if time.time() - t0 > 8.0:
+            break
+        for r in _ddg_search(q, max_results=max_results_per_query):
             href = r.get("href") or ""
             key = (href or r.get("title") or "")[:200]
             if not key or key in seen:
                 continue
             seen.add(key)
             evidence.append(r)
-        if len(evidence) >= 10:
+        if len(evidence) >= 8:
             break
-    evidence = evidence[:10]
+    evidence = evidence[:8]
 
     allowed_block = "\n".join(f"- {p}" for p in allowed[:300]) or "(none)"
     ev_block = "\n".join(
