@@ -5,3 +5,13 @@ token.pickle
 venv/
 __pycache__/
 .sessions/
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+token_sync.pickle
+tokens/
+*.pickle
+**/credentials.json
+**/token.json
